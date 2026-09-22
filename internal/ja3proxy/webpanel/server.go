@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/logutil"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/recorder"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/traffic"
 )
 
@@ -54,10 +55,11 @@ type RuntimeProvider func() RuntimeStatus
 type ConfigUpdater func(ConfigUpdate) (RuntimeStatus, error)
 
 type Server struct {
-	Address string
-	Monitor *traffic.TrafficMonitor
-	Runtime RuntimeProvider
-	Update  ConfigUpdater
+	Recorder *recorder.Recorder
+	Address  string
+	Monitor  *traffic.TrafficMonitor
+	Runtime  RuntimeProvider
+	Update   ConfigUpdater
 }
 
 type stateResponse struct {
@@ -81,6 +83,13 @@ func (panel Server) Serve(ctx context.Context) error {
 	listener, err := net.Listen("tcp", panel.Address)
 	if err != nil {
 		return fmt.Errorf("listen for web panel on %s: %w", panel.Address, err)
+	}
+	if panel.Recorder != nil {
+		addr, ok := listener.Addr().(*net.TCPAddr)
+		if !ok || !addr.IP.IsLoopback() {
+			listener.Close()
+			return fmt.Errorf("recorder web panel requires a loopback bind until authenticated access is configured")
+		}
 	}
 	server := &http.Server{
 		Handler:           panel.Handler(),
@@ -107,12 +116,16 @@ func (panel Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/state", panel.handleState)
 	mux.HandleFunc("PUT /api/config", panel.handleConfigUpdate)
+	panel.registerRecorderRoutes(mux)
 
 	staticRoot, err := fs.Sub(staticFiles, "static")
 	if err != nil {
 		panic(fmt.Sprintf("load embedded web panel: %v", err))
 	}
 	mux.Handle("GET /", http.FileServer(http.FS(staticRoot)))
+	if panel.Recorder != nil {
+		return securityHeaders(recorderLocalOnly(mux))
+	}
 	return securityHeaders(mux)
 }
 

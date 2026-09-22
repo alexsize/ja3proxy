@@ -228,6 +228,30 @@ func TestHandleSOCKS5RejectsUnsupportedCommand(t *testing.T) {
 	readExact(t, clientConn, []byte{socks5Version, socks5CommandFail, socks5Reserved, socks5IPv4, 0, 0, 0, 0, 0, 0})
 }
 
+func TestHandleSOCKS5BlockedTunnelRejectsBeforeDial(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	if err := clientConn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set client deadline: %v", err)
+	}
+
+	dialed := false
+	proxy := NewProxy(func(network, addr string) (net.Conn, error) {
+		dialed = true
+		return nil, nil
+	}, nil, nil).WithBlockedTunnels(true)
+	go proxy.handleSOCKS5(serverConn)
+
+	writeSOCKS5Greeting(t, clientConn, socks5NoAuth)
+	readExact(t, clientConn, []byte{socks5Version, socks5NoAuth})
+	writeSOCKS5ConnectRequest(t, clientConn, "example.com", 443)
+	readExact(t, clientConn, []byte{socks5Version, 0x02, socks5Reserved, socks5IPv4, 0, 0, 0, 0, 0, 0})
+	if dialed {
+		t.Fatal("blocked SOCKS5 CONNECT dialed the destination")
+	}
+}
+
 func TestHandleSOCKS5RejectsInvalidRequestHeader(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -86,6 +86,10 @@ func (p *Proxy) handleSOCKS5(conn net.Conn) {
 		logger.Warn("unsupported command", "command", request.command)
 		return
 	}
+	if p.blockTunnels {
+		_ = writeSOCKS5Reply(conn, 0x02)
+		return
+	}
 
 	destAddr := request.addr()
 	logger = logger.With("target", destAddr)
@@ -265,7 +269,7 @@ func (p *Proxy) handleSOCKS5Tunnel(tunnel socks5Tunnel) {
 	session := p.monitor().StartSession(tunnel.info)
 	defer session.Finish()
 
-	if tunnel.request.port == 443 {
+	if p.inspectTLS || tunnel.request.port == 443 {
 		tunnelClientConn := tunnel.bufferedClientConn()
 		destConn, wrappedClientConn := traffic.WrapTunnel(session, destConn, tunnelClientConn)
 		p.connect(tunnel.request.host, destConn, wrappedClientConn)

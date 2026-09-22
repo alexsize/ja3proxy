@@ -22,7 +22,7 @@ const escapeHTML = value => String(value ?? "")
 
 function formatBytes(value, suffix = "") {
   const bytes = Number(value) || 0;
-  const units = ["B", "KB", "MB", "GB", "TB"];
+  const units = ["Б", "КБ", "МБ", "ГБ", "ТБ"];
   let amount = bytes;
   let unit = 0;
   while (Math.abs(amount) >= 1000 && unit < units.length - 1) { amount /= 1000; unit += 1; }
@@ -32,9 +32,9 @@ function formatBytes(value, suffix = "") {
 
 function elapsed(from, to = Date.now()) {
   const seconds = Math.max(0, Math.floor((to - new Date(from).getTime()) / 1000));
-  if (seconds < 60) return `${seconds}s`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
-  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+  if (seconds < 60) return `${seconds} с`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} мин ${seconds % 60} с`;
+  return `${Math.floor(seconds / 3600)} ч ${Math.floor((seconds % 3600) / 60)} мин`;
 }
 
 function uptime(from) {
@@ -47,12 +47,12 @@ function uptime(from) {
 function createSessionRow(sessionID) {
   const row = document.createElement("tr");
   row.dataset.sessionId = String(sessionID);
-  row.innerHTML = `<td data-label="State"><span class="state"></span></td>
-    <td data-label="Protocol"></td>
-    <td class="target-cell" data-label="Destination"><strong></strong><small></small></td>
-    <td data-label="Client"></td>
-    <td data-label="Transfer"></td>
-    <td class="age-cell" data-label="Age"></td>`;
+  row.innerHTML = `<td data-label="Состояние"><span class="state"></span></td>
+    <td data-label="Протокол"></td>
+    <td class="target-cell" data-label="Назначение"><strong></strong><small></small></td>
+    <td data-label="Клиент"></td>
+    <td data-label="Передача"></td>
+    <td class="age-cell" data-label="Возраст"></td>`;
   return row;
 }
 
@@ -66,7 +66,7 @@ function updateSessionRow(row, session) {
 
   row.title = session.error || "";
   stateBadge.className = `state state-${stateClass}`;
-  stateBadge.textContent = state;
+  stateBadge.textContent = { active: "активно", closed: "закрыто", failed: "ошибка" }[stateClass];
   cells[1].textContent = session.protocol || "—";
   target.firstElementChild.textContent = session.target || "—";
   target.lastElementChild.textContent = detail;
@@ -90,8 +90,8 @@ function visibleSessions(sessions) {
 function renderSessions(sessions) {
   const visible = visibleSessions(sessions);
   if (!visible.length) {
-    const title = filter === "all" ? "No traffic yet" : `No ${escapeHTML(filter)} sessions`;
-    const detail = filter === "all" ? "Connect a client to JA3Proxy and sessions will appear here." : "Try another filter or wait for new traffic.";
+    const title = filter === "all" ? "Трафика пока нет" : "Подходящих сессий нет";
+    const detail = filter === "all" ? "Подключите клиент к JA3Proxy, и здесь появятся сессии." : "Выберите другой фильтр или дождитесь нового трафика.";
     elements.sessions.innerHTML = `<tr><td colspan="6" class="empty"><strong>${title}</strong><span>${detail}</span></td></tr>`;
     return;
   }
@@ -114,21 +114,21 @@ function renderEvents(events) {
   const signature = JSON.stringify(visible);
   if (signature === lastEventsSignature) return;
   lastEventsSignature = signature;
-  if (!visible.length) { elements.events.innerHTML = '<li class="empty"><strong>All quiet</strong><span>Runtime events will be recorded here.</span></li>'; return; }
+  if (!visible.length) { elements.events.innerHTML = '<li class="empty"><strong>Событий нет</strong><span>Здесь появятся события работающего прокси.</span></li>'; return; }
   elements.events.innerHTML = visible.map(event => `<li class="${event.level === "warn" ? "warn" : ""}">
     <time>${new Date(event.time).toLocaleTimeString([], { hour12: false })}</time>
     <strong>${escapeHTML(event.message)}</strong>
-    <p>${escapeHTML(event.target || event.error || event.protocol || "Runtime event")}</p>
+    <p>${escapeHTML(event.target || event.error || event.protocol || "Событие процесса")}</p>
   </li>`).join("");
 }
 
 function renderRoute(runtime) {
   const protocolLabels = { mixed: "HTTP + SOCKS5", http: "HTTP", socks5: "SOCKS5" };
   const fallback = [
-    { role: "Client", address: "Proxy client" },
+    { role: "Клиент", address: "Клиент прокси" },
     { role: "JA3Proxy", address: runtime.proxyListen || "—" },
-    { role: "Route", address: runtime.upstream || "Direct connection" },
-    { role: "Target", address: "Requested destination" }
+    { role: "Маршрут", address: runtime.upstream || "Прямое соединение" },
+    { role: "Назначение", address: "Запрошенный адрес" }
   ];
   const chain = runtime.chain?.length ? runtime.chain : fallback;
   const signature = JSON.stringify([chain, runtime.proxyProtocol, runtime.tlsClient, runtime.tlsVersion]);
@@ -140,7 +140,7 @@ function renderRoute(runtime) {
     const protocol = protocolLabels[runtime.proxyProtocol] || "HTTP + SOCKS5";
     return `<li class="${proxy ? "route-proxy" : ""}">
       <span class="route-index">${String(index + 1).padStart(2, "0")}</span>
-      <strong>${escapeHTML(hop.role || "Hop")}</strong>
+      <strong>${escapeHTML(hop.role || "Узел")}</strong>
       <small>${escapeHTML(hop.address || "—")}</small>
       ${proxy ? `<em>${escapeHTML(protocol)} · ${escapeHTML(identity)}</em>` : ""}
     </li>`;
@@ -171,16 +171,16 @@ function syncConfig(runtime, force = false) {
   elements["proxy-password"].value = "";
   syncProxyAuthFields();
 
-  const upstreamOptions = [{ value: "direct", label: "Direct connection" }];
+  const upstreamOptions = [{ value: "direct", label: "Прямое соединение" }];
   if (runtime.upstreamEnabled) upstreamOptions.push({ value: "current", label: runtime.upstream });
-  upstreamOptions.push({ value: "custom", label: "Custom proxy…" });
+  upstreamOptions.push({ value: "custom", label: "Другой прокси…" });
   setSelectOptions(elements["upstream-choice"], upstreamOptions, runtime.upstreamEnabled ? "current" : "direct");
   elements["upstream-field"].hidden = true;
   elements["upstream-input"].value = "";
 
   elements["config-note"].textContent = runtime.configurationMode === "fingerprint-file"
-    ? "TLS fingerprint is file-managed; upstream changes remain available."
-    : "Changes apply to new connections without interrupting active sessions.";
+    ? "TLS fingerprint управляется файлом; следующий прокси можно изменять."
+    : "Изменения применяются к новым соединениям без прерывания активных сессий.";
   elements["config-note"].className = "config-note";
   configInitialized = true;
 }
@@ -198,8 +198,8 @@ function render(data) {
   }
 
   renderRoute(runtime);
-  elements["upload-rate"].textContent = formatBytes(uploadRate, "/s");
-  elements["download-rate"].textContent = formatBytes(downloadRate, "/s");
+  elements["upload-rate"].textContent = formatBytes(uploadRate, "/с");
+  elements["download-rate"].textContent = formatBytes(downloadRate, "/с");
   elements["active-sessions"].textContent = traffic.activeSessions.toLocaleString();
   elements["total-sessions"].textContent = traffic.totalSessions.toLocaleString();
   elements["total-upload"].textContent = formatBytes(traffic.totalUploadBytes);
@@ -217,11 +217,11 @@ async function refreshState() {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     render(await response.json());
     elements.connection.className = "connection live";
-    elements.connection.innerHTML = "<i></i>Live";
+    elements.connection.innerHTML = "<i></i>На связи";
     elements["error-toast"].classList.remove("show");
   } catch (_) {
     elements.connection.className = "connection lost";
-    elements.connection.innerHTML = "<i></i>Signal lost";
+    elements.connection.innerHTML = "<i></i>Связь потеряна";
     elements["error-toast"].classList.add("show");
   }
 }
@@ -294,7 +294,7 @@ elements["config-form"].addEventListener("submit", async event => {
   const payload = {};
   const proxyPort = Number(elements["proxy-port"].value);
   if (!Number.isInteger(proxyPort) || proxyPort < 1 || proxyPort > 65535) {
-    elements["config-note"].textContent = "Enter a proxy port between 1 and 65535.";
+    elements["config-note"].textContent = "Введите порт прокси от 1 до 65535.";
     elements["config-note"].className = "config-note error";
     elements["proxy-port"].focus();
     return;
@@ -307,7 +307,7 @@ elements["config-form"].addEventListener("submit", async event => {
   if (proxyAuthEnabled) {
     const username = elements["proxy-username"].value.trim();
     if (!username) {
-      elements["config-note"].textContent = "Enter a client authentication username.";
+      elements["config-note"].textContent = "Введите имя пользователя клиента.";
       elements["config-note"].className = "config-note error";
       elements["proxy-username"].focus();
       return;
@@ -315,7 +315,7 @@ elements["config-form"].addEventListener("submit", async event => {
     payload.proxyUsername = username;
     const password = elements["proxy-password"].value;
     if (!configuredProxyAuthEnabled && !password) {
-      elements["config-note"].textContent = "Enter a client authentication password.";
+      elements["config-note"].textContent = "Введите пароль клиента.";
       elements["config-note"].className = "config-note error";
       elements["proxy-password"].focus();
       return;
@@ -329,7 +329,7 @@ elements["config-form"].addEventListener("submit", async event => {
   if (upstreamChoice === "custom") {
     const upstream = elements["upstream-input"].value.trim();
     if (!upstream) {
-      elements["config-note"].textContent = "Enter a SOCKS5 or HTTP proxy URL.";
+      elements["config-note"].textContent = "Введите URL прокси SOCKS5 или HTTP.";
       elements["config-note"].className = "config-note error";
       elements["upstream-input"].focus();
       return;
@@ -338,14 +338,14 @@ elements["config-form"].addEventListener("submit", async event => {
   }
 
   if (!Object.keys(payload).length) {
-    elements["config-note"].textContent = "No configuration change selected.";
+    elements["config-note"].textContent = "Изменения конфигурации не выбраны.";
     elements["config-note"].className = "config-note";
     return;
   }
 
   submit.disabled = true;
   elements["config-note"].className = "config-note";
-  elements["config-note"].textContent = "Applying…";
+  elements["config-note"].textContent = "Применение…";
   try {
     const response = await fetch("/api/config", {
       method: "PUT",
@@ -356,11 +356,11 @@ elements["config-form"].addEventListener("submit", async event => {
     if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
     configInitialized = false;
     syncConfig(result.runtime, true);
-    elements["config-note"].textContent = "Applied to new connections.";
+    elements["config-note"].textContent = "Применено к новым соединениям.";
     elements["config-note"].className = "config-note success";
     await refresh();
   } catch (error) {
-    elements["config-note"].textContent = error.message || "Configuration update failed.";
+    elements["config-note"].textContent = error.message || "Не удалось обновить конфигурацию.";
     elements["config-note"].className = "config-note error";
   } finally {
     submit.disabled = false;

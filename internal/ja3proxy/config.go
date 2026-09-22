@@ -1,6 +1,10 @@
 package ja3proxy
 
 type RunningConfig struct {
+	CaptureTLS        bool
+	CaptureRaw        bool
+	CaptureJSONL      string
+	TLSMode           string
 	DumpTraffic       bool
 	LogLevel          string
 	Listen            string

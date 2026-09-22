@@ -29,6 +29,8 @@ func (conn *bufferedReadConn) Read(p []byte) (int, error) {
 }
 
 type Proxy struct {
+	inspectTLS    bool
+	blockTunnels  bool
 	tunnelDial    func(network, addr string) (net.Conn, error)
 	tunnelConnect func(sni string, destConn net.Conn, clientConn net.Conn)
 	httpTransport http.RoundTripper
@@ -36,6 +38,12 @@ type Proxy struct {
 	credentialsMu sync.RWMutex
 	credentials   proxyCredentials
 }
+
+// WithTLSInspection delegates protocol detection to the bounded tunnel recorder.
+// It is opt-in to preserve the legacy proxy behavior when recording is disabled.
+func (p *Proxy) WithTLSInspection(enabled bool) *Proxy { p.inspectTLS = enabled; return p }
+
+func (p *Proxy) WithBlockedTunnels(block bool) *Proxy { p.blockTunnels = block; return p }
 
 func NewProxy(
 	dial func(network, addr string) (net.Conn, error),
@@ -110,6 +118,10 @@ func (p *Proxy) TrafficMonitor() *traffic.TrafficMonitor {
 }
 
 func (p *Proxy) handleTunneling(w http.ResponseWriter, r *http.Request) {
+	if p.blockTunnels {
+		http.Error(w, "tunnel blocked by policy", http.StatusForbidden)
+		return
+	}
 	logger := logutil.WithComponent("http_connect", "target", r.Host)
 	logger.Info("opening tunnel")
 	info := traffic.TrafficSessionInfo{

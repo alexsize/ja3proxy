@@ -20,6 +20,7 @@ import (
 )
 
 type ja3CaptureResult struct {
+	rawClientHello []byte
 	ja3            string
 	ja3Fingerprint string
 	requestURI     string
@@ -106,6 +107,7 @@ func newJA3CaptureTLSServer(t *testing.T) (string, <-chan ja3CaptureResult) {
 		}
 
 		results <- ja3CaptureResult{
+			rawClientHello: rawClientHello,
 			ja3:            ja3,
 			ja3Fingerprint: fingerprint,
 			requestURI:     req.URL.RequestURI(),
@@ -229,15 +231,59 @@ func ja3FromRawClientHello(raw []byte) (string, string, error) {
 	}
 
 	version := binary.BigEndian.Uint16(raw[9:11])
+	wireExtensions, err := wireJA3ExtensionIDs(raw)
+	if err != nil {
+		return "", "", err
+	}
 	ja3 := strings.Join([]string{
 		strconv.Itoa(int(version)),
 		joinJA3Uint16s(spec.CipherSuites),
-		joinJA3Uint16s(ja3ExtensionIDs(spec.Extensions)),
+		joinJA3Uint16s(wireExtensions),
 		joinJA3CurveIDs(spec.Extensions),
 		joinJA3PointFormats(spec.Extensions),
 	}, ",")
 	sum := md5.Sum([]byte(ja3))
 	return ja3, hex.EncodeToString(sum[:]), nil
+}
+
+// Inspect the serialized extension list: reserializing a uTLS padding object
+// can drop it, even though extension 21 was actually present on the wire.
+func wireJA3ExtensionIDs(raw []byte) ([]uint16, error) {
+	if len(raw) < 44 {
+		return nil, io.ErrUnexpectedEOF
+	}
+	pos := 44 + int(raw[43])
+	if pos+2 > len(raw) {
+		return nil, io.ErrUnexpectedEOF
+	}
+	pos += 2 + int(binary.BigEndian.Uint16(raw[pos:pos+2]))
+	if pos >= len(raw) {
+		return nil, io.ErrUnexpectedEOF
+	}
+	pos += 1 + int(raw[pos])
+	if pos == len(raw) {
+		return nil, nil
+	}
+	if pos+2 > len(raw) {
+		return nil, io.ErrUnexpectedEOF
+	}
+	end := pos + 2 + int(binary.BigEndian.Uint16(raw[pos:pos+2]))
+	pos += 2
+	if end > len(raw) {
+		return nil, io.ErrUnexpectedEOF
+	}
+	ids := []uint16{}
+	for pos < end {
+		if pos+4 > end {
+			return nil, io.ErrUnexpectedEOF
+		}
+		ids = append(ids, binary.BigEndian.Uint16(raw[pos:pos+2]))
+		pos += 4 + int(binary.BigEndian.Uint16(raw[pos+2:pos+4]))
+		if pos > end {
+			return nil, io.ErrUnexpectedEOF
+		}
+	}
+	return ids, nil
 }
 
 func joinJA3Uint16s(values []uint16) string {

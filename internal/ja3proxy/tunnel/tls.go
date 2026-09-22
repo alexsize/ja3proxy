@@ -1,19 +1,27 @@
 package tunnel
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"net"
+	"time"
 
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/capture/tlshello"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/certstore"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/fingerprint"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/logutil"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/netutil"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/pipe"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/recorder"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/upstreamtls"
 	utls "github.com/refraction-networking/utls"
 )
 
 type TunnelHandler struct {
+	Recorder            *recorder.Recorder
+	Mode                string
+	CaptureTimeout      time.Duration
 	Debug               bool
 	CA                  *certstore.CertificateAuthority
 	SessionKey          *certstore.SessionKeyHelper
@@ -65,6 +73,10 @@ func (conn *upstreamTLSConn) NegotiatedProtocol() string {
 
 func (handler *TunnelHandler) wrapUpstreamTLS(conn net.Conn, routeHost string, serverName string, nextProtos []string) (*upstreamTLSConn, error) {
 	profile := handler.configuredUpstreamTLSProfile(routeHost)
+	return handler.wrapUpstreamTLSProfile(conn, serverName, nextProtos, profile)
+}
+
+func (handler *TunnelHandler) wrapUpstreamTLSProfile(conn net.Conn, serverName string, nextProtos []string, profile upstreamtls.UpstreamTLSProfile) (*upstreamTLSConn, error) {
 	switch upstreamtls.NormalizeProtocol(profile.Protocol) {
 	case upstreamtls.ProtocolUTLS:
 		uTLSConn, err := handler.utlsWrap(conn, serverName, nextProtos, fingerprint.TLSFingerprint{
@@ -114,7 +126,13 @@ func (handler *TunnelHandler) utlsWrap(conn net.Conn, sni string, nextProtos []s
 		}
 	}
 
-	if err := uTLSConn.Handshake(); err != nil {
+	ctx := context.Background()
+	if handler.Recorder != nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, handler.captureTimeout())
+		defer cancel()
+	}
+	if err := uTLSConn.HandshakeContext(ctx); err != nil {
 		return nil, err
 	}
 
@@ -183,8 +201,62 @@ func (handler *TunnelHandler) Connect(sni string, destConn net.Conn, clientConn 
 	defer destConn.Close()
 	defer clientConn.Close()
 	var destTLSConn *upstreamTLSConn
-	routeHost := sni
 	logger := logutil.WithComponent("tls_tunnel", "sni", sni)
+	// Resolve once. A runtime profile change cannot relabel a running handshake.
+	profile := handler.configuredUpstreamTLSProfile(sni)
+	if handler.Mode == "BLOCK" {
+		return
+	}
+	if handler.Recorder != nil {
+		mode := handler.Mode
+		if mode == "" {
+			mode = "MITM_REISSUE"
+		}
+		id := recorder.NewID()
+		meta := recorder.Meta{ConnectionID: id, CapturePoint: "CLIENT_IN", Direction: "inbound", Mode: mode, Destination: sni, Source: netutil.RemoteAddr(clientConn)}
+		outMeta := meta
+		outMeta.CapturePoint = "PROXY_OUT"
+		outMeta.Direction = "outbound"
+		if mode == "MITM_REISSUE" {
+			outMeta.Profile = profile.Client + "@" + profile.Version
+		}
+		if mode == "PASSTHROUGH" || mode == "OBSERVE_ONLY" {
+			in := tlshello.Wrap(clientConn, true, tlshello.DefaultLimits(), func(c tlshello.Capture) { handler.Recorder.TryCapture(meta, c) })
+			out := tlshello.Wrap(destConn, false, tlshello.DefaultLimits(), func(c tlshello.Capture) { handler.Recorder.TryCapture(outMeta, c) })
+			defer in.Close()
+			defer out.Close()
+			pipe.Junction(out, in)
+			return
+		}
+		replayed, capture, err := tlshello.Sniff(clientConn, handler.captureTimeout(), tlshello.DefaultLimits())
+		clientConn = replayed
+		if err != nil {
+			handler.Recorder.TryCapture(meta, capture)
+			return
+		}
+		_, parseErr := tlshello.Parse(capture.Raw)
+		if capture.Status != "complete" || parseErr != nil {
+			if capture.Status == "complete" {
+				capture.Status = "malformed"
+				capture.ErrorCode = "malformed_client_hello"
+			}
+			meta.Mode = "PASSTHROUGH"
+			outMeta.Mode = "PASSTHROUGH"
+			outMeta.Profile = ""
+			handler.Recorder.TryCapture(meta, capture)
+			out := tlshello.Wrap(destConn, false, tlshello.DefaultLimits(), func(c tlshello.Capture) { handler.Recorder.TryCapture(outMeta, c) })
+			defer out.Close()
+			pipe.Junction(out, clientConn)
+			return
+		}
+		handler.Recorder.TryCapture(meta, capture)
+		out := tlshello.Wrap(destConn, false, tlshello.DefaultLimits(), func(c tlshello.Capture) { handler.Recorder.TryCapture(outMeta, c) })
+		defer out.Close()
+		destConn = out
+	} else if handler.Mode == "PASSTHROUGH" || handler.Mode == "OBSERVE_ONLY" {
+		pipe.Junction(destConn, clientConn)
+		return
+	}
 
 	config := &tls.Config{
 		InsecureSkipVerify: true,
@@ -199,7 +271,7 @@ func (handler *TunnelHandler) Connect(sni string, destConn net.Conn, clientConn 
 				return nil, fmt.Errorf("generate certificate: %w", err)
 			}
 
-			destTLSConn, err = handler.wrapUpstreamTLS(destConn, routeHost, serverName, upstreamALPN(hello.SupportedProtos))
+			destTLSConn, err = handler.wrapUpstreamTLSProfile(destConn, serverName, upstreamALPN(hello.SupportedProtos), profile)
 			if err != nil {
 				return nil, err
 			}
@@ -216,7 +288,13 @@ func (handler *TunnelHandler) Connect(sni string, destConn net.Conn, clientConn 
 		clientConn,
 		config,
 	)
-	err := clientTLSConn.Handshake()
+	ctx := context.Background()
+	if handler.Recorder != nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, handler.captureTimeout())
+		defer cancel()
+	}
+	err := clientTLSConn.HandshakeContext(ctx)
 	if err != nil {
 		logger.Warn("client TLS handshake failed", "err", err)
 		return
@@ -232,4 +310,11 @@ func (handler *TunnelHandler) Connect(sni string, destConn net.Conn, clientConn 
 	} else {
 		pipe.Junction(destTLSConn, clientTLSConn)
 	}
+}
+
+func (handler *TunnelHandler) captureTimeout() time.Duration {
+	if handler.CaptureTimeout > 0 {
+		return handler.CaptureTimeout
+	}
+	return 5 * time.Second
 }

@@ -1,0 +1,650 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Локальный API регистратора JA3Proxy",
+    "version": "0.1.0",
+    "description": "Наблюдения в ограниченной памяти. Доступ только через loopback с проверкой Host, адреса клиента и Origin; аутентификация пользователей пока отсутствует. Это не полный API центра управления."
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:9090"
+    }
+  ],
+  "paths": {
+    "/api/v1/status": {
+      "get": {
+        "operationId": "recorderStatus",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Успешный ответ",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "stats": {
+                      "$ref": "#/components/schemas/Stats"
+                    }
+                  },
+                  "required": [
+                    "enabled",
+                    "stats"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Отклонён нелокальный клиент, Host или Origin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/observations": {
+      "get": {
+        "operationId": "listObservations",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Успешный ответ",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Observation"
+                      }
+                    },
+                    "next_cursor": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Недопустимый лимит",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Требуется локальный доступ",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Курсор вытеснен из окна памяти",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "description": "Сначала возвращаются новые обработанные записи. В списке отсутствуют decoded, raw и normalized данные. Курсор — ID сохранённого наблюдения; после его вытеснения возвращается 409."
+      }
+    },
+    "/api/v1/observations/{id}": {
+      "get": {
+        "operationId": "getObservation",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Успешный ответ",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Observation"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Требуется локальный доступ",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Наблюдение уже не хранится",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/fingerprints/diff": {
+      "get": {
+        "operationId": "compareObservations",
+        "parameters": [
+          {
+            "name": "a",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "b",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Успешный ответ",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Comparison"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Требуется локальный доступ",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Оба наблюдения должны находиться в окне памяти",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "description": "Сравниваются только наблюдаемые нормализованные структуры; ожидаемый пресет uTLS не проверяется."
+      }
+    },
+    "/api/v1/export/observations": {
+      "get": {
+        "operationId": "exportRetainedObservations",
+        "description": "Экспортирует только текущее окно памяти, начиная с новых записей. Raw-данные присутствуют только при включении во время запуска.",
+        "responses": {
+          "200": {
+            "description": "Поток NDJSON",
+            "content": {
+              "application/x-ndjson": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Требуется локальный доступ",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tls/presets": {
+      "get": {
+        "operationId": "listCompiledPresets",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Успешный ответ",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": true
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Отклонён нелокальный клиент, Host или Origin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "operationId": "recorderMetrics",
+        "responses": {
+          "200": {
+            "description": "Счётчики и gauge регистратора в формате Prometheus",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Требуется локальный доступ",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health/live": {
+      "get": {
+        "operationId": "live",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Успешный ответ",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "const": "live"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Отклонён нелокальный клиент, Host или Origin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "operationId": "ready",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Успешный ответ",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "const": "ready"
+                    },
+                    "recording_degraded": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Отклонён нелокальный клиент, Host или Origin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ]
+      },
+      "Stats": {
+        "type": "object",
+        "properties": {
+          "accepted": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "processed": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "dropped": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "write_errors": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "queue_depth": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "recent": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "memory_bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "recording_degraded": {
+            "type": "boolean"
+          }
+        }
+      },
+      "Observation": {
+        "type": "object",
+        "properties": {
+          "schema_version": {
+            "const": "tls-observation/1"
+          },
+          "id": {
+            "type": "string"
+          },
+          "connection_id": {
+            "type": "string"
+          },
+          "capture_point": {
+            "enum": [
+              "CLIENT_IN",
+              "PROXY_OUT"
+            ]
+          },
+          "direction": {
+            "enum": [
+              "inbound",
+              "outbound"
+            ]
+          },
+          "mode": {
+            "enum": [
+              "MITM_REISSUE",
+              "PASSTHROUGH",
+              "OBSERVE_ONLY"
+            ]
+          },
+          "destination": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "profile": {
+            "type": "string"
+          },
+          "captured_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "processed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "completeness": {
+            "enum": [
+              "complete",
+              "not_tls",
+              "truncated",
+              "malformed",
+              "timeout"
+            ]
+          },
+          "error_code": {
+            "type": "string"
+          },
+          "record_version": {
+            "type": "integer"
+          },
+          "record_count": {
+            "type": "integer"
+          },
+          "declared_hello_length": {
+            "type": "integer"
+          },
+          "decoded": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "fingerprints": {
+            "$ref": "#/components/schemas/Fingerprints"
+          },
+          "raw_client_hello": {
+            "type": "string",
+            "contentEncoding": "base64"
+          },
+          "raw_records": {
+            "type": "string",
+            "contentEncoding": "base64"
+          }
+        },
+        "required": [
+          "schema_version",
+          "id",
+          "connection_id",
+          "capture_point",
+          "direction",
+          "completeness",
+          "captured_at",
+          "processed_at"
+        ]
+      },
+      "Fingerprints": {
+        "type": "object",
+        "properties": {
+          "ja3": {
+            "type": "string"
+          },
+          "ja3_hash": {
+            "type": "string"
+          },
+          "ja3_version": {
+            "type": "string"
+          },
+          "ja4": {
+            "type": "string"
+          },
+          "ja4_a": {
+            "type": "string"
+          },
+          "ja4_b": {
+            "type": "string"
+          },
+          "ja4_c": {
+            "type": "string"
+          },
+          "ja4_version": {
+            "type": "string"
+          },
+          "normalization_version": {
+            "type": "string"
+          },
+          "implementation_version": {
+            "type": "string"
+          },
+          "raw_sha256": {
+            "type": "string"
+          },
+          "records_sha256": {
+            "type": "string"
+          },
+          "normalized_sha256": {
+            "type": "string"
+          },
+          "normalized": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": true
+          }
+        }
+      },
+      "Comparison": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "enum": [
+              "MATCH",
+              "MISMATCH",
+              "UNKNOWN"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "changes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Change"
+            }
+          }
+        },
+        "required": [
+          "status",
+          "changes"
+        ]
+      },
+      "Change": {
+        "type": "object",
+        "properties": {
+          "op": {
+            "enum": [
+              "add",
+              "remove",
+              "replace",
+              "move"
+            ]
+          },
+          "path": {
+            "type": "string"
+          },
+          "from": {
+            "type": "string"
+          },
+          "before": {},
+          "after": {}
+        },
+        "required": [
+          "op",
+          "path"
+        ]
+      }
+    }
+  }
+}

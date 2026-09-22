@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="ru">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>JA3Proxy · Регистратор TLS</title><link rel="stylesheet" href="/recorder.css"></head>
+<body>
+<header><a href="/">JA3Proxy</a><span>Регистратор TLS</span><a href="/api/v1/export/observations">Экспорт JSONL</a></header>
+<main>
+  <h1>Наблюдаемые TLS-отпечатки</h1>
+  <p>Входящий ClientHello и байты, переданные исходящему сокету. Окно последних наблюдений ограничено памятью.</p>
+  <p id="status" role="status">Загрузка…</p>
+  <form id="search"><label for="query">Хост, адрес клиента, JA3, JA4 или ID соединения</label><input id="query" type="search" maxlength="256"><button>Найти</button><button id="refresh" type="button">Обновить</button></form>
+  <div class="table-scroll"><table><thead><tr><th>Время</th><th>Назначение</th><th>Точка</th><th>Режим</th><th>JA4 / результат захвата</th><th>Просмотр</th><th>Сравнить</th></tr></thead><tbody id="observations"></tbody></table></div>
+  <button id="more" type="button" hidden>Следующая страница</button>
+  <section><h2>Сравнение наблюдений</h2><p id="selection">Выберите A и B в таблице. Результат сравнивает наблюдения; соответствие выбранному пресету здесь не проверяется.</p><button id="compare" type="button" disabled>Сравнить A ↔ B</button><pre id="diff">Нет выбранной пары.</pre></section>
+  <section><h2>Структура / исходные данные / JSON</h2><p>Исходные байты присутствуют только при явном включении их сохранения.</p><pre id="detail">Выберите наблюдение.</pre></section>
+</main><script src="/recorder.js" defer></script>
+</body></html>

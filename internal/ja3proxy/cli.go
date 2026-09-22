@@ -23,6 +23,10 @@ const (
 )
 
 type cliOptions struct {
+	captureTLS          bool
+	captureRaw          bool
+	captureJSONL        string
+	tlsMode             string
 	listen              string
 	caCert              string
 	caKey               string
@@ -67,53 +71,61 @@ func newDefaultCLIOptions() cliOptions {
 }
 
 func registerCLIFlags(flags *flag.FlagSet, options *cliOptions) {
-	flags.StringVar(&options.listen, "listen", defaultListen, "listen address, e.g. :8080 or 127.0.0.1:8080")
+	flags.BoolVar(&options.captureTLS, "capture-tls", false, "записывать входящий и исходящий ClientHello в ограниченной памяти")
+	flags.BoolVar(&options.captureRaw, "capture-raw", false, "сохранять чувствительные raw-данные TLS; требуется --capture-tls")
+	flags.StringVar(&options.captureJSONL, "capture-jsonl", "", "создать новый JSONL-файл наблюдений; требуется --capture-tls")
+	flags.StringVar(&options.tlsMode, "tls-mode", "MITM_REISSUE", "режим туннеля: MITM_REISSUE, PASSTHROUGH, OBSERVE_ONLY, BLOCK")
+	flags.StringVar(&options.listen, "listen", defaultListen, "адрес прослушивания, например :8080 или 127.0.0.1:8080")
 
-	flags.StringVar(&options.caCert, "ca-cert", defaultCACertPath, "proxy CA certificate path")
-	flags.StringVar(&options.caKey, "ca-key", defaultCAKeyPath, "proxy CA private key path")
+	flags.StringVar(&options.caCert, "ca-cert", defaultCACertPath, "путь к сертификату CA прокси")
+	flags.StringVar(&options.caKey, "ca-key", defaultCAKeyPath, "путь к закрытому ключу CA прокси")
 
-	flags.StringVar(&options.tlsFingerprint, "tls-fingerprint", "", "global uTLS fingerprint, e.g. chrome@120")
-	flags.StringVar(&options.tlsFingerprintFile, "tls-fingerprint-file", "", "JSON file to hot-reload the global uTLS fingerprint")
-	flags.StringVar(&options.tlsProfileFile, "tls-profile-file", "", "JSON file with host-routed upstream TLS profiles")
-	flags.BoolVar(&options.listTLSFingerprints, "list-tls-fingerprints", false, "list supported uTLS fingerprints and exit")
+	flags.StringVar(&options.tlsFingerprint, "tls-fingerprint", "", "глобальный fingerprint uTLS, например chrome@120")
+	flags.StringVar(&options.tlsFingerprintFile, "tls-fingerprint-file", "", "JSON-файл глобального fingerprint с автообновлением")
+	flags.StringVar(&options.tlsProfileFile, "tls-profile-file", "", "JSON-файл исходящих TLS-профилей по хостам")
+	flags.BoolVar(&options.listTLSFingerprints, "list-tls-fingerprints", false, "вывести поддерживаемые fingerprints uTLS и завершить работу")
 
-	flags.StringVar(&options.proxyUsername, "proxy-username", "", "username required by downstream HTTP and SOCKS5 clients")
-	flags.StringVar(&options.proxyPassword, "proxy-password", "", "password required by downstream HTTP and SOCKS5 clients")
-	flags.StringVar(&options.upstreamProxy, "upstream-proxy", "", "upstream SOCKS5 or HTTP proxy URL")
+	flags.StringVar(&options.proxyUsername, "proxy-username", "", "имя пользователя для входящих HTTP- и SOCKS5-клиентов")
+	flags.StringVar(&options.proxyPassword, "proxy-password", "", "пароль для входящих HTTP- и SOCKS5-клиентов")
+	flags.StringVar(&options.upstreamProxy, "upstream-proxy", "", "URL следующего SOCKS5- или HTTP-прокси")
 
-	flags.StringVar(&options.logLevel, "log-level", defaultLogLevelName, "log level: debug, info, warn, error")
-	flags.BoolVar(&options.dumpTraffic, "dump-traffic", false, "log proxied payload data; sensitive; implies debug logging")
-	flags.BoolVar(&options.tui, "tui", false, "show a live terminal traffic dashboard")
-	flags.StringVar(&options.webPanel, "web-panel", "", "serve a live web dashboard, e.g. 127.0.0.1:9090")
+	flags.StringVar(&options.logLevel, "log-level", defaultLogLevelName, "уровень журнала: debug, info, warn, error")
+	flags.BoolVar(&options.dumpTraffic, "dump-traffic", false, "записывать содержимое трафика; чувствительные данные; включает debug")
+	flags.BoolVar(&options.tui, "tui", false, "показывать терминальную панель трафика")
+	flags.StringVar(&options.webPanel, "web-panel", "", "запустить веб-панель, например 127.0.0.1:9090")
 }
 
 func writeCLIUsage(output io.Writer) {
-	fmt.Fprint(output, `Usage:
-  ja3proxy [options]
+	fmt.Fprint(output, `Использование:
+  ja3proxy [параметры]
 
-Server:
-  --listen string                 listen address, e.g. :8080 or 127.0.0.1:8080 (default ":8080")
+Сервер:
+  --listen string                 адрес прослушивания, например :8080 или 127.0.0.1:8080 (по умолчанию ":8080")
 
-CA:
-  --ca-cert string                proxy CA certificate path (default "credentials/cert.pem")
-  --ca-key string                 proxy CA private key path (default "credentials/key.pem")
+Центр сертификации:
+  --ca-cert string                путь к сертификату CA прокси (по умолчанию "credentials/cert.pem")
+  --ca-key string                 путь к закрытому ключу CA прокси (по умолчанию "credentials/key.pem")
 
 TLS fingerprint:
-  --tls-fingerprint string        global uTLS fingerprint, e.g. chrome@120
-  --tls-fingerprint-file string   JSON file to hot-reload the global uTLS fingerprint
-  --tls-profile-file string       JSON file with host-routed upstream TLS profiles
-  --list-tls-fingerprints         list supported uTLS fingerprints and exit
+  --tls-fingerprint string        глобальный fingerprint uTLS, например chrome@120
+  --tls-fingerprint-file string   JSON-файл глобального fingerprint с автообновлением
+  --tls-profile-file string       JSON-файл исходящих TLS-профилей по хостам
+  --list-tls-fingerprints         вывести поддерживаемые fingerprints uTLS и завершить работу
 
-Proxy:
-  --proxy-username string         username required by downstream HTTP and SOCKS5 clients
-  --proxy-password string         password required by downstream HTTP and SOCKS5 clients
-  --upstream-proxy string         upstream SOCKS5 or HTTP proxy URL
+Прокси:
+  --proxy-username string         имя пользователя для входящих HTTP- и SOCKS5-клиентов
+  --proxy-password string         пароль для входящих HTTP- и SOCKS5-клиентов
+  --upstream-proxy string         URL следующего SOCKS5- или HTTP-прокси
 
-Diagnostics:
-  --log-level string              log level: debug, info, warn, error (default "info")
-  --dump-traffic                  log proxied payload data; sensitive; implies debug logging
-  --tui                           show a live terminal traffic dashboard
-  --web-panel string              serve a live web dashboard, e.g. 127.0.0.1:9090
+Recorder и диагностика:
+  --capture-tls                   включить ограниченную запись ClientHello
+  --capture-raw                   сохранять чувствительные raw-данные TLS
+  --capture-jsonl string          создать новый JSONL-файл, лимит 256 МиБ
+  --tls-mode string               MITM_REISSUE, PASSTHROUGH, OBSERVE_ONLY, BLOCK
+  --log-level string              debug, info, warn или error (по умолчанию "info")
+  --dump-traffic                  записывать содержимое трафика; включает debug
+  --tui                           показывать терминальную панель трафика
+  --web-panel string              запустить веб-панель, например 127.0.0.1:9090
 `)
 }
 
@@ -130,6 +142,22 @@ func applyCLIOptions(config *RunningConfig, options cliOptions, specified map[st
 	if config.ListFingerprints {
 		return nil
 	}
+	if !options.captureTLS && (options.captureRaw || options.captureJSONL != "") {
+		return fmt.Errorf("--capture-raw и --capture-jsonl требуют --capture-tls")
+	}
+	mode := strings.ToUpper(options.tlsMode)
+	if mode == "" {
+		mode = "MITM_REISSUE"
+	}
+	switch mode {
+	case "MITM_REISSUE", "PASSTHROUGH", "OBSERVE_ONLY", "BLOCK":
+	default:
+		return fmt.Errorf("недопустимое значение --tls-mode")
+	}
+	config.CaptureTLS = options.captureTLS
+	config.CaptureRaw = options.captureRaw
+	config.CaptureJSONL = options.captureJSONL
+	config.TLSMode = mode
 
 	listen, addr, port, err := resolveListenOption(options)
 	if err != nil {

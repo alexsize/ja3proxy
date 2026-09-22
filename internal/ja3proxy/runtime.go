@@ -20,6 +20,7 @@ import (
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/fingerprint"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/logutil"
 	httpproxy "github.com/lylemi/ja3proxy/internal/ja3proxy/proxy"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/recorder"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/traffic"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/tui"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/tunnel"
@@ -28,6 +29,7 @@ import (
 )
 
 type App struct {
+	Recorder            *recorder.Recorder
 	Config              *RunningConfig
 	CA                  *certstore.CertificateAuthority
 	SessionKey          *certstore.SessionKeyHelper
@@ -75,6 +77,13 @@ func (app *App) runWithContext(ctx context.Context) error {
 	if err := app.configureRuntime(ctx); err != nil {
 		return err
 	}
+	defer func() {
+		if app.Recorder != nil {
+			if err := app.Recorder.Close(); err != nil {
+				logutil.Warn("recorder", "recording output incomplete")
+			}
+		}
+	}()
 	proxyServer, err := app.buildProxy()
 	if err != nil {
 		return err
@@ -100,6 +109,13 @@ func (app *App) configureRuntime(ctx context.Context) error {
 		return err
 	}
 	app.ensureTrafficMonitor()
+	if app.Config.CaptureTLS && app.Recorder == nil {
+		var err error
+		app.Recorder, err = recorder.New(recorder.Options{Raw: app.Config.CaptureRaw, JSONLPath: app.Config.CaptureJSONL})
+		if err != nil {
+			return fmt.Errorf("configure recorder: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -132,10 +148,11 @@ func (app *App) serveProxyServices(ctx context.Context, proxyServer *httpproxy.P
 	}
 
 	panel := webpanel.Server{
-		Address: app.Config.WebPanel,
-		Monitor: app.TrafficMonitor,
-		Runtime: app.webPanelRuntimeStatus,
-		Update:  app.updateProxyConfig,
+		Recorder: app.Recorder,
+		Address:  app.Config.WebPanel,
+		Monitor:  app.TrafficMonitor,
+		Runtime:  app.webPanelRuntimeStatus,
+		Update:   app.updateProxyConfig,
 	}
 	return runServices(ctx, app.serveService(proxyServer), panel.Serve)
 }
@@ -265,7 +282,9 @@ func (app *App) buildProxy() (*httpproxy.Proxy, error) {
 	app.UpstreamDialer = upstreamDialer
 
 	proxyServer := httpproxy.NewProxy(upstreamDialer.Dial, app.tunnelHandler().Connect, upstreamDialer).
-		WithAuthentication(app.Config.ProxyUsername, app.Config.ProxyPassword)
+		WithAuthentication(app.Config.ProxyUsername, app.Config.ProxyPassword).
+		WithTLSInspection(app.Config.CaptureTLS || (app.Config.TLSMode != "" && app.Config.TLSMode != "MITM_REISSUE")).
+		WithBlockedTunnels(app.Config.TLSMode == "BLOCK")
 	app.ProxyServer = proxyServer
 	if app.TrafficMonitor != nil {
 		proxyServer.WithTrafficMonitor(app.TrafficMonitor)
@@ -431,7 +450,7 @@ func (app *App) webPanelRuntimeStatusLocked() webpanel.RuntimeStatus {
 		upstream = app.Config.Upstream
 	}
 	displayUpstream := redactUpstream(upstream)
-	route := "Direct connection"
+	route := "Прямое соединение"
 	if displayUpstream != "" {
 		route = displayUpstream
 	}
@@ -464,10 +483,10 @@ func (app *App) webPanelRuntimeStatusLocked() webpanel.RuntimeStatus {
 		ProxyUsername:     app.Config.ProxyUsername,
 		ConfigurationMode: mode,
 		Chain: []webpanel.ChainHop{
-			{Role: "Client", Address: "Proxy client"},
+			{Role: "Клиент", Address: "Клиент прокси"},
 			{Role: "JA3Proxy", Address: proxyListen},
-			{Role: "Route", Address: route},
-			{Role: "Target", Address: "Requested destination"},
+			{Role: "Маршрут", Address: route},
+			{Role: "Назначение", Address: "Запрошенный адрес"},
 		},
 	}
 }
@@ -570,6 +589,8 @@ func (app *App) configuredTLSFingerprint() fingerprint.TLSFingerprint {
 
 func (app *App) tunnelHandler() *tunnel.TunnelHandler {
 	return &tunnel.TunnelHandler{
+		Recorder:            app.Recorder,
+		Mode:                app.Config.TLSMode,
 		Debug:               app.Config.dumpTrafficEnabled(),
 		CA:                  app.CA,
 		SessionKey:          app.SessionKey,

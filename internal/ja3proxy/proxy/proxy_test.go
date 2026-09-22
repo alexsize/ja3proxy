@@ -4,9 +4,30 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
+
+func TestBlockedHTTPTunnelRejectsBeforeDial(t *testing.T) {
+	dialed := false
+	proxy := NewProxy(func(network, addr string) (net.Conn, error) {
+		dialed = true
+		return nil, nil
+	}, nil, nil).WithBlockedTunnels(true)
+
+	request := httptest.NewRequest(http.MethodConnect, "http://example.com:443", nil)
+	request.Host = "example.com:443"
+	response := httptest.NewRecorder()
+	proxy.ServeHTTP(response, request)
+
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusForbidden)
+	}
+	if dialed {
+		t.Fatal("blocked CONNECT dialed the destination")
+	}
+}
 
 func TestProxyDefaultDependencies(t *testing.T) {
 	proxy := NewProxy(nil, nil, nil)

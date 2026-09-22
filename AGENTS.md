@@ -1,61 +1,73 @@
-# Repository Guidelines
+# Правила репозитория
 
-## Project Structure & Module Organization
+## Структура проекта
 
-JA3Proxy is a Go CLI application. The command entrypoint lives in
-`cmd/ja3proxy/`, while runtime implementation and tests live in
-`internal/ja3proxy/`. The root package handles CLI/runtime wiring; focused
-subpackages cover `proxy/`, `tunnel/`, `fingerprint/`, `upstreamtls/`,
-`certstore/`, `traffic/`, `dialer/`, `pipe/`, `tui/`, `netutil/`, and `e2e/`.
-The module definition is in `go.mod` and `go.sum`. Build and container assets
-are at the repository root: `makefile`, `Dockerfile`, and `compose.yaml`.
-Static branding assets live in `assets/`.
+JA3Proxy — консольное приложение на Go. Точка входа находится в
+`cmd/ja3proxy/`, основная реализация и тесты — в `internal/ja3proxy/`.
+Корневой пакет связывает конфигурацию, CLI и жизненный цикл приложения.
+Специализированные пакеты отвечают за `proxy/`, `tunnel/`, `capture/`,
+`recorder/`, `fingerprint/`, `upstreamtls/`, `certstore/`, `traffic/`,
+`dialer/`, `pipe/`, `tui/`, `webpanel/`, `netutil/` и `e2e/`.
 
-## Build, Test, and Development Commands
+Описание модуля находится в `go.mod` и `go.sum`, сценарии нативной сборки — в
+`makefile`, статические ресурсы — в `assets/`, документация — в `docs/`.
 
-- `go mod download`: fetch module dependencies.
-- `go build -v ./...`: compile all packages, matching CI behavior.
-- `go test -v ./...`: run the full test suite.
-- `go build -o ja3proxy ./cmd/ja3proxy`: build a local executable.
-- `make` or `make all`: build Linux and Windows amd64 binaries into `bin/`.
-- `make clean`: remove Makefile-generated binaries.
-- `docker compose up -d`: run the proxy with the Compose example on port 8080.
+## Сборка и тестирование
 
-Run locally with, for example:
+- `go mod download` — загрузить зависимости;
+- `go mod verify` — проверить загруженные модули;
+- `go build -v ./...` — собрать все пакеты так же, как CI;
+- `go test -v ./...` — выполнить полный набор тестов;
+- `go test -race ./...` — проверить гонки данных;
+- `go build -o ja3proxy ./cmd/ja3proxy` — собрать локальный бинарный файл;
+- `make` или `make all` — собрать Windows и Linux amd64 в `bin/`;
+- `make clean` — удалить артефакты, созданные Makefile.
+
+Пример локального запуска:
 
 ```bash
-./ja3proxy --listen :8080 --tls-fingerprint Chrome@106
+./ja3proxy --listen :8080 --tls-fingerprint Chrome@120
 ```
 
-## Coding Style & Naming Conventions
+## Стиль кода
 
-Use standard Go formatting. Run `gofmt` on edited Go files before committing,
-and keep imports organized by `go fmt`/`goimports` conventions. Prefer small,
-focused files aligned with existing protocol boundaries. Use idiomatic Go names:
-export only symbols needed outside a file/package, keep local helpers in
-lowerCamelCase, and name tests `TestFeatureOrBehavior`.
+Соблюдайте стандартное форматирование Go. Перед коммитом запускайте `gofmt` для
+изменённых файлов и сохраняйте порядок импортов, принятый `go fmt`/`goimports`.
+Предпочитайте небольшие файлы с одной зоной ответственности и существующие
+границы протокольных пакетов. Экспортируйте только действительно публичные
+символы. Локальные функции именуйте в `lowerCamelCase`, тесты — по шаблону
+`TestFeatureOrBehavior`.
 
-## Testing Guidelines
+## Требования к тестам
 
-Tests use Go's standard `testing` package and are colocated with source files as
-`*_test.go`. Add targeted tests when changing proxy routing, SOCKS5 parsing,
-TLS fingerprint selection, certificate handling, runtime lifecycle, or config
-reload behavior. Run `go test -v ./...` before opening a pull request.
+Тесты используют стандартный пакет `testing` и находятся рядом с исходным кодом
+в файлах `*_test.go`. Добавляйте целевые тесты при изменении маршрутизации,
+SOCKS5 parsing, TLS fingerprints, сертификатов, recorder, API, жизненного цикла
+или обновления конфигурации. Для parser обязательны отрицательные границы и fuzz,
+для конкурентного кода — race detector. Перед pull request выполняйте
+`go test -v ./...` и `go vet ./...`.
 
-## Commit & Pull Request Guidelines
+## Коммиты и запросы на слияние
 
-Use concise, imperative Conventional Commit messages. Prefer the scoped pattern
-`<type>(<scope>): <summary>`, such as `feat(proxy): add upstream TLS profile
-routes` or `test(socks5): cover request parsing edge cases`. Use
-`chore(deps): ...` for dependency updates. Keep the subject specific, under
-roughly 72 characters when practical, and keep each commit focused on one
-logical change. Pull requests should describe the behavior change, list
-validation performed, link related issues when available, and include logs or
-curl examples for proxy behavior changes.
+Используйте короткие повелительные сообщения Conventional Commits, например:
 
-## Security & Configuration Tips
+```text
+feat(recorder): добавить сравнение TLS-наблюдений
+fix(socks5): отклонять блокируемый туннель до dial
+test(tlshello): покрыть фрагментацию ClientHello
+chore(deps): обновить зависимости Go
+```
 
-Do not commit generated CA material or local runtime secrets. The repository
-ignores `credentials/`, `*.pem`, `bin/`, and local `ja3proxy` binaries. When
-testing HTTPS interception, use disposable local certificates and document any
-required client trust setup in the PR.
+Желательная длина заголовка — до 72 символов. Один коммит должен описывать одно
+логическое изменение. В pull request укажите изменение поведения, выполненные
+проверки, связанные задачи и безопасный пример воспроизведения.
+
+## Безопасность
+
+Не коммитьте сгенерированные CA, закрытые ключи, пароли, raw-трафик, JSONL с
+реальными сессиями и локальные базы. Репозиторий исключает `credentials/`,
+`*.pem`, `bin/` и рабочие кэши. Для HTTPS MITM используйте одноразовые локальные
+сертификаты и явно документируйте установку доверия тестового клиента.
+
+Файл `mitm_mcp_traffic.db`, если он присутствует локально, не относится к
+исходному коду и не должен попадать в коммиты.

@@ -1,24 +1,25 @@
 <!doctype html>
-<html lang="en">
+<html lang="ru">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <meta name="description" content="Live traffic and runtime configuration for JA3Proxy">
-  <title>JA3Proxy / Traffic desk</title>
+  <meta name="description" content="Трафик и текущая конфигурация JA3Proxy">
+  <title>JA3Proxy / Панель трафика</title>
   <link rel="stylesheet" href="/app.css">
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="/" aria-label="JA3Proxy traffic desk">
+    <a class="brand" href="/" aria-label="Панель трафика JA3Proxy">
       <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
       <span><strong>JA3</strong>Proxy</span>
     </a>
-    <nav class="tabs" role="tablist" aria-label="Panel sections">
-      <button id="traffic-tab" class="tab active" type="button" role="tab" aria-selected="true" aria-controls="traffic-page" data-tab="traffic">Traffic</button>
-      <button id="settings-tab" class="tab" type="button" role="tab" aria-selected="false" aria-controls="settings-page" data-tab="settings">Settings</button>
+    <nav class="tabs" role="tablist" aria-label="Разделы панели">
+      <button id="traffic-tab" class="tab active" type="button" role="tab" aria-selected="true" aria-controls="traffic-page" data-tab="traffic">Трафик</button>
+      <button id="settings-tab" class="tab" type="button" role="tab" aria-selected="false" aria-controls="settings-page" data-tab="settings">Настройки</button>
     </nav>
-    <span class="connection" id="connection"><i></i>Connecting</span>
+    <a href="/recorder.html">Регистратор TLS</a>
+    <span class="connection" id="connection"><i></i>Подключение</span>
   </header>
 
   <main>
@@ -26,139 +27,139 @@
       <section class="route-stage" aria-labelledby="route-title">
         <header class="route-intro">
           <div>
-            <p class="eyebrow">Live proxy route</p>
-            <h1 id="route-title">Traffic, end to end.</h1>
+            <p class="eyebrow">Текущий маршрут прокси</p>
+            <h1 id="route-title">Трафик от клиента до назначения</h1>
           </div>
           <div class="active-readout">
             <span id="active-sessions">0</span>
-            <p><strong>Active now</strong><small>open connections</small></p>
+            <p><strong>Сейчас активно</strong><small>открытых соединений</small></p>
           </div>
         </header>
 
-        <ol class="route-chain" id="route-chain" aria-label="Current proxy path">
-          <li><span class="route-index">01</span><strong>Client</strong><small>Proxy client</small></li>
-          <li class="route-proxy"><span class="route-index">02</span><strong>JA3Proxy</strong><small>Waiting for runtime</small></li>
-          <li><span class="route-index">03</span><strong>Route</strong><small>Resolving</small></li>
-          <li><span class="route-index">04</span><strong>Target</strong><small>Requested destination</small></li>
+        <ol class="route-chain" id="route-chain" aria-label="Текущий маршрут прокси">
+          <li><span class="route-index">01</span><strong>Клиент</strong><small>Клиент прокси</small></li>
+          <li class="route-proxy"><span class="route-index">02</span><strong>JA3Proxy</strong><small>Ожидание данных</small></li>
+          <li><span class="route-index">03</span><strong>Маршрут</strong><small>Определение</small></li>
+          <li><span class="route-index">04</span><strong>Назначение</strong><small>Запрошенный адрес</small></li>
         </ol>
 
-        <dl class="signal-strip" aria-label="Traffic summary">
-          <div class="signal-rate"><dt>Current throughput</dt><dd><span id="upload-rate">0 B/s</span><small>up</small><span id="download-rate">0 B/s</span><small>down</small></dd></div>
-          <div><dt>Transferred</dt><dd><span id="total-upload">0 B</span> <small>↑</small> <span id="total-download">0 B</span> <small>↓</small></dd></div>
-          <div><dt>Sessions since launch</dt><dd id="total-sessions">0</dd></div>
-          <div><dt>Monitor uptime</dt><dd id="uptime">00:00</dd></div>
+        <dl class="signal-strip" aria-label="Сводка трафика">
+          <div class="signal-rate"><dt>Текущая скорость</dt><dd><span id="upload-rate">0 Б/с</span><small>исх.</small><span id="download-rate">0 Б/с</span><small>вх.</small></dd></div>
+          <div><dt>Передано</dt><dd><span id="total-upload">0 Б</span> <small>↑</small> <span id="total-download">0 Б</span> <small>↓</small></dd></div>
+          <div><dt>Сессий с запуска</dt><dd id="total-sessions">0</dd></div>
+          <div><dt>Время работы</dt><dd id="uptime">00:00</dd></div>
         </dl>
       </section>
 
-      <section class="workspace" aria-label="Connection activity">
+      <section class="workspace" aria-label="Активность соединений">
         <article class="sessions-panel">
           <div class="panel-head">
-            <div><p class="eyebrow">Connection ledger</p><h2>Recent sessions</h2></div>
-            <div class="filters" role="group" aria-label="Filter sessions">
-              <button class="active" data-filter="all" type="button">All</button>
-              <button data-filter="active" type="button">Active</button>
-              <button data-filter="failed" type="button">Failed</button>
+            <div><p class="eyebrow">Журнал соединений</p><h2>Последние сессии</h2></div>
+            <div class="filters" role="group" aria-label="Фильтр сессий">
+              <button class="active" data-filter="all" type="button">Все</button>
+              <button data-filter="active" type="button">Активные</button>
+              <button data-filter="failed" type="button">Ошибки</button>
             </div>
           </div>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>State</th><th>Protocol</th><th>Destination</th><th>Client</th><th>Transfer</th><th>Age</th></tr></thead>
-              <tbody id="sessions"><tr><td colspan="6" class="empty"><strong>No traffic yet</strong><span>Connect a client to JA3Proxy and sessions will appear here.</span></td></tr></tbody>
+              <thead><tr><th>Состояние</th><th>Протокол</th><th>Назначение</th><th>Клиент</th><th>Передача</th><th>Возраст</th></tr></thead>
+              <tbody id="sessions"><tr><td colspan="6" class="empty"><strong>Трафика пока нет</strong><span>Подключите клиент к JA3Proxy, и здесь появятся сессии.</span></td></tr></tbody>
             </table>
           </div>
         </article>
 
         <aside class="events-panel">
-          <div class="panel-head"><div><p class="eyebrow">Runtime pulse</p><h2>Events</h2></div></div>
-          <ol id="events" class="events"><li class="empty"><strong>All quiet</strong><span>Runtime events will be recorded here.</span></li></ol>
+          <div class="panel-head"><div><p class="eyebrow">Состояние процесса</p><h2>События</h2></div></div>
+          <ol id="events" class="events"><li class="empty"><strong>Событий нет</strong><span>Здесь появятся события работающего прокси.</span></li></ol>
         </aside>
       </section>
     </div>
 
     <section id="settings-page" class="tab-page settings-page" role="tabpanel" aria-labelledby="settings-tab" hidden>
       <header class="settings-intro">
-        <p class="eyebrow">Runtime configuration</p>
-        <h1>Shape the route.</h1>
-        <span>Saved changes apply to new connections. Open tunnels continue on their current path.</span>
+        <p class="eyebrow">Текущая конфигурация</p>
+        <h1>Настройка маршрута</h1>
+        <span>Сохранённые изменения применяются к новым соединениям. Открытые туннели продолжают работать по прежнему маршруту.</span>
       </header>
 
       <form id="config-form" class="settings-form">
         <section class="setting-group" aria-labelledby="listener-settings">
-          <header class="setting-heading"><span>01</span><strong id="listener-settings">Listener</strong><small>How clients enter the proxy.</small></header>
+          <header class="setting-heading"><span>01</span><strong id="listener-settings">Точка входа</strong><small>Как клиенты подключаются к прокси.</small></header>
           <div class="setting-fields">
             <div class="setting-field">
-              <label for="proxy-port">Proxy port</label>
+              <label for="proxy-port">Порт прокси</label>
               <input id="proxy-port" name="proxyPort" type="number" min="1" max="65535" inputmode="numeric" required>
-              <small>The TCP port clients connect to.</small>
+              <small>TCP-порт для подключения клиентов.</small>
             </div>
             <div class="setting-field">
-              <label for="proxy-protocol-choice">Accepted protocols</label>
+              <label for="proxy-protocol-choice">Разрешённые протоколы</label>
               <select id="proxy-protocol-choice" name="proxyProtocol">
                 <option value="mixed">HTTP + SOCKS5</option>
-                <option value="http">HTTP only</option>
-                <option value="socks5">SOCKS5 only</option>
+                <option value="http">Только HTTP</option>
+                <option value="socks5">Только SOCKS5</option>
               </select>
-              <small>Choose which client handshakes are accepted.</small>
+              <small>Выберите допустимые протоколы клиентов.</small>
             </div>
           </div>
         </section>
 
         <section class="setting-group" aria-labelledby="outbound-settings">
-          <header class="setting-heading"><span>02</span><strong id="outbound-settings">Outbound identity</strong><small>How JA3Proxy appears upstream.</small></header>
+          <header class="setting-heading"><span>02</span><strong id="outbound-settings">Исходящий профиль</strong><small>Как JA3Proxy выглядит для целевого сервера.</small></header>
           <div class="setting-fields">
             <div class="setting-field">
               <label for="tls-fingerprint">TLS fingerprint</label>
               <select id="tls-fingerprint" name="tlsFingerprint"></select>
-              <small>Applied to intercepted outbound TLS connections.</small>
+              <small>Применяется к перехваченным исходящим TLS-соединениям.</small>
             </div>
             <div class="setting-field">
-              <label for="upstream-choice">Upstream route</label>
+              <label for="upstream-choice">Следующий маршрут</label>
               <select id="upstream-choice" name="upstreamChoice">
-                <option value="direct">Direct connection</option>
-                <option value="custom">Custom proxy…</option>
+                <option value="direct">Прямое соединение</option>
+                <option value="custom">Другой прокси…</option>
               </select>
-              <small>Connect directly or hand traffic to another proxy.</small>
+              <small>Подключаться напрямую или передавать трафик другому прокси.</small>
             </div>
             <div class="setting-field setting-wide" id="upstream-field" hidden>
-              <label for="upstream-input">SOCKS5 or HTTP proxy URL</label>
+              <label for="upstream-input">URL прокси SOCKS5 или HTTP</label>
               <input id="upstream-input" name="upstream" placeholder="http://127.0.0.1:3128" autocomplete="off" spellcheck="false">
             </div>
           </div>
         </section>
 
         <section class="setting-group" aria-labelledby="access-settings">
-          <header class="setting-heading"><span>03</span><strong id="access-settings">Client access</strong><small>Who can use this listener.</small></header>
+          <header class="setting-heading"><span>03</span><strong id="access-settings">Доступ клиентов</strong><small>Кто может использовать эту точку входа.</small></header>
           <div class="setting-fields">
             <div class="setting-field">
-              <label for="proxy-auth-choice">Authentication</label>
+              <label for="proxy-auth-choice">Аутентификация</label>
               <select id="proxy-auth-choice" name="proxyAuthEnabled">
-                <option value="disabled">Disabled</option>
-                <option value="enabled">Username and password</option>
+                <option value="disabled">Выключена</option>
+                <option value="enabled">Имя пользователя и пароль</option>
               </select>
-              <small>Protect both HTTP and SOCKS5 access.</small>
+              <small>Защищает доступ по HTTP и SOCKS5.</small>
             </div>
             <div class="setting-field" id="proxy-username-field" hidden>
-              <label for="proxy-username">Username</label>
+              <label for="proxy-username">Имя пользователя</label>
               <input id="proxy-username" name="proxyUsername" maxlength="255" autocomplete="off" spellcheck="false">
-              <small>Used for HTTP Basic and SOCKS5 authentication.</small>
+              <small>Используется для HTTP Basic и SOCKS5.</small>
             </div>
             <div class="setting-field setting-wide" id="proxy-password-field" hidden>
-              <label for="proxy-password">Password</label>
+              <label for="proxy-password">Пароль</label>
               <input id="proxy-password" name="proxyPassword" type="password" maxlength="255" autocomplete="new-password">
-              <small>Leave blank to keep the current password.</small>
+              <small>Оставьте пустым, чтобы сохранить текущий пароль.</small>
             </div>
           </div>
         </section>
 
         <footer class="settings-actions">
-          <p class="config-note" id="config-note" aria-live="polite">Review the route, then save your changes.</p>
-          <button type="submit">Save changes</button>
+          <p class="config-note" id="config-note" aria-live="polite">Проверьте маршрут и сохраните изменения.</p>
+          <button type="submit">Сохранить</button>
         </footer>
       </form>
     </section>
   </main>
 
-  <div class="error-toast" id="error-toast" role="status" aria-live="polite"><strong>Panel signal lost</strong><span>Trying to reconnect…</span></div>
+  <div class="error-toast" id="error-toast" role="status" aria-live="polite"><strong>Связь с панелью потеряна</strong><span>Повторное подключение…</span></div>
   <script src="/app.js" defer></script>
 </body>
 </html>

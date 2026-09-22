@@ -1,202 +1,205 @@
 <p align="center">
-  <img src="assets/logo.svg" alt="JA3Proxy logo" width="520">
+  <img src="assets/logo.svg" alt="Логотип JA3Proxy" width="520">
 </p>
 
 # JA3Proxy
 
-JA3Proxy is an HTTP/SOCKS5 proxy that uses
-[uTLS](https://github.com/refraction-networking/utls) to create outbound TLS
-connections with configurable ClientHello fingerprints. It can be used to test
-how applications behave behind different browser-like TLS fingerprints, while
-keeping familiar proxy interfaces for clients.
+JA3Proxy — локальный HTTP/SOCKS5-прокси на Go для контролируемого перехвата TLS,
+эмуляции ClientHello через [uTLS](https://github.com/refraction-networking/utls)
+и записи фактических TLS-отпечатков. Проект предназначен для тестовых стендов,
+исследования сетевого поведения приложений и проверки соответствия входящего и
+исходящего TLS-профиля.
 
-## Features
+> Используйте прокси только для трафика, который вы вправе перехватывать.
+> Закрытый ключ локального центра сертификации позволяет расшифровывать TLS-трафик
+> доверяющих ему клиентов и поэтому требует такой же защиты, как другие секреты.
 
-- HTTP, HTTPS, and SOCKS5 proxy support on the same listen address.
-- Customizable TLS ClientHello fingerprints through uTLS presets.
-- Dynamic MITM certificates for HTTPS `CONNECT` traffic.
-- Automatic local CA generation when no certificate/key pair is provided.
-- Optional authentication for downstream HTTP and SOCKS5 clients.
-- Optional SOCKS5 or HTTP upstream proxy for HTTP, HTTPS, and TCP traffic.
-- Optional live TUI dashboard for active traffic and recent proxy events.
-- Optional embedded web panel for traffic inspection and live proxy configuration.
-- Docker and Docker Compose examples included.
+## Возможности
 
-## How it works
+- единая точка входа для HTTP, HTTPS `CONNECT` и SOCKS5;
+- динамические сертификаты для TLS MITM;
+- автоматическое создание локального центра сертификации;
+- эмуляция браузерных ClientHello с помощью пресетов uTLS;
+- отдельные исходящие TLS-профили для разных хостов;
+- HTTP- или SOCKS5-прокси следующего уровня;
+- аутентификация клиентов HTTP Basic и SOCKS5 username/password;
+- терминальная панель и встроенная локальная веб-панель;
+- запись входящего `CLIENT_IN` и исходящего `PROXY_OUT` ClientHello;
+- вычисление JA3, JA4 и нормализованного TLS-NORM-1;
+- режимы `MITM_REISSUE`, `PASSTHROUGH`, `OBSERVE_ONLY` и `BLOCK`;
+- ограниченная по памяти неблокирующая очередь и необязательный JSONL-экспорт;
+- локальный API поиска, просмотра, сравнения и экспорта наблюдений.
 
-For plain HTTP requests, JA3Proxy forwards the request directly. For HTTPS
-`CONNECT` requests, it establishes a TLS connection to the upstream server using
-the configured uTLS fingerprint, then serves a dynamically generated certificate
-to the client using the local CA. SOCKS5 connections are accepted on the same
-listen address: TLS streams use the same MITM/uTLS path, while non-TLS streams
-are forwarded as plain TCP.
+## Быстрый запуск
 
-Because HTTPS traffic is intercepted, clients must either trust the generated CA
-certificate or explicitly skip certificate verification for testing.
-
-## Quick start
-
-### Build from source
-
-Requirements:
-
-- Go 1.26.5 or newer
-- `make` if you want to use the provided Makefile
+Требуется Go версии, указанной в [go.mod](go.mod), или более новой совместимой
+версии.
 
 ```bash
-git clone https://github.com/lylemi/ja3proxy.git
+git clone https://github.com/alexsize/ja3proxy.git
 cd ja3proxy
-
 go build -o ja3proxy ./cmd/ja3proxy
-./ja3proxy --listen :8080 --tls-fingerprint 360Browser@7.5
+./ja3proxy --listen 127.0.0.1:8080 --tls-fingerprint chrome@120
 ```
 
-The command entrypoint lives in `cmd/ja3proxy`. Runtime wiring and CLI parsing
-live in `internal/ja3proxy`, with focused subpackages for proxy protocols,
-TLS tunneling, fingerprint catalogs, upstream TLS profiles, certificates,
-traffic monitoring, dialers, pipe forwarding, TUI rendering, and e2e tests.
+В Windows PowerShell:
 
-Test the proxy:
-
-```bash
-curl -v -k --proxy http://127.0.0.1:8080 https://www.example.com
-curl -v -k --proxy socks5h://127.0.0.1:8080 https://www.example.com
+```powershell
+git clone https://github.com/alexsize/ja3proxy.git
+Set-Location ja3proxy
+go build -o bin/ja3proxy.exe ./cmd/ja3proxy
+.\bin\ja3proxy.exe --listen 127.0.0.1:8080 --tls-fingerprint chrome@120
 ```
 
-The first run creates `credentials/cert.pem` and `credentials/key.pem` if they
-do not already exist.
-
-### Docker
-
-```bash
-mkdir -p credentials
-
-docker run --rm \
-  -v ./credentials:/app/credentials \
-  -p 8080:8080 \
-  ghcr.io/lylemi/ja3proxy:latest \
-  --ca-cert /app/credentials/cert.pem \
-  --ca-key /app/credentials/key.pem \
-  --tls-fingerprint 360Browser@7.5
-```
-
-### Docker Compose
-
-```bash
-docker compose up -d
-```
-
-See [compose.yaml](./compose.yaml) for the full service definition.
-
-## Configuration
+При первом запуске создаются:
 
 ```text
-Usage:
-  ja3proxy [options]
-
-Server:
-  --listen string                 listen address, e.g. :8080 or 127.0.0.1:8080 (default ":8080")
-
-CA:
-  --ca-cert string                proxy CA certificate path (default "credentials/cert.pem")
-  --ca-key string                 proxy CA private key path (default "credentials/key.pem")
-
-TLS fingerprint:
-  --tls-fingerprint string        global uTLS fingerprint, e.g. chrome@120
-  --tls-fingerprint-file string   JSON file to hot-reload the global uTLS fingerprint
-  --tls-profile-file string       JSON file with host-routed upstream TLS profiles
-  --list-tls-fingerprints         list supported uTLS fingerprints and exit
-
-Proxy:
-  --proxy-username string         username required by downstream HTTP and SOCKS5 clients
-  --proxy-password string         password required by downstream HTTP and SOCKS5 clients
-  --upstream-proxy string         upstream SOCKS5 or HTTP proxy URL
-
-Diagnostics:
-  --log-level string              log level: debug, info, warn, error (default "info")
-  --dump-traffic                  log proxied payload data; sensitive; implies debug logging
-  --tui                           show a live terminal traffic dashboard
-  --web-panel string              serve a live web dashboard, e.g. 127.0.0.1:9090
+credentials/cert.pem
+credentials/key.pem
 ```
 
-### Web panel
+Проверка через HTTP-прокси и SOCKS5:
 
-Enable the traffic and configuration panel on a separate listen address:
+```bash
+curl -vk --proxy http://127.0.0.1:8080 https://example.com
+curl -vk --proxy socks5h://127.0.0.1:8080 https://example.com
+```
+
+Ключ `-k` отключает проверку сертификата только для быстрой диагностики.
+Для штатного тестирования импортируйте `credentials/cert.pem` в доверенное
+хранилище тестового клиента.
+
+Подробная установка описана в [docs/INSTALLATION.md](docs/INSTALLATION.md).
+
+## TLS Recorder
+
+Запуск записи ClientHello и локальной панели:
 
 ```bash
 ./ja3proxy \
-  --listen :8080 \
-  --tls-fingerprint chrome@120 \
-  --web-panel 127.0.0.1:9090
+  --listen 127.0.0.1:8080 \
+  --capture-tls \
+  --web-panel 127.0.0.1:9090 \
+  --tls-fingerprint chrome@120
 ```
 
-Open `http://127.0.0.1:9090` to see active tunnels, aggregate upload and
-download totals, the current TLS fingerprint, recent sessions, and runtime
-events. The Settings tab can change the proxy port, choose mixed HTTP/SOCKS5,
-HTTP-only, or SOCKS5-only listening, select a TLS fingerprint preset, and switch
-between direct, SOCKS5, and HTTP upstream routing. It can also enable, change,
-or disable downstream HTTP/SOCKS5 authentication without exposing the current
-password through the status API. Changes apply to new connections without
-interrupting active sessions. When `--tls-fingerprint-file` is used,
-that file remains the source of truth for the TLS fingerprint. Listen host and
-CA changes still require a restart.
+Откройте:
 
-The panel is embedded in the JA3Proxy binary and does not require a separate
-frontend build or Node.js runtime. It can run alongside `--tui`.
+- `http://127.0.0.1:9090/` — трафик и текущая конфигурация;
+- `http://127.0.0.1:9090/recorder.html` — TLS-наблюдения и сравнение;
+- `http://127.0.0.1:9090/health/live` — проверка процесса;
+- `http://127.0.0.1:9090/health/ready` — готовность recorder;
+- `http://127.0.0.1:9090/metrics` — метрики recorder.
 
-The panel has no authentication because it is intended as a local management
-surface. Keep it bound to a loopback address unless access is protected by a
-trusted reverse proxy or firewall.
-
-Require the same username and password from downstream HTTP and SOCKS5 clients:
+JSONL-экспорт создаётся только в новый файл и никогда не перезаписывает
+существующий:
 
 ```bash
-./ja3proxy \
-  --listen :8080 \
-  --proxy-username client \
-  --proxy-password secret
-
-curl -v -k --proxy-user client:secret --proxy http://127.0.0.1:8080 https://www.example.com
-curl -v -k --proxy-user client:secret --proxy socks5h://127.0.0.1:8080 https://www.example.com
+./ja3proxy --capture-tls --capture-jsonl recordings/session-001.jsonl
 ```
 
-Both authentication flags must be provided together. HTTP clients use Basic
-proxy authentication, while SOCKS5 clients use username/password authentication
-as defined by RFC 1929. Without these flags, downstream proxy access remains
-unauthenticated.
-
-Example with a SOCKS5 upstream proxy:
+Raw ClientHello и TLS records сохраняются только после явного включения:
 
 ```bash
-./ja3proxy \
-  --listen :8080 \
-  --tls-fingerprint chrome@106 \
-  --upstream-proxy socks5://127.0.0.1:1080
+./ja3proxy --capture-tls --capture-raw
 ```
 
-The `--upstream-proxy` flag also accepts `host:port`, for example
-`127.0.0.1:1080`; values without a scheme default to SOCKS5. HTTP upstream
-proxies use CONNECT for tunneled TLS and TCP traffic:
+Raw-данные могут содержать идентификаторы сессий и tickets. Не включайте этот
+режим без необходимости и не публикуйте полученный JSONL.
+
+Подробности алгоритмов, лимитов и API приведены в
+[docs/TLS_RECORDER.md](docs/TLS_RECORDER.md). Точное состояние реализации и
+оставшиеся этапы ТЗ — в
+[docs/spec/RECORDER_IMPLEMENTATION.md](docs/spec/RECORDER_IMPLEMENTATION.md).
+
+## Режимы TLS
+
+| Режим | Поведение |
+| --- | --- |
+| `MITM_REISSUE` | Принимает TLS клиента, создаёт новый исходящий ClientHello по выбранному профилю и записывает обе стороны. Режим по умолчанию. |
+| `PASSTHROUGH` | Передаёт TLS-байты без MITM и пассивно записывает входящий и исходящий ClientHello. |
+| `OBSERVE_ONLY` | Передаёт трафик без MITM; используется для наблюдения без изменения ClientHello. |
+| `BLOCK` | Отклоняет HTTP CONNECT и SOCKS5 CONNECT до исходящего сетевого подключения. |
+
+Пример:
 
 ```bash
-./ja3proxy \
-  --listen :8080 \
-  --tls-fingerprint chrome@106 \
-  --upstream-proxy http://user:pass@127.0.0.1:3128
+./ja3proxy --capture-tls --tls-mode PASSTHROUGH
 ```
 
-Supported upstream schemes are `socks5://` and `http://`. The upstream proxy
-must allow CONNECT to each requested destination port. TLS fingerprinting is
-performed inside the CONNECT tunnel and is therefore preserved.
+## Параметры командной строки
 
-Global TLS fingerprint sources are mutually exclusive: use one of
-`--tls-fingerprint` or `--tls-fingerprint-file`.
+```text
+Сервер:
+  --listen string                 адрес прослушивания, по умолчанию :8080
 
-### Upstream TLS profile config
+Центр сертификации:
+  --ca-cert string                путь к сертификату CA
+  --ca-key string                 путь к закрытому ключу CA
 
-Use `--tls-profile-file` when different upstream hosts need different outbound
-TLS fingerprints. The flag loads a JSON file with a default upstream TLS profile
-and optional host-specific routes:
+TLS-профиль:
+  --tls-fingerprint string        глобальный пресет uTLS, например chrome@120
+  --tls-fingerprint-file string   JSON-файл глобального профиля с автообновлением
+  --tls-profile-file string       JSON-файл маршрутизации TLS-профилей по хостам
+  --list-tls-fingerprints         вывести поддерживаемые пресеты и завершить работу
+
+Прокси:
+  --proxy-username string         имя пользователя для входящих клиентов
+  --proxy-password string         пароль для входящих клиентов
+  --upstream-proxy string         следующий HTTP- или SOCKS5-прокси
+
+Recorder и диагностика:
+  --capture-tls                   включить ограниченную запись ClientHello
+  --capture-raw                   сохранять чувствительные raw TLS-данные
+  --capture-jsonl string          создать новый JSONL-файл, лимит 256 МиБ
+  --tls-mode string               режим обработки TLS
+  --log-level string              debug, info, warn или error
+  --dump-traffic                  записывать содержимое трафика в журнал
+  --tui                           включить терминальную панель
+  --web-panel string              адрес локальной веб-панели
+```
+
+Актуальную справку конкретной сборки можно получить командой:
+
+```bash
+./ja3proxy --help
+```
+
+## TLS-профили
+
+Глобальный пресет задаётся в формате `клиент@версия`:
+
+```bash
+./ja3proxy --tls-fingerprint chrome@120
+./ja3proxy --tls-fingerprint firefox@120
+./ja3proxy --list-tls-fingerprints
+```
+
+Имена клиентов регистронезависимы. Значения `auto`, `default` и `latest`
+выбирают версию по умолчанию из текущей зависимости uTLS.
+
+### Автообновление одного профиля
+
+Файл `fingerprint.json`:
+
+```json
+{
+  "client": "Chrome",
+  "version": "120"
+}
+```
+
+```bash
+./ja3proxy --tls-fingerprint-file fingerprint.json
+```
+
+При корректном изменении файла новые соединения получают новый профиль.
+Активные туннели продолжают работать со старым. При ошибке разбора остаётся
+последняя действующая конфигурация.
+
+### Профили по хостам
+
+Файл `upstream-tls.json`:
 
 ```json
 {
@@ -207,180 +210,135 @@ and optional host-specific routes:
   },
   "routes": [
     {
-      "host": "*.gm.example.com",
-      "protocol": "utls",
-      "client": "360Browser",
-      "version": "7.5"
-    },
-    {
-      "host": "api.example.com",
+      "host": "*.example.com",
       "protocol": "utls",
       "client": "Firefox",
-      "version": "105"
+      "version": "120"
+    },
+    {
+      "host": "api.example.org",
+      "protocol": "utls",
+      "client": "Safari",
+      "version": "16.0"
     }
   ]
 }
 ```
 
-Start the proxy with the profile file:
-
 ```bash
-./ja3proxy --listen :8080 --tls-profile-file upstream-tls.json
+./ja3proxy --tls-profile-file upstream-tls.json
 ```
 
-JA3Proxy uses the `default` profile when no route matches. If `default` is
-omitted, unmatched hosts continue to use the global fingerprint from
-`--tls-fingerprint` or `--tls-fingerprint-file`.
+Поддерживаются точные имена и шаблоны вида `*.example.com`. Значение
+`protocol` в текущей версии — только `utls`.
 
-Each profile currently supports `protocol: "utls"` with the same `client` and
-`version` values described in [TLS fingerprints](#tls-fingerprints). `tlcp` is
-intentionally not implemented yet, so `tlcp` profiles are not supported in this
-version.
+## Следующий прокси
 
-Route `host` values match the upstream destination host. Matching supports exact
-hosts such as `api.example.com` and leading wildcard patterns such as
-`*.example.com`.
-
-This differs from `--tls-fingerprint-file`: `--tls-fingerprint-file`
-hot-reloads one global uTLS `client`/`version` pair for all upstream hosts,
-while `--tls-profile-file` selects a profile by upstream host from the JSON
-file.
-
-### Hot-reload TLS fingerprints
-
-Use `--tls-fingerprint-file` to load the uTLS fingerprint from a JSON file and
-watch it for changes:
-
-```json
-{
-  "client": "Chrome",
-  "version": "106"
-}
-```
-
-Start the proxy with the file:
+SOCKS5:
 
 ```bash
-./ja3proxy --listen :8080 --tls-fingerprint-file fingerprint.json
+./ja3proxy --upstream-proxy socks5://127.0.0.1:1080
 ```
 
-When the file changes, JA3Proxy validates and reloads it. New HTTPS `CONNECT`
-connections use the latest fingerprint; existing TLS tunnels keep the
-fingerprint they were opened with. If a reload fails, the previous fingerprint
-stays active and the error is logged.
-
-## TLS fingerprints
-
-JA3Proxy resolves global fingerprint settings and upstream TLS profiles to uTLS
-ClientHello presets. The easiest global setting is `--tls-fingerprint`:
+HTTP CONNECT с аутентификацией:
 
 ```bash
-./ja3proxy --tls-fingerprint chrome@120
-./ja3proxy --tls-fingerprint firefox
+./ja3proxy --upstream-proxy http://user:password@127.0.0.1:3128
 ```
 
-The `client@version` form selects an exact preset. If the version is omitted,
-JA3Proxy uses the default version from the current uTLS dependency.
+Значение без схемы трактуется как SOCKS5. TLS-профиль применяется внутри
+созданного туннеля.
 
-To see the presets supported by the binary you built, run:
+## Аутентификация клиентов
 
 ```bash
-./ja3proxy --list-tls-fingerprints
+./ja3proxy \
+  --proxy-username client \
+  --proxy-password secret
 ```
 
-Current presets in this module:
+Оба параметра обязательны одновременно. HTTP-клиенты используют Proxy Basic,
+SOCKS5-клиенты — username/password по RFC 1929. Не передавайте реальные пароли
+в общедоступных скриптах и журналах оболочки.
 
-| Client | Versions | Default |
-| --- | --- | --- |
-| Golang | 0 | 0 |
-| Chrome | 58, 62, 70, 72, 83, 87, 96, 100, 100_PSK, 102, 106, 112_PSK, 114_PSK, 115_PQ, 115_PQ_PSK, 120, 120_PQ, 131, 133 | 133 |
-| Firefox | 55, 56, 63, 65, 99, 102, 105, 120 | 120 |
-| iOS | 111, 12.1, 13, 14 | 14 |
-| Android | 11 | 11 |
-| Edge | 85, 106 | 85 |
-| Safari | 16.0 | 16.0 |
-| 360Browser | 7.5, 11.0 | 7.5 |
-| QQBrowser | 11.1 | 11.1 |
-
-The `--tls-fingerprint` shorthand is case-insensitive for client names and
-accepts `auto`, `default`, or `latest` as the default version. For iOS,
-`ios@11.1` is accepted as an alias for uTLS's `111` version value.
-
-With `--tls-profile-file`, each matched profile supplies the same `client`
-and `version` values. Supported presets depend on the uTLS version used by this
-project. See the uTLS
-[ClientHelloID definitions](https://github.com/refraction-networking/utls/blob/master/u_common.go)
-for the upstream definitions.
-
-## Updating uTLS
-
-The uTLS library is compiled into the JA3Proxy binary, so updating it requires a
-rebuild. Dependabot is configured to open weekly pull requests for Go module
-updates, including `github.com/refraction-networking/utls`. Those pull requests
-run the Go CI workflow before they are merged.
-
-To update manually:
+## Веб-панель
 
 ```bash
-go get github.com/refraction-networking/utls@latest
-go mod tidy
-go test ./...
+./ja3proxy --web-panel 127.0.0.1:9090
 ```
 
-## Certificates
+Панель встроена в бинарный файл и не требует отдельной сборки frontend.
+Изменения настроек применяются к новым соединениям, не прерывая открытые
+туннели. Если TLS-профиль управляется файлом, веб-панель не подменяет этот
+источник конфигурации.
 
-JA3Proxy needs a CA certificate and private key to generate per-host
-certificates for HTTPS interception.
+При включённом TLS Recorder панель обязана слушать loopback-адрес. API recorder
+дополнительно проверяет адрес клиента, заголовок `Host` и `Origin` для защиты от
+удалённого доступа и DNS rebinding. В текущем этапе у панели нет пользователей
+и ролей, поэтому не выставляйте её непосредственно в общедоступную сеть.
 
-- If both files exist, they are loaded from `--ca-cert` and `--ca-key`.
-- If neither file exists, JA3Proxy generates a new CA pair.
-- If only one file exists, startup fails to avoid using a mismatched pair.
+## Сертификаты
 
-By default, generated CA files are written to `credentials/cert.pem` and
-`credentials/key.pem`. If the configured paths include missing directories,
-JA3Proxy creates them before writing the files.
+- если сертификат и ключ существуют, они загружаются;
+- если отсутствуют оба файла, создаётся новая пара;
+- если существует только один файл, запуск завершается ошибкой;
+- недостающие родительские каталоги создаются автоматически.
 
-For browser or application testing, import the generated CA certificate into the
-client trust store. For one-off command-line checks, tools such as `curl -k`
-can skip verification.
+Закрытый ключ по умолчанию находится в `credentials/key.pem`. Каталог
+`credentials/` исключён из Git. После тестирования удалите тестовый CA из
+доверенных хранилищ клиентов, если он больше не нужен.
 
-## Development
-
-Run the test suite:
+## Сборка и проверка
 
 ```bash
+go mod download
 go mod verify
 go vet ./...
 go test -count=1 ./...
-go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+go build -o bin/ja3proxy ./cmd/ja3proxy
 ```
 
-Alternatively, `make verify` runs the same module, vet, test, and vulnerability
-checks.
+На Windows имя файла обычно задают как `bin/ja3proxy.exe`. Команда `make`
+собирает бинарные файлы Linux и Windows amd64 в `bin/`.
 
-Build release binaries with the Makefile:
+Дополнительные проверки parser/recorder описаны в
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
-```bash
-make
+## Структура проекта
+
+```text
+cmd/ja3proxy/                       точка входа
+internal/ja3proxy/proxy/            HTTP и SOCKS5
+internal/ja3proxy/tunnel/           TLS MITM и режимы туннеля
+internal/ja3proxy/capture/tlshello/ parser и fingerprints ClientHello
+internal/ja3proxy/recorder/         очередь, хранение, diff и JSONL
+internal/ja3proxy/webpanel/         локальная панель и API
+internal/ja3proxy/e2e/              сквозные тесты
+docs/                               эксплуатационная документация
+docs/spec/                          ТЗ, контракты и состояние реализации
 ```
 
-This creates Linux and Windows AMD64 binaries in the `bin/` directory.
-Release archives include a matching `.sha256` checksum. Stable releases also
-publish multi-platform container images with SBOM and provenance attestations.
+## Ограничения текущего этапа
 
-## Security notice
+- наблюдения хранятся в ограниченном окне памяти;
+- постоянное SQL-хранилище ещё не реализовано;
+- JSONL не шифруется;
+- recorder API локальный и пока не имеет RBAC;
+- полный route manager и проверка против шаблона профиля относятся к следующим
+  этапам ТЗ;
+- анализируется первый ClientHello соединения.
 
-JA3Proxy performs TLS interception and can expose decrypted traffic to the
-machine running the proxy. Use it only in environments where you have permission
-to inspect the traffic. Protect generated CA private keys carefully and remove
-them from client trust stores when they are no longer needed.
+## Диагностика
 
-## Contributing
+Частые проблемы и безопасные способы проверки собраны в
+[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
-Issues and pull requests are welcome. Please include a clear description,
-reproduction steps when reporting bugs, and tests for behavior changes when
-practical.
+## Участие в разработке
 
-## License
+Перед pull request запустите форматирование, vet и полный набор тестов. Для
+изменений TLS parser, recorder, proxy routing или безопасности добавляйте
+целевые и сквозные тесты. Правила репозитория приведены в [AGENTS.md](AGENTS.md).
 
-This project is licensed under the [MIT License](./LICENSE).
+## Лицензия
+
+Проект распространяется по лицензии [MIT](LICENSE).

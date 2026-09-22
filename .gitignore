@@ -24,3 +24,9 @@ go.work
 credentials
 bin/
 /ja3proxy
+
+# Local build toolchain and caches
+/.tools/
+/.gocache/
+/.gomodcache/
+/recordings/

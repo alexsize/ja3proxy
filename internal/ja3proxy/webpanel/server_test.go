@@ -20,7 +20,7 @@ func TestHandlerServesPanel(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
 	}
-	if !strings.Contains(response.Body.String(), "JA3Proxy / Traffic desk") {
+	if !strings.Contains(response.Body.String(), "JA3Proxy / Панель трафика") {
 		t.Fatal("response does not contain panel title")
 	}
 	if !strings.Contains(response.Body.String(), `id="proxy-port"`) || !strings.Contains(response.Body.String(), `id="proxy-protocol-choice"`) || !strings.Contains(response.Body.String(), `id="tls-fingerprint"`) || !strings.Contains(response.Body.String(), `id="upstream-choice"`) || !strings.Contains(response.Body.String(), `id="proxy-auth-choice"`) || !strings.Contains(response.Body.String(), `id="proxy-password"`) {
