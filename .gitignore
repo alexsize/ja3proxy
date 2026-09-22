@@ -29,4 +29,5 @@ bin/
 /.tools/
 /.gocache/
 /.gomodcache/
+/profiles/
 /recordings/

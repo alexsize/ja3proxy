@@ -5,6 +5,7 @@ type RunningConfig struct {
 	CaptureRaw        bool
 	CaptureJSONL      string
 	TLSMode           string
+	TLSTemplateFile   string
 	DumpTraffic       bool
 	LogLevel          string
 	Listen            string

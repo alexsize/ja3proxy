@@ -41,6 +41,9 @@ JSONL пока не шифруется. Размещайте экспорт в �
 | FR-API-001: поиск/detail/export/diff | `webpanel/recorder.go` | `TestRecorderAPI` |
 | SEC-API-001: локальный доступ | bind/Host/peer/Origin checks | `TestRecorderRejectsRemoteAndRebinding` |
 | FR-CLI-001: feature flag | runtime/CLI | `TestRecorderCLI` |
+| FR-PROFILE-001: шаблон из пресета/наблюдения | `tlsprofile`, profile API/UI | `TestPresetPreviewAndJA4Editing`, `TestTLSProfileAPIWorkflow` |
+| FR-PROFILE-002: версионирование/CAS | append-only profile store | `TestStoreVersioningPersistenceAndRouting`, `TestTLSProfileAPIWorkflow` |
+| FR-VERIFY-001: expected ↔ фактический PROXY_OUT | `VerifyExpected` | `TestExpectedProfileVerificationStatuses`, `TestCustomTLSProfileProducesExpectedJA4AndVerification` |
 
 ### Границы захвата
 
@@ -79,7 +82,29 @@ JA3 учитывает extension 21 (padding). Прежний тестовый h
 `normalized_sha256 = SHA256(UTF8("TLS-NORM-1\n") || canonical_json)`.
 `raw_sha256` — SHA-256 handshake header + ClientHello body; `records_sha256` — SHA-256 record headers + полные захваченные record payloads. Для incomplete/malformed capture обычные JA3/JA4/normalized hashes не публикуются.
 
-`Compare` сравнивает два наблюдения. Статусы: MATCH, MISMATCH, UNKNOWN (неполный capture / несовместимые версии). Это не verification выбранного профиля; PARTIAL_MATCH появится вместе с контрактом template constraints. Для массивов до 256 элементов обнаруживаются move; более длинные изменённые массивы возвращаются как replace для ограничения стоимости сравнения.
+`Compare` сравнивает два наблюдения и возвращает MATCH, MISMATCH или UNKNOWN.
+Отдельная проверка активного шаблона сравнивает materialized expected с
+независимо захваченным `PROXY_OUT` по MUST/SHOULD политике и возвращает MATCH,
+PARTIAL_MATCH, MISMATCH или UNKNOWN. В запись входят версии шаблона,
+материализатора и нормализации, обе стороны сравнения и полный структурный
+diff. Для массивов до 256 элементов обнаруживаются move; более длинные
+изменённые массивы возвращаются как replace для ограничения стоимости.
+
+### Редактируемые TLS-профили
+
+Шаблон строится из uTLS-пресета или наблюдаемого ClientHello. Статические поля
+редактируются в `/profiles.html`; preview материализует ClientHello и вычисляет
+ожидаемые JA3/JA4/TLS-NORM. Неподдерживаемое расширение не игнорируется, а
+помечает шаблон `UNSUPPORTED`. Случайные bytes, session ID, GREASE и key shares
+явно считаются динамическими.
+
+Конфигурация хранится как append-only последовательность полных snapshot в
+`profiles/tls-templates.jsonl` (путь можно изменить). Записи защищены
+`config_version` CAS. Для соединения snapshot профиля выбирается один раз;
+изменения не переименовывают уже начатый handshake. Один активный профиль
+может действовать для всех хостов или exact/`*.` patterns. Его ALPN на каждом
+соединении пересекается с ALPN входящего клиента, а expected рассчитывается уже
+по этому эффективному шаблону.
 
 ### Лимиты и отказоустойчивость
 
@@ -91,11 +116,18 @@ JA3 учитывает extension 21 (padding). Прежний тестовый h
 
 1. Для полной приёмки MVP-0: реальный лицензированный corpus Safari/iOS/Android/OkHttp/OpenSSL, полная performance-матрица recorder-on/off (p95/throughput), lifecycle ID до protocol detection и дополнительные handshake-сценарии.
 2. MVP-1: SQLite, миграции/retention, Device identity и привязка приложений; сейчас ID объединяет только пару TLS observations и создаётся при входе в tunnel handler.
-3. MVP-2: двухфазный route manager, versioned profiles/upstreams, материализация expected profile и verification, runtime snapshots.
+3. MVP-2: остаются общий двухфазный route manager, приоритеты/несколько
+   активных profiles/upstreams и полноценные runtime snapshots. Версионируемый
+   TLS template, материализация expected и verification уже реализованы для
+   одного активного профиля.
 4. Release 1: PostgreSQL, users/roles/tokens, HTTPS, audit, encrypted spool, backup/recovery.
-5. Поздние релизы: HTTP/1/2 fingerprints, ServerHello/JA3S/JA4S, TCP/DNS/QUIC sensors, families и template builder.
+5. Поздние релизы: HTTP/1/2 fingerprints, ServerHello/JA3S/JA4S, TCP/DNS/QUIC
+   sensors и families; базовый TLS template builder уже реализован.
 
-Текущая страница доступна только локально; authentication/roles ещё нет. Read-only API приведён в [recorder-openapi.json](recorder-openapi.json). Он описывает реализованные endpoints, а не будущий полный API из ТЗ.
+Текущая панель доступна только локально; authentication/roles ещё нет. Контракт
+реализованных read/write endpoints приведён в
+[recorder-openapi.json](recorder-openapi.json). Он не описывает будущий полный
+API центра управления из ТЗ.
 
 ## Проверки
 

@@ -21,6 +21,7 @@ import (
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/logutil"
 	httpproxy "github.com/lylemi/ja3proxy/internal/ja3proxy/proxy"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/recorder"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/tlsprofile"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/traffic"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/tui"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/tunnel"
@@ -30,6 +31,7 @@ import (
 
 type App struct {
 	Recorder            *recorder.Recorder
+	TLSProfiles         *tlsprofile.Store
 	Config              *RunningConfig
 	CA                  *certstore.CertificateAuthority
 	SessionKey          *certstore.SessionKeyHelper
@@ -109,6 +111,13 @@ func (app *App) configureRuntime(ctx context.Context) error {
 		return err
 	}
 	app.ensureTrafficMonitor()
+	if app.TLSProfiles == nil {
+		var err error
+		app.TLSProfiles, err = tlsprofile.Open(app.Config.TLSTemplateFile)
+		if err != nil {
+			return fmt.Errorf("configure TLS profile library: %w", err)
+		}
+	}
 	if app.Config.CaptureTLS && app.Recorder == nil {
 		var err error
 		app.Recorder, err = recorder.New(recorder.Options{Raw: app.Config.CaptureRaw, JSONLPath: app.Config.CaptureJSONL})
@@ -149,6 +158,7 @@ func (app *App) serveProxyServices(ctx context.Context, proxyServer *httpproxy.P
 
 	panel := webpanel.Server{
 		Recorder: app.Recorder,
+		Profiles: app.TLSProfiles,
 		Address:  app.Config.WebPanel,
 		Monitor:  app.TrafficMonitor,
 		Runtime:  app.webPanelRuntimeStatus,
@@ -590,6 +600,7 @@ func (app *App) configuredTLSFingerprint() fingerprint.TLSFingerprint {
 func (app *App) tunnelHandler() *tunnel.TunnelHandler {
 	return &tunnel.TunnelHandler{
 		Recorder:            app.Recorder,
+		TLSProfiles:         app.TLSProfiles,
 		Mode:                app.Config.TLSMode,
 		Debug:               app.Config.dumpTrafficEnabled(),
 		CA:                  app.CA,

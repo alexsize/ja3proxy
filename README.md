@@ -87,6 +87,7 @@ curl -vk --proxy socks5h://127.0.0.1:8080 https://example.com
 
 - `http://127.0.0.1:9090/` — трафик и текущая конфигурация;
 - `http://127.0.0.1:9090/recorder.html` — TLS-наблюдения и сравнение;
+- `http://127.0.0.1:9090/profiles.html` — редактор версионируемых TLS-профилей и ожидаемого JA4;
 - `http://127.0.0.1:9090/health/live` — проверка процесса;
 - `http://127.0.0.1:9090/health/ready` — готовность recorder;
 - `http://127.0.0.1:9090/metrics` — метрики recorder.
@@ -141,6 +142,7 @@ TLS-профиль:
   --tls-fingerprint string        глобальный пресет uTLS, например chrome@120
   --tls-fingerprint-file string   JSON-файл глобального профиля с автообновлением
   --tls-profile-file string       JSON-файл маршрутизации TLS-профилей по хостам
+  --tls-template-file string      журнал редактируемых TLS-профилей
   --list-tls-fingerprints         вывести поддерживаемые пресеты и завершить работу
 
 Прокси:
@@ -232,6 +234,28 @@ Recorder и диагностика:
 Поддерживаются точные имена и шаблоны вида `*.example.com`. Значение
 `protocol` в текущей версии — только `utls`.
 
+### Редактирование JA4 через шаблоны
+
+Страница `/profiles.html` создаёт шаблон из uTLS-пресета либо из полного
+наблюдения recorder. Можно менять порядок cipher suites и extensions, ALPN,
+supported versions/groups и signature algorithms. Перед сохранением сервер
+материализует ClientHello и показывает ожидаемые JA3, JA4 и TLS-NORM.
+
+Сохранённые версии пишутся append-only в файл `--tls-template-file`
+(`profiles/tls-templates.jsonl` по умолчанию). Изменение требует актуальной
+версии конфигурации: устаревшая вкладка получает `409`, а не перезаписывает
+чужие изменения. Активный шаблон применяется только к новым соединениям и
+имеет приоритет над обычным `--tls-fingerprint`/`--tls-profile-file` для
+совпавших host patterns.
+
+JA4 нельзя задавать произвольной строкой: он вычисляется из ClientHello.
+Редактор меняет воспроизводимые поля ClientHello, а recorder независимо
+захватывает фактически отправленные байты `PROXY_OUT` и присваивает проверке
+`MATCH`, `PARTIAL_MATCH`, `MISMATCH` или `UNKNOWN`. Если поле нельзя выразить
+через выбранный базовый uTLS-пресет, профиль получает статус `UNSUPPORTED` и
+не может быть активирован. ALPN активного шаблона на каждом соединении
+ограничивается протоколами, предложенными входящим клиентом.
+
 ## Следующий прокси
 
 SOCKS5:
@@ -312,6 +336,7 @@ internal/ja3proxy/proxy/            HTTP и SOCKS5
 internal/ja3proxy/tunnel/           TLS MITM и режимы туннеля
 internal/ja3proxy/capture/tlshello/ parser и fingerprints ClientHello
 internal/ja3proxy/recorder/         очередь, хранение, diff и JSONL
+internal/ja3proxy/tlsprofile/       шаблоны, материализация и журнал версий
 internal/ja3proxy/webpanel/         локальная панель и API
 internal/ja3proxy/e2e/              сквозные тесты
 docs/                               эксплуатационная документация
@@ -324,8 +349,9 @@ docs/spec/                          ТЗ, контракты и состояни
 - постоянное SQL-хранилище ещё не реализовано;
 - JSONL не шифруется;
 - recorder API локальный и пока не имеет RBAC;
-- полный route manager и проверка против шаблона профиля относятся к следующим
-  этапам ТЗ;
+- реализован один активный редактируемый TLS-шаблон с exact/wildcard host
+  patterns; общая таблица маршрутов с приоритетами и несколькими одновременно
+  активными шаблонами ещё не реализована;
 - анализируется первый ClientHello соединения.
 
 ## Диагностика

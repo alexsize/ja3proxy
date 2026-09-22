@@ -1,0 +1,247 @@
+package tlsprofile
+
+import (
+	"bufio"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
+	"time"
+)
+
+const maxLibraryLogBytes = 16 << 20
+
+type Store struct {
+	mu      sync.RWMutex
+	path    string
+	library Library
+}
+
+func Open(path string) (*Store, error) {
+	store := &Store{path: path, library: Library{SchemaVersion: SchemaVersion, Templates: []Template{}}}
+	if path == "" {
+		return store, nil
+	}
+	file, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return store, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	if info, statErr := file.Stat(); statErr != nil || info.Size() > maxLibraryLogBytes {
+		return nil, errors.New("журнал TLS-профилей превышает 16 МиБ или недоступен")
+	}
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64<<10), 4<<20)
+	var latest Library
+	for scanner.Scan() {
+		var candidate Library
+		if err := json.Unmarshal(scanner.Bytes(), &candidate); err != nil {
+			return nil, fmt.Errorf("повреждён журнал TLS-профилей: %w", err)
+		}
+		if candidate.SchemaVersion != SchemaVersion {
+			return nil, fmt.Errorf("неподдерживаемая схема TLS-профилей %q", candidate.SchemaVersion)
+		}
+		latest = candidate
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	if latest.SchemaVersion != "" {
+		store.library = latest
+	}
+	return store, nil
+}
+
+func (s *Store) Snapshot() Library {
+	if s == nil {
+		return Library{SchemaVersion: SchemaVersion, Templates: []Template{}}
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	data, _ := json.Marshal(s.library)
+	var out Library
+	_ = json.Unmarshal(data, &out)
+	return out
+}
+
+func (s *Store) Get(id string) (Template, bool) {
+	library := s.Snapshot()
+	for _, template := range library.Templates {
+		if template.ID == id {
+			return template, true
+		}
+	}
+	return Template{}, false
+}
+
+func (s *Store) Resolve(host string) (Template, bool) {
+	library := s.Snapshot()
+	if library.ActiveID == "" {
+		return Template{}, false
+	}
+	for _, template := range library.Templates {
+		if template.ID != library.ActiveID || !template.Enabled || template.Replayability.Status == "UNSUPPORTED" {
+			continue
+		}
+		if len(template.HostPatterns) == 0 {
+			return template, true
+		}
+		for _, pattern := range template.HostPatterns {
+			if hostMatches(pattern, host) {
+				return template, true
+			}
+		}
+	}
+	return Template{}, false
+}
+
+func (s *Store) Create(template Template, expectedConfigVersion uint64) (Template, Library, error) {
+	return s.mutate(expectedConfigVersion, func(library *Library) (Template, error) {
+		if len(library.Templates) >= 100 {
+			return Template{}, errors.New("достигнут лимит 100 TLS-профилей")
+		}
+		now := time.Now().UTC()
+		id, err := newID()
+		if err != nil {
+			return Template{}, err
+		}
+		template.ID = id
+		template.SchemaVersion = SchemaVersion
+		template.Version = 1
+		template.CreatedAt = now
+		template.UpdatedAt = now
+		preview, err := Preview(template)
+		if err != nil {
+			return Template{}, err
+		}
+		library.Templates = append(library.Templates, preview)
+		return preview, nil
+	})
+}
+
+func (s *Store) Update(id string, template Template, expectedConfigVersion uint64) (Template, Library, error) {
+	return s.mutate(expectedConfigVersion, func(library *Library) (Template, error) {
+		index := slices.IndexFunc(library.Templates, func(candidate Template) bool { return candidate.ID == id })
+		if index < 0 {
+			return Template{}, os.ErrNotExist
+		}
+		previous := library.Templates[index]
+		template.ID = previous.ID
+		template.SchemaVersion = SchemaVersion
+		template.Version = previous.Version + 1
+		template.CreatedAt = previous.CreatedAt
+		template.UpdatedAt = time.Now().UTC()
+		preview, err := Preview(template)
+		if err != nil {
+			return Template{}, err
+		}
+		library.Templates[index] = preview
+		return preview, nil
+	})
+}
+
+func (s *Store) Delete(id string, expectedConfigVersion uint64) (Library, error) {
+	_, library, err := s.mutate(expectedConfigVersion, func(library *Library) (Template, error) {
+		if library.ActiveID == id {
+			return Template{}, errors.New("сначала отключите активный TLS-профиль")
+		}
+		index := slices.IndexFunc(library.Templates, func(candidate Template) bool { return candidate.ID == id })
+		if index < 0 {
+			return Template{}, os.ErrNotExist
+		}
+		removed := library.Templates[index]
+		library.Templates = append(library.Templates[:index], library.Templates[index+1:]...)
+		return removed, nil
+	})
+	return library, err
+}
+
+func (s *Store) Activate(id string, expectedConfigVersion uint64) (Library, error) {
+	_, library, err := s.mutate(expectedConfigVersion, func(library *Library) (Template, error) {
+		if id == "" {
+			library.ActiveID = ""
+			return Template{}, nil
+		}
+		for _, template := range library.Templates {
+			if template.ID == id {
+				if !template.Enabled || template.Replayability.Status == "UNSUPPORTED" {
+					return Template{}, errors.New("профиль выключен или невоспроизводим")
+				}
+				library.ActiveID = id
+				return template, nil
+			}
+		}
+		return Template{}, os.ErrNotExist
+	})
+	return library, err
+}
+
+func (s *Store) mutate(expectedVersion uint64, apply func(*Library) (Template, error)) (Template, Library, error) {
+	if s == nil {
+		return Template{}, Library{}, errors.New("библиотека TLS-профилей недоступна")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if expectedVersion != s.library.ConfigVersion {
+		return Template{}, s.library, ErrVersionConflict
+	}
+	candidate := s.library
+	candidate.Templates = append([]Template(nil), s.library.Templates...)
+	result, err := apply(&candidate)
+	if err != nil {
+		return Template{}, s.library, err
+	}
+	candidate.SchemaVersion = SchemaVersion
+	candidate.ConfigVersion++
+	if err := s.append(candidate); err != nil {
+		return Template{}, s.library, err
+	}
+	s.library = candidate
+	return result, s.library, nil
+}
+
+func (s *Store) append(library Library) error {
+	if s.path == "" {
+		return nil
+	}
+	data, err := json.Marshal(library)
+	if err != nil {
+		return err
+	}
+	if len(data) > 4<<20 {
+		return errors.New("snapshot TLS-профилей превышает 4 МиБ")
+	}
+	if err := os.MkdirAll(filepath.Dir(s.path), 0700); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(s.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	if info, statErr := file.Stat(); statErr != nil || info.Size()+int64(len(data)+1) > maxLibraryLogBytes {
+		return errors.New("журнал TLS-профилей достиг лимита 16 МиБ")
+	}
+	if _, err := file.Write(append(data, '\n')); err != nil {
+		return err
+	}
+	return file.Sync()
+}
+
+func newID() (string, error) {
+	var value [16]byte
+	if _, err := io.ReadFull(rand.Reader, value[:]); err != nil {
+		return "", fmt.Errorf("создание ID TLS-профиля: %w", err)
+	}
+	return strings.ToLower(hex.EncodeToString(value[:])), nil
+}

@@ -27,6 +27,7 @@ type cliOptions struct {
 	captureRaw          bool
 	captureJSONL        string
 	tlsMode             string
+	tlsTemplateFile     string
 	listen              string
 	caCert              string
 	caKey               string
@@ -63,10 +64,11 @@ func (app *App) parseFlags(args []string) error {
 
 func newDefaultCLIOptions() cliOptions {
 	return cliOptions{
-		listen:   defaultListen,
-		caCert:   defaultCACertPath,
-		caKey:    defaultCAKeyPath,
-		logLevel: defaultLogLevelName,
+		listen:          defaultListen,
+		caCert:          defaultCACertPath,
+		caKey:           defaultCAKeyPath,
+		logLevel:        defaultLogLevelName,
+		tlsTemplateFile: "profiles/tls-templates.jsonl",
 	}
 }
 
@@ -75,6 +77,7 @@ func registerCLIFlags(flags *flag.FlagSet, options *cliOptions) {
 	flags.BoolVar(&options.captureRaw, "capture-raw", false, "сохранять чувствительные raw-данные TLS; требуется --capture-tls")
 	flags.StringVar(&options.captureJSONL, "capture-jsonl", "", "создать новый JSONL-файл наблюдений; требуется --capture-tls")
 	flags.StringVar(&options.tlsMode, "tls-mode", "MITM_REISSUE", "режим туннеля: MITM_REISSUE, PASSTHROUGH, OBSERVE_ONLY, BLOCK")
+	flags.StringVar(&options.tlsTemplateFile, "tls-template-file", "profiles/tls-templates.jsonl", "журнал версий редактируемых TLS-профилей")
 	flags.StringVar(&options.listen, "listen", defaultListen, "адрес прослушивания, например :8080 или 127.0.0.1:8080")
 
 	flags.StringVar(&options.caCert, "ca-cert", defaultCACertPath, "путь к сертификату CA прокси")
@@ -122,6 +125,7 @@ Recorder и диагностика:
   --capture-raw                   сохранять чувствительные raw-данные TLS
   --capture-jsonl string          создать новый JSONL-файл, лимит 256 МиБ
   --tls-mode string               MITM_REISSUE, PASSTHROUGH, OBSERVE_ONLY, BLOCK
+  --tls-template-file string      журнал редактируемых TLS-профилей (по умолчанию "profiles/tls-templates.jsonl")
   --log-level string              debug, info, warn или error (по умолчанию "info")
   --dump-traffic                  записывать содержимое трафика; включает debug
   --tui                           показывать терминальную панель трафика
@@ -158,6 +162,7 @@ func applyCLIOptions(config *RunningConfig, options cliOptions, specified map[st
 	config.CaptureRaw = options.captureRaw
 	config.CaptureJSONL = options.captureJSONL
 	config.TLSMode = mode
+	config.TLSTemplateFile = options.tlsTemplateFile
 
 	listen, addr, port, err := resolveListenOption(options)
 	if err != nil {

@@ -156,3 +156,41 @@ func TestDiff(t *testing.T) {
 		t.Fatal("missing capture not unknown")
 	}
 }
+
+func TestExpectedProfileVerificationStatuses(t *testing.T) {
+	normalized := json.RawMessage(`{"ciphers":[1,2],"extensions":[{"id":0}],"legacy_version":771,"session_id_length":32}`)
+	expected := FingerprintExpected{
+		JA4:                  "expected-ja4",
+		Normalized:           normalized,
+		NormalizationVersion: "TLS-NORM-1",
+		MaterializerVersion:  SupportedMaterializerVersion,
+		MustMatch:            []string{"/ciphers", "/extensions"},
+		ShouldMatch:          []string{"/session_id_length"},
+	}
+	actual := Observation{Completeness: "complete", Fingerprints: &tlshello.Fingerprints{JA4: "actual-ja4", NormalizationVersion: "TLS-NORM-1", Normalized: normalized}}
+	if got := VerifyExpected(expected, actual); got.Status != "MATCH" {
+		t.Fatalf("MATCH verification = %+v", got)
+	}
+	actual.Fingerprints.Normalized = json.RawMessage(`{"ciphers":[1,2],"extensions":[{"id":0}],"legacy_version":771,"session_id_length":0}`)
+	if got := VerifyExpected(expected, actual); got.Status != "PARTIAL_MATCH" {
+		t.Fatalf("PARTIAL_MATCH verification = %+v", got)
+	}
+	actual.Fingerprints.Normalized = json.RawMessage(`{"ciphers":[2,1],"extensions":[{"id":0}],"legacy_version":771,"session_id_length":32}`)
+	if got := VerifyExpected(expected, actual); got.Status != "MISMATCH" {
+		t.Fatalf("MISMATCH verification = %+v", got)
+	}
+	actual.Completeness = "timeout"
+	if got := VerifyExpected(expected, actual); got.Status != "UNKNOWN" {
+		t.Fatalf("UNKNOWN verification = %+v", got)
+	}
+	actual.Completeness = "complete"
+	expected.MaterializerVersion = "utls-template-materializer/2"
+	if got := VerifyExpected(expected, actual); got.Status != "UNKNOWN" || got.Reason != "incompatible_materializer_version" {
+		t.Fatalf("materializer version verification = %+v", got)
+	}
+	expected.MaterializerVersion = SupportedMaterializerVersion
+	expected.MustMatch = []string{"/missing"}
+	if got := VerifyExpected(expected, actual); got.Status != "MISMATCH" {
+		t.Fatalf("missing MUST path verification = %+v", got)
+	}
+}

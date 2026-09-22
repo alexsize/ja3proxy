@@ -25,11 +25,13 @@ async function refresh(cursor = "") {
     const body = byId("observations"); body.replaceChildren();
     for (const observation of data.items) {
       const row = document.createElement("tr");
-      for (const value of [new Date(observation.captured_at).toLocaleTimeString(), observation.destination, observation.capture_point, observation.mode, observation.fingerprints?.ja4 || `${observation.completeness}: ${observation.error_code || ""}`]) {
+	  const fingerprint = observation.fingerprints?.ja4 || `${observation.completeness}: ${observation.error_code || ""}`;
+	  const verified = observation.verification?.status ? `${fingerprint} · ${observation.verification.status}` : fingerprint;
+	  for (const value of [new Date(observation.captured_at).toLocaleTimeString(), observation.destination, observation.capture_point, observation.mode, verified]) {
         const cell = document.createElement("td"); cell.textContent = value; row.append(cell);
       }
       const detail = document.createElement("td");
-      detail.append(button("JSON", async () => {try {byId("detail").textContent = JSON.stringify(await api(`/api/v1/observations/${encodeURIComponent(observation.id)}`), null, 2);} catch(error) {fail(error);}})); row.append(detail);
+      detail.append(button("JSON", async () => {try {byId("detail").textContent = JSON.stringify(await api(`/api/v1/observations/${encodeURIComponent(observation.id)}`), null, 2);} catch(error) {fail(error);}}), button("В профиль", () => {location.href=`/profiles.html?observation=${encodeURIComponent(observation.id)}`;})); row.append(detail);
       const picks = document.createElement("td"); picks.append(button("A", () => select("A", observation.id)), button("B", () => select("B", observation.id))); row.append(picks); body.append(row);
     }
     if (!data.items.length) {const row=document.createElement("tr"), cell=document.createElement("td");cell.colSpan=7;cell.textContent="Наблюдений нет. Подключите TLS-клиент или измените поиск.";row.append(cell);body.append(row);}

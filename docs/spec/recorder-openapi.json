@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Локальный API регистратора JA3Proxy",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "description": "Наблюдения в ограниченной памяти. Доступ только через loopback с проверкой Host, адреса клиента и Origin; аутентификация пользователей пока отсутствует. Это не полный API центра управления."
   },
   "servers": [
@@ -239,7 +239,7 @@
             }
           }
         },
-        "description": "Сравниваются только наблюдаемые нормализованные структуры; ожидаемый пресет uTLS не проверяется."
+        "description": "Сравниваются два наблюдения. Проверка ожидаемого шаблона находится в поле verification исходящего наблюдения."
       }
     },
     "/api/v1/export/observations": {
@@ -300,6 +300,70 @@
             }
           }
         }
+      }
+    },
+    "/api/v1/tls/profiles": {
+      "get": {
+        "operationId": "listTLSProfiles",
+        "responses": {
+          "200": {
+            "description": "Версионируемая библиотека TLS-профилей",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TLSProfileLibrary"}}}
+          }
+        }
+      },
+      "post": {
+        "operationId": "createTLSProfile",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TLSProfileMutation"}}}},
+        "responses": {
+          "201": {"description": "Профиль создан"},
+          "409": {"description": "Устаревшая config_version"}
+        }
+      }
+    },
+    "/api/v1/tls/profiles/{id}": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
+      "get": {
+        "operationId": "getTLSProfile",
+        "responses": {"200": {"description": "TLS-профиль", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TLSProfile"}}}}, "404": {"description": "Профиль не найден"}}
+      },
+      "put": {
+        "operationId": "updateTLSProfile",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TLSProfileMutation"}}}},
+        "responses": {"200": {"description": "Создана новая версия профиля"}, "409": {"description": "Устаревшая config_version"}}
+      },
+      "delete": {
+        "operationId": "deleteTLSProfile",
+        "description": "Удаляет неактивный профиль из текущего snapshot. Предыдущие snapshot остаются в append-only журнале.",
+        "responses": {"200": {"description": "Обновлённая библиотека"}, "400": {"description": "Активный профиль сначала нужно отключить"}, "409": {"description": "Устаревшая config_version"}}
+      }
+    },
+    "/api/v1/tls/profiles/from-preset": {
+      "post": {
+        "operationId": "profileFromPreset",
+        "description": "Создаёт несохранённый редактируемый шаблон из uTLS-пресета.",
+        "responses": {"200": {"description": "Черновик", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TLSProfile"}}}}}
+      }
+    },
+    "/api/v1/tls/profiles/from-observation": {
+      "post": {
+        "operationId": "profileFromObservation",
+        "description": "Создаёт черновик или сохраняет профиль из полного ClientHello в окне recorder.",
+        "responses": {"200": {"description": "Черновик"}, "201": {"description": "Профиль сохранён"}, "404": {"description": "Наблюдение недоступно"}}
+      }
+    },
+    "/api/v1/tls/profiles/preview": {
+      "post": {
+        "operationId": "previewTLSProfile",
+        "description": "Материализует ClientHello, проверяет воспроизводимость и вычисляет ожидаемые JA3/JA4/TLS-NORM.",
+        "responses": {"200": {"description": "Пересчитанный шаблон", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TLSProfile"}}}}}
+      }
+    },
+    "/api/v1/tls/profiles/active": {
+      "put": {
+        "operationId": "activateTLSProfile",
+        "description": "Атомарно выбирает профиль для новых соединений; пустой id отключает пользовательский шаблон.",
+        "responses": {"200": {"description": "Обновлённая библиотека"}, "409": {"description": "Устаревшая config_version"}}
       }
     },
     "/metrics": {
@@ -488,6 +552,12 @@
           "profile": {
             "type": "string"
           },
+          "profile_id": {
+            "type": "string"
+          },
+          "profile_version": {
+            "type": "integer"
+          },
           "captured_at": {
             "type": "string",
             "format": "date-time"
@@ -523,6 +593,9 @@
           },
           "fingerprints": {
             "$ref": "#/components/schemas/Fingerprints"
+          },
+          "verification": {
+            "$ref": "#/components/schemas/Verification"
           },
           "raw_client_hello": {
             "type": "string",
@@ -619,6 +692,58 @@
           "status",
           "changes"
         ]
+      },
+      "Verification": {
+        "type": "object",
+        "properties": {
+          "schema_version": {"const": "tls-profile-verification/1"},
+          "status": {"enum": ["MATCH", "PARTIAL_MATCH", "MISMATCH", "UNKNOWN"]},
+          "reason": {"type": "string"},
+          "expected": {"type": "object", "additionalProperties": true},
+          "actual_ja3": {"type": "string"},
+          "actual_ja3_hash": {"type": "string"},
+          "actual_ja4": {"type": "string"},
+          "actual_normalized_sha256": {"type": "string"},
+          "diff_algorithm_version": {"type": "string"},
+          "changes": {"type": "array", "items": {"$ref": "#/components/schemas/Change"}}
+        },
+        "required": ["schema_version", "status", "expected", "diff_algorithm_version", "changes"]
+      },
+      "TLSProfileLibrary": {
+        "type": "object",
+        "properties": {
+          "schema_version": {"const": "tls-profile-template/1"},
+          "config_version": {"type": "integer"},
+          "active_id": {"type": "string"},
+          "templates": {"type": "array", "items": {"$ref": "#/components/schemas/TLSProfile"}}
+        },
+        "required": ["schema_version", "config_version", "templates"]
+      },
+      "TLSProfile": {
+        "type": "object",
+        "description": "Версионируемый шаблон ClientHello. Поля expected и replayability пересчитываются сервером.",
+        "additionalProperties": true,
+        "properties": {
+          "schema_version": {"const": "tls-profile-template/1"},
+          "id": {"type": "string"},
+          "name": {"type": "string"},
+          "version": {"type": "integer"},
+          "enabled": {"type": "boolean"},
+          "host_patterns": {"type": "array", "items": {"type": "string"}},
+          "base_preset": {"type": "object", "additionalProperties": true},
+          "fields": {"type": "object", "additionalProperties": true},
+          "policy": {"type": "object", "additionalProperties": true},
+          "expected": {"type": ["object", "null"], "additionalProperties": true},
+          "replayability": {"type": "object", "additionalProperties": true}
+        }
+      },
+      "TLSProfileMutation": {
+        "type": "object",
+        "properties": {
+          "expected_version": {"type": "integer"},
+          "template": {"$ref": "#/components/schemas/TLSProfile"}
+        },
+        "required": ["expected_version", "template"]
       },
       "Change": {
         "type": "object",

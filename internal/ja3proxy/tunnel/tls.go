@@ -14,12 +14,14 @@ import (
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/netutil"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/pipe"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/recorder"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/tlsprofile"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/upstreamtls"
 	utls "github.com/refraction-networking/utls"
 )
 
 type TunnelHandler struct {
 	Recorder            *recorder.Recorder
+	TLSProfiles         *tlsprofile.Store
 	Mode                string
 	CaptureTimeout      time.Duration
 	Debug               bool
@@ -77,6 +79,17 @@ func (handler *TunnelHandler) wrapUpstreamTLS(conn net.Conn, routeHost string, s
 }
 
 func (handler *TunnelHandler) wrapUpstreamTLSProfile(conn net.Conn, serverName string, nextProtos []string, profile upstreamtls.UpstreamTLSProfile) (*upstreamTLSConn, error) {
+	return handler.wrapUpstreamTLSSelection(conn, serverName, nextProtos, profile, nil)
+}
+
+func (handler *TunnelHandler) wrapUpstreamTLSSelection(conn net.Conn, serverName string, nextProtos []string, profile upstreamtls.UpstreamTLSProfile, template *tlsprofile.Template) (*upstreamTLSConn, error) {
+	if template != nil {
+		uTLSConn, err := handler.utlsWrapTemplate(conn, serverName, *template)
+		if err != nil {
+			return nil, err
+		}
+		return &upstreamTLSConn{Conn: uTLSConn, negotiatedProtocol: uTLSConn.ConnectionState().NegotiatedProtocol}, nil
+	}
 	switch upstreamtls.NormalizeProtocol(profile.Protocol) {
 	case upstreamtls.ProtocolUTLS:
 		uTLSConn, err := handler.utlsWrap(conn, serverName, nextProtos, fingerprint.TLSFingerprint{
@@ -93,6 +106,28 @@ func (handler *TunnelHandler) wrapUpstreamTLSProfile(conn net.Conn, serverName s
 	default:
 		return nil, fmt.Errorf("unsupported upstream TLS protocol %q", profile.Protocol)
 	}
+}
+
+func (handler *TunnelHandler) utlsWrapTemplate(conn net.Conn, serverName string, template tlsprofile.Template) (*utls.UConn, error) {
+	materialized, err := tlsprofile.Materialize(template, serverName)
+	if err != nil {
+		return nil, err
+	}
+	config := &utls.Config{ServerName: serverName, InsecureSkipVerify: true, NextProtos: append([]string(nil), template.Fields.ALPN...)}
+	uTLSConn := utls.UClient(conn, config, utls.HelloCustom)
+	if err := uTLSConn.ApplyPreset(materialized.Spec); err != nil {
+		return nil, err
+	}
+	ctx := context.Background()
+	if handler.Recorder != nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, handler.captureTimeout())
+		defer cancel()
+	}
+	if err := uTLSConn.HandshakeContext(ctx); err != nil {
+		return nil, err
+	}
+	return uTLSConn, nil
 }
 
 func (handler *TunnelHandler) customTLSWrap(conn net.Conn, sni string, nextProtos []string) (*utls.UConn, error) {
@@ -201,9 +236,16 @@ func (handler *TunnelHandler) Connect(sni string, destConn net.Conn, clientConn 
 	defer destConn.Close()
 	defer clientConn.Close()
 	var destTLSConn *upstreamTLSConn
+	var outMeta recorder.Meta
 	logger := logutil.WithComponent("tls_tunnel", "sni", sni)
 	// Resolve once. A runtime profile change cannot relabel a running handshake.
 	profile := handler.configuredUpstreamTLSProfile(sni)
+	var selectedTemplate *tlsprofile.Template
+	if handler.TLSProfiles != nil {
+		if template, ok := handler.TLSProfiles.Resolve(sni); ok {
+			selectedTemplate = &template
+		}
+	}
 	if handler.Mode == "BLOCK" {
 		return
 	}
@@ -214,11 +256,17 @@ func (handler *TunnelHandler) Connect(sni string, destConn net.Conn, clientConn 
 		}
 		id := recorder.NewID()
 		meta := recorder.Meta{ConnectionID: id, CapturePoint: "CLIENT_IN", Direction: "inbound", Mode: mode, Destination: sni, Source: netutil.RemoteAddr(clientConn)}
-		outMeta := meta
+		outMeta = meta
 		outMeta.CapturePoint = "PROXY_OUT"
 		outMeta.Direction = "outbound"
 		if mode == "MITM_REISSUE" {
-			outMeta.Profile = profile.Client + "@" + profile.Version
+			if selectedTemplate != nil {
+				outMeta.Profile = selectedTemplate.Name
+				outMeta.ProfileID = selectedTemplate.ID
+				outMeta.ProfileVersion = selectedTemplate.Version
+			} else {
+				outMeta.Profile = profile.Client + "@" + profile.Version
+			}
 		}
 		if mode == "PASSTHROUGH" || mode == "OBSERVE_ONLY" {
 			in := tlshello.Wrap(clientConn, true, tlshello.DefaultLimits(), func(c tlshello.Capture) { handler.Recorder.TryCapture(meta, c) })
@@ -265,13 +313,26 @@ func (handler *TunnelHandler) Connect(sni string, destConn net.Conn, clientConn 
 			if hello.ServerName != "" {
 				serverName = hello.ServerName
 			}
+			connectionTemplate := selectedTemplate
+			if selectedTemplate != nil {
+				effective, constrainErr := tlsprofile.ConstrainALPN(*selectedTemplate, upstreamALPN(hello.SupportedProtos))
+				if constrainErr != nil {
+					return nil, fmt.Errorf("TLS profile ALPN: %w", constrainErr)
+				}
+				connectionTemplate = &effective
+				materialized, materializeErr := tlsprofile.Materialize(effective, serverName)
+				if materializeErr != nil {
+					return nil, fmt.Errorf("materialize TLS profile: %w", materializeErr)
+				}
+				outMeta.Expected = expectedForRecorder(materialized.Expected, effective.Policy)
+			}
 
 			tlsCert, err := handler.generateCertificate(serverName)
 			if err != nil {
 				return nil, fmt.Errorf("generate certificate: %w", err)
 			}
 
-			destTLSConn, err = handler.wrapUpstreamTLSProfile(destConn, serverName, upstreamALPN(hello.SupportedProtos), profile)
+			destTLSConn, err = handler.wrapUpstreamTLSSelection(destConn, serverName, upstreamALPN(hello.SupportedProtos), profile, connectionTemplate)
 			if err != nil {
 				return nil, err
 			}
@@ -309,6 +370,16 @@ func (handler *TunnelHandler) Connect(sni string, destConn net.Conn, clientConn 
 		pipe.DebugJunction(destTLSConn, clientTLSConn)
 	} else {
 		pipe.Junction(destTLSConn, clientTLSConn)
+	}
+}
+
+func expectedForRecorder(expected tlsprofile.Expected, policy tlsprofile.MatchPolicy) *recorder.FingerprintExpected {
+	return &recorder.FingerprintExpected{
+		JA3: expected.JA3, JA3Hash: expected.JA3Hash, JA4: expected.JA4,
+		NormalizedSHA256: expected.NormalizedSHA256, Normalized: append([]byte(nil), expected.Normalized...),
+		NormalizationVersion: expected.NormalizationVersion, MaterializerVersion: expected.MaterializerVersion,
+		MustMatch: append([]string(nil), policy.MustMatch...), ShouldMatch: append([]string(nil), policy.ShouldMatch...),
+		IgnoredDynamic: append([]string(nil), policy.IgnoredDynamic...),
 	}
 }
 

@@ -5,7 +5,13 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
+)
+
+const (
+	DiffAlgorithmVersion         = "tls-normalized-diff/1"
+	SupportedMaterializerVersion = "utls-template-materializer/1"
 )
 
 type Change struct {
@@ -42,6 +48,88 @@ func Compare(a, b Observation) Comparison {
 		out.Status = "MISMATCH"
 	}
 	return out
+}
+
+func VerifyExpected(expected FingerprintExpected, actual Observation) *Verification {
+	verification := &Verification{
+		SchemaVersion:        "tls-profile-verification/1",
+		Status:               "UNKNOWN",
+		Expected:             expected,
+		DiffAlgorithmVersion: DiffAlgorithmVersion,
+		Changes:              []Change{},
+	}
+	if actual.Completeness != "complete" || actual.Fingerprints == nil {
+		verification.Reason = "incomplete_capture"
+		return verification
+	}
+	verification.ActualJA3 = actual.Fingerprints.JA3
+	verification.ActualJA3Hash = actual.Fingerprints.JA3Hash
+	verification.ActualJA4 = actual.Fingerprints.JA4
+	verification.ActualNormalizedSHA256 = actual.Fingerprints.NormalizedSHA256
+	if expected.NormalizationVersion == "" || expected.NormalizationVersion != actual.Fingerprints.NormalizationVersion {
+		verification.Reason = "incompatible_normalization_version"
+		return verification
+	}
+	if expected.MaterializerVersion != SupportedMaterializerVersion {
+		verification.Reason = "incompatible_materializer_version"
+		return verification
+	}
+	var expectedValue, actualValue any
+	if json.Unmarshal(expected.Normalized, &expectedValue) != nil || json.Unmarshal(actual.Fingerprints.Normalized, &actualValue) != nil {
+		verification.Reason = "invalid_normalized_data"
+		return verification
+	}
+	diffValue("", expectedValue, actualValue, &verification.Changes)
+	for _, path := range expected.MustMatch {
+		left, leftOK := valueAtPointer(expectedValue, path)
+		right, rightOK := valueAtPointer(actualValue, path)
+		if !leftOK || !rightOK || !reflect.DeepEqual(left, right) {
+			verification.Status = "MISMATCH"
+			verification.Reason = "must_match_difference"
+			return verification
+		}
+	}
+	for _, path := range expected.ShouldMatch {
+		left, leftOK := valueAtPointer(expectedValue, path)
+		right, rightOK := valueAtPointer(actualValue, path)
+		if !leftOK || !rightOK || !reflect.DeepEqual(left, right) {
+			verification.Status = "PARTIAL_MATCH"
+			verification.Reason = "should_match_difference"
+			return verification
+		}
+	}
+	verification.Status = "MATCH"
+	return verification
+}
+
+func valueAtPointer(value any, path string) (any, bool) {
+	if path == "" {
+		return value, true
+	}
+	if !strings.HasPrefix(path, "/") {
+		return nil, false
+	}
+	current := value
+	for _, encoded := range strings.Split(strings.TrimPrefix(path, "/"), "/") {
+		key := strings.ReplaceAll(strings.ReplaceAll(encoded, "~1", "/"), "~0", "~")
+		switch typed := current.(type) {
+		case map[string]any:
+			var ok bool
+			current, ok = typed[key]
+			if !ok {
+				return nil, false
+			}
+		case []any:
+			index, err := strconv.Atoi(key)
+			if err != nil || index < 0 || index >= len(typed) {
+				return nil, false
+			}
+			current = typed[index]
+		default:
+			return nil, false
+		}
+	}
+	return current, true
 }
 
 func pointer(s string) string { return strings.ReplaceAll(strings.ReplaceAll(s, "~", "~0"), "/", "~1") }

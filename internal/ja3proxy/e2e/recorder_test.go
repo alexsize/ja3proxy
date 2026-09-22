@@ -14,6 +14,7 @@ import (
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/dialer"
 	httpproxy "github.com/lylemi/ja3proxy/internal/ja3proxy/proxy"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/recorder"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/tlsprofile"
 	utls "github.com/refraction-networking/utls"
 )
 
@@ -224,5 +225,63 @@ func TestRecorderTLS12And13(t *testing.T) {
 				t.Fatalf("wrong advertised TLS version: %+v", in)
 			}
 		})
+	}
+}
+
+func TestCustomTLSProfileProducesExpectedJA4AndVerification(t *testing.T) {
+	store, err := tlsprofile.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	template, err := tlsprofile.TemplateFromPreset("Редактируемый Chrome", "Chrome", "120")
+	if err != nil {
+		t.Fatal(err)
+	}
+	template.Fields.ALPN = []string{"http/1.1"}
+	created, library, err := store.Create(template, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Activate(created.ID, library.ConfigVersion); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := recorder.New(recorder.Options{Raw: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	handler := newTestTunnelHandler(t, utls.HelloFirefox_63)
+	handler.Recorder = r
+	handler.TLSProfiles = store
+	serverAddr, results := newJA3CaptureTLSServer(t)
+	_, port, err := net.SplitHostPort(serverAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	up, err := dialer.NewUpstreamDialer("", 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyAddr := serveMixedRecorderProxy(t, httpproxy.NewProxy(up.Dial, handler.Connect, up.Transport).WithTLSInspection(true))
+	client := newProxyHTTPClient(t, "http://"+proxyAddr, &tls.Config{InsecureSkipVerify: true, NextProtos: []string{"http/1.1"}})
+	response, err := client.Get("https://localhost:" + port + "/profile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	wire := receiveJA3CaptureResult(t, results)
+	if wire.err != nil {
+		t.Fatal(wire.err)
+	}
+	_, outbound := recordedPair(t, r)
+	if outbound.ProfileID != created.ID || outbound.ProfileVersion != 1 {
+		t.Fatalf("profile snapshot missing: %+v", outbound.Meta)
+	}
+	if outbound.Verification == nil || outbound.Verification.Status != "MATCH" {
+		t.Fatalf("verification = %+v", outbound.Verification)
+	}
+	if outbound.Verification.Expected.JA4 != outbound.Fingerprints.JA4 || outbound.Fingerprints.JA3Hash != wire.ja3Fingerprint {
+		t.Fatalf("expected/actual mismatch: %+v", outbound.Verification)
 	}
 }

@@ -15,13 +15,42 @@ import (
 )
 
 type Meta struct {
-	ConnectionID string `json:"connection_id"`
-	CapturePoint string `json:"capture_point"`
-	Direction    string `json:"direction"`
-	Mode         string `json:"mode"`
-	Destination  string `json:"destination"`
-	Source       string `json:"source"`
-	Profile      string `json:"profile,omitempty"`
+	ConnectionID   string               `json:"connection_id"`
+	CapturePoint   string               `json:"capture_point"`
+	Direction      string               `json:"direction"`
+	Mode           string               `json:"mode"`
+	Destination    string               `json:"destination"`
+	Source         string               `json:"source"`
+	Profile        string               `json:"profile,omitempty"`
+	ProfileID      string               `json:"profile_id,omitempty"`
+	ProfileVersion uint64               `json:"profile_version,omitempty"`
+	Expected       *FingerprintExpected `json:"-"`
+}
+
+type FingerprintExpected struct {
+	JA3                  string          `json:"ja3"`
+	JA3Hash              string          `json:"ja3_hash"`
+	JA4                  string          `json:"ja4"`
+	NormalizedSHA256     string          `json:"normalized_sha256"`
+	Normalized           json.RawMessage `json:"normalized"`
+	NormalizationVersion string          `json:"normalization_version"`
+	MaterializerVersion  string          `json:"materializer_version"`
+	MustMatch            []string        `json:"must_match"`
+	ShouldMatch          []string        `json:"should_match"`
+	IgnoredDynamic       []string        `json:"ignored_dynamic"`
+}
+
+type Verification struct {
+	SchemaVersion          string              `json:"schema_version"`
+	Status                 string              `json:"status"`
+	Reason                 string              `json:"reason,omitempty"`
+	Expected               FingerprintExpected `json:"expected"`
+	ActualJA3              string              `json:"actual_ja3,omitempty"`
+	ActualJA3Hash          string              `json:"actual_ja3_hash,omitempty"`
+	ActualJA4              string              `json:"actual_ja4,omitempty"`
+	ActualNormalizedSHA256 string              `json:"actual_normalized_sha256,omitempty"`
+	DiffAlgorithmVersion   string              `json:"diff_algorithm_version"`
+	Changes                []Change            `json:"changes"`
 }
 
 type Observation struct {
@@ -37,6 +66,7 @@ type Observation struct {
 	DeclaredHelloLength int                    `json:"declared_hello_length,omitempty"`
 	Hello               *tlshello.Hello        `json:"decoded,omitempty"`
 	Fingerprints        *tlshello.Fingerprints `json:"fingerprints,omitempty"`
+	Verification        *Verification          `json:"verification,omitempty"`
 	Raw                 []byte                 `json:"raw_client_hello,omitempty"`
 	Records             []byte                 `json:"raw_records,omitempty"`
 }
@@ -188,6 +218,9 @@ func (r *Recorder) run() {
 					o.Fingerprints = &fp
 				}
 			}
+		}
+		if q.meta.Expected != nil {
+			o.Verification = VerifyExpected(*q.meta.Expected, o)
 		}
 		if r.opts.Raw {
 			o.Raw = c.Raw

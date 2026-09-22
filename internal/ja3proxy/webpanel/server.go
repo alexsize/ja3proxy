@@ -15,6 +15,7 @@ import (
 
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/logutil"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/recorder"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/tlsprofile"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/traffic"
 )
 
@@ -56,6 +57,7 @@ type ConfigUpdater func(ConfigUpdate) (RuntimeStatus, error)
 
 type Server struct {
 	Recorder *recorder.Recorder
+	Profiles *tlsprofile.Store
 	Address  string
 	Monitor  *traffic.TrafficMonitor
 	Runtime  RuntimeProvider
@@ -84,7 +86,7 @@ func (panel Server) Serve(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("listen for web panel on %s: %w", panel.Address, err)
 	}
-	if panel.Recorder != nil {
+	if panel.Recorder != nil || panel.Profiles != nil {
 		addr, ok := listener.Addr().(*net.TCPAddr)
 		if !ok || !addr.IP.IsLoopback() {
 			listener.Close()
@@ -117,13 +119,14 @@ func (panel Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/state", panel.handleState)
 	mux.HandleFunc("PUT /api/config", panel.handleConfigUpdate)
 	panel.registerRecorderRoutes(mux)
+	panel.registerProfileRoutes(mux)
 
 	staticRoot, err := fs.Sub(staticFiles, "static")
 	if err != nil {
 		panic(fmt.Sprintf("load embedded web panel: %v", err))
 	}
 	mux.Handle("GET /", http.FileServer(http.FS(staticRoot)))
-	if panel.Recorder != nil {
+	if panel.Recorder != nil || panel.Profiles != nil {
 		return securityHeaders(recorderLocalOnly(mux))
 	}
 	return securityHeaders(mux)
