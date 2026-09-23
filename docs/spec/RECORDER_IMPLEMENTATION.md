@@ -21,6 +21,10 @@
 .\bin\ja3proxy.exe --capture-tls --capture-jsonl capture-001.jsonl
 ```
 
+Для durable-хранилища добавьте `--capture-sqlite recordings/recorder.db`.
+SQLite открывается повторно после перезапуска, применяет versioned migration и
+удерживает по умолчанию 100 000 последних observations.
+
 `--capture-raw` дополнительно сохраняет raw handshake и TLS records (base64 в JSON). Без него raw хранится только временно для вычисления fingerprint. JSONL ограничен 256 MiB; существующий файл не перезаписывается. При достижении лимита экспорт прекращается, счётчик ошибок растёт, proxy продолжает работу. Окно памяти и файл экспорта — разные источники: HTTP export выгружает только текущее окно памяти.
 
 JSONL пока не шифруется. Размещайте экспорт в контролируемом каталоге; raw содержит session identifiers/tickets. Шифрованный spool и secret provider относятся к незавершённому Release 1.
@@ -46,6 +50,7 @@ JSONL пока не шифруется. Размещайте экспорт в �
 | REL-QUEUE-001: bounded queue | `Recorder.TryCapture` | `TestQueueOverflowIsNonblocking`, `TestRecorderBoundsAndConcurrentClose` |
 | SEC-RAW-001: raw opt-in | `Recorder.Options.Raw` | `TestRecorderExportAndPrivacy`, `TestParseExtensionVectorsAndPrivacy` |
 | FR-EXPORT-001: JSONL и quota | recorder worker | `TestRecorderExportAndPrivacy`, `TestOutputQuotaAndMalformedCapture` |
+| FR-STORE-001: SQLite persistence/migrations/retention | `recorder.sqliteStore` | `TestSQLitePersistenceReopenAndRetention`, `TestSQLitePreservesPrivacyPolicyAcrossReopen` |
 | FR-API-001: поиск/detail/export/diff | `webpanel/recorder.go` | `TestRecorderAPI` |
 | SEC-API-001: локальный доступ | bind/Host/peer/Origin checks | `TestRecorderRejectsRemoteAndRebinding` |
 | SEC-CANARY-001: секреты не отражаются в API/error | config API, HTTP upstream dialer | `TestConfigAPIUpdatesRuntimeConfiguration`, `TestHTTPUpstreamCONNECTErrorDoesNotExposeResponseBodyCanary` |
@@ -93,9 +98,10 @@ Sniffer читает до 5 секунд, сохраняет прочитанн�
 При включённом raw capture сохранённую observation можно повторно разобрать
 через `POST /api/v1/observations/{id}/reparse`. Исходная запись не меняется;
 создаётся новая запись с `analysis_revision` и `analysis_parent_id`. Если RAW
-не сохранялся, API возвращает `422`. Это пока bounded memory/JSONL workflow;
-полноценный исторический reparse поверх постоянного SQLite-хранилища остаётся
-частью MVP-1.
+не сохранялся, API возвращает `422`. При включённом SQLite сохраняется тот же
+versioned JSON envelope и после перезапуска восстанавливается последнее bounded
+окно; отдельный исторический SQL-поиск и reparse всей базы остаются следующим
+этапом.
 
 При runtime-ограничении preset под downstream-протокол recorder сохраняет
 `runtime_mutations` с типом события, полем, значениями `before`/`after` и
@@ -195,7 +201,14 @@ Outbound observation содержит одновременно `profile_version`
 
 По умолчанию: ClientHello 256 KiB, TLS record 18 432 bytes, 64 records; queue 64 observations; окно 256 observations и максимум 32 MiB сериализованных данных. Поддерживаются limits через Go Options; CLI пока предоставляет основные switches. Очередь не ждёт свободного места, dropped events явно считаются. Закрытие recorder дренирует уже принятую очередь.
 
-Это fail-open memory recorder; durable spool, безусловное сохранение critical events, SQL storage, config audit ещё отсутствуют. Статус `recording_degraded` показывает переполнение очереди или ошибки JSONL. JSONL после частичной ошибки записи больше не дописывается.
+Это fail-open recorder. По явному `--capture-sqlite` наблюдения сохраняются в
+SQLite с versioned migration, индексами по времени/connection/capture point и
+bounded retention (по умолчанию 100 000 записей); после перезапуска последние
+наблюдения восстанавливаются в memory window. SQLite payload сохраняет тот же
+versioned JSON envelope, а raw остаётся под флагом `--capture-raw`. Ошибка
+SQLite не останавливает прокси и увеличивает `write_errors`; статус
+`recording_degraded` показывает переполнение очереди или ошибки JSONL/SQLite.
+JSONL после частичной ошибки записи больше не дописывается.
 
 Логирование проходит через центральный sanitizing `slog.Handler`: секретные
 атрибуты (`password`, `token`, `authorization`, raw/data, ticket/binder и
@@ -210,7 +223,9 @@ Bearer/Basic значения до передачи записи в backend.
    recorder-on/off (p95/throughput) и дополнительные handshake-сценарии.
    Текущий versioned corpus manifest честно отделяет runtime wire captures,
    published vector и synthetic fixtures и перечисляет оставшиеся пробелы.
-2. MVP-1: SQLite, миграции/retention, Device identity и привязка приложений; сейчас ID объединяет только пару TLS observations и создаётся при входе в tunnel handler.
+2. MVP-1: SQLite, миграции и retention реализованы через `--capture-sqlite`;
+   остаются Device identity и привязка приложений. Сейчас ID объединяет только
+   пару TLS observations и создаётся при входе в tunnel handler.
 3. MVP-2: остаются общий двухфазный route manager, приоритеты/несколько
    активных profiles/upstreams и полноценные runtime snapshots. Версионируемый
    TLS template, материализация expected и verification уже реализованы для

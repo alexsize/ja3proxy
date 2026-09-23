@@ -120,7 +120,7 @@ func (app *App) configureRuntime(ctx context.Context) error {
 	}
 	if app.Config.CaptureTLS && app.Recorder == nil {
 		var err error
-		app.Recorder, err = recorder.New(recorder.Options{Raw: app.Config.CaptureRaw, JSONLPath: app.Config.CaptureJSONL})
+		app.Recorder, err = recorder.New(recorder.Options{Raw: app.Config.CaptureRaw, JSONLPath: app.Config.CaptureJSONL, SQLitePath: app.Config.CaptureSQLite, SQLiteRetention: app.Config.CaptureSQLiteRetention})
 		if err != nil {
 			return fmt.Errorf("configure recorder: %w", err)
 		}

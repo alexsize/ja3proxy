@@ -23,25 +23,27 @@ const (
 )
 
 type cliOptions struct {
-	captureTLS          bool
-	captureRaw          bool
-	captureJSONL        string
-	tlsMode             string
-	tlsTemplateFile     string
-	listen              string
-	caCert              string
-	caKey               string
-	tlsFingerprint      string
-	tlsFingerprintFile  string
-	tlsProfileFile      string
-	upstreamProxy       string
-	proxyUsername       string
-	proxyPassword       string
-	logLevel            string
-	dumpTraffic         bool
-	tui                 bool
-	webPanel            string
-	listTLSFingerprints bool
+	captureTLS             bool
+	captureRaw             bool
+	captureJSONL           string
+	captureSQLite          string
+	captureSQLiteRetention int
+	tlsMode                string
+	tlsTemplateFile        string
+	listen                 string
+	caCert                 string
+	caKey                  string
+	tlsFingerprint         string
+	tlsFingerprintFile     string
+	tlsProfileFile         string
+	upstreamProxy          string
+	proxyUsername          string
+	proxyPassword          string
+	logLevel               string
+	dumpTraffic            bool
+	tui                    bool
+	webPanel               string
+	listTLSFingerprints    bool
 }
 
 func (app *App) parseFlags(args []string) error {
@@ -64,11 +66,12 @@ func (app *App) parseFlags(args []string) error {
 
 func newDefaultCLIOptions() cliOptions {
 	return cliOptions{
-		listen:          defaultListen,
-		caCert:          defaultCACertPath,
-		caKey:           defaultCAKeyPath,
-		logLevel:        defaultLogLevelName,
-		tlsTemplateFile: "profiles/tls-templates.jsonl",
+		listen:                 defaultListen,
+		caCert:                 defaultCACertPath,
+		caKey:                  defaultCAKeyPath,
+		logLevel:               defaultLogLevelName,
+		tlsTemplateFile:        "profiles/tls-templates.jsonl",
+		captureSQLiteRetention: 100000,
 	}
 }
 
@@ -76,6 +79,8 @@ func registerCLIFlags(flags *flag.FlagSet, options *cliOptions) {
 	flags.BoolVar(&options.captureTLS, "capture-tls", false, "записывать входящий и исходящий ClientHello в ограниченной памяти")
 	flags.BoolVar(&options.captureRaw, "capture-raw", false, "сохранять чувствительные raw-данные TLS; требуется --capture-tls")
 	flags.StringVar(&options.captureJSONL, "capture-jsonl", "", "создать новый JSONL-файл наблюдений; требуется --capture-tls")
+	flags.StringVar(&options.captureSQLite, "capture-sqlite", "", "сохранять наблюдения в SQLite; требуется --capture-tls")
+	flags.IntVar(&options.captureSQLiteRetention, "capture-sqlite-retention", 100000, "максимальное число наблюдений в SQLite (1..1000000)")
 	flags.StringVar(&options.tlsMode, "tls-mode", "MITM_REISSUE", "режим туннеля: MITM_REISSUE, PASSTHROUGH, OBSERVE_ONLY, BLOCK")
 	flags.StringVar(&options.tlsTemplateFile, "tls-template-file", "profiles/tls-templates.jsonl", "журнал версий редактируемых TLS-профилей")
 	flags.StringVar(&options.listen, "listen", defaultListen, "адрес прослушивания, например :8080 или 127.0.0.1:8080")
@@ -124,6 +129,8 @@ Recorder и диагностика:
   --capture-tls                   включить ограниченную запись ClientHello
   --capture-raw                   сохранять чувствительные raw-данные TLS
   --capture-jsonl string          создать новый JSONL-файл, лимит 256 МиБ
+  --capture-sqlite string         durable SQLite-хранилище наблюдений; retention по умолчанию 100000
+  --capture-sqlite-retention int  максимальное число наблюдений в SQLite (1..1000000)
   --tls-mode string               MITM_REISSUE, PASSTHROUGH, OBSERVE_ONLY, BLOCK
   --tls-template-file string      журнал редактируемых TLS-профилей (по умолчанию "profiles/tls-templates.jsonl")
   --log-level string              debug, info, warn или error (по умолчанию "info")
@@ -146,8 +153,11 @@ func applyCLIOptions(config *RunningConfig, options cliOptions, specified map[st
 	if config.ListFingerprints {
 		return nil
 	}
-	if !options.captureTLS && (options.captureRaw || options.captureJSONL != "") {
-		return fmt.Errorf("--capture-raw и --capture-jsonl требуют --capture-tls")
+	if !options.captureTLS && (options.captureRaw || options.captureJSONL != "" || options.captureSQLite != "") {
+		return fmt.Errorf("--capture-raw, --capture-jsonl и --capture-sqlite требуют --capture-tls")
+	}
+	if options.captureSQLiteRetention < 1 || options.captureSQLiteRetention > 1000000 {
+		return fmt.Errorf("--capture-sqlite-retention должно быть от 1 до 1000000")
 	}
 	mode := strings.ToUpper(options.tlsMode)
 	if mode == "" {
@@ -161,6 +171,8 @@ func applyCLIOptions(config *RunningConfig, options cliOptions, specified map[st
 	config.CaptureTLS = options.captureTLS
 	config.CaptureRaw = options.captureRaw
 	config.CaptureJSONL = options.captureJSONL
+	config.CaptureSQLite = options.captureSQLite
+	config.CaptureSQLiteRetention = options.captureSQLiteRetention
 	config.TLSMode = mode
 	config.TLSTemplateFile = options.tlsTemplateFile
 

@@ -133,12 +133,14 @@ type Observation struct {
 }
 
 type Options struct {
-	QueueSize    int
-	RecentLimit  int
-	MemoryBytes  int
-	Raw          bool
-	JSONLPath    string
-	MaxFileBytes int64
+	QueueSize       int
+	RecentLimit     int
+	MemoryBytes     int
+	Raw             bool
+	JSONLPath       string
+	MaxFileBytes    int64
+	SQLitePath      string
+	SQLiteRetention int
 }
 
 type queued struct {
@@ -171,6 +173,7 @@ type Recorder struct {
 	fileMu       sync.Mutex
 	fileBytes    int64
 	exportFailed bool
+	store        *sqliteStore
 	accepted     atomic.Uint64
 	processed    atomic.Uint64
 	dropped      atomic.Uint64
@@ -201,6 +204,27 @@ func New(opts Options) (*Recorder, error) {
 			return nil, err
 		}
 		r.file = f
+	}
+	if opts.SQLitePath != "" {
+		store, err := openSQLiteStore(opts.SQLitePath, opts.SQLiteRetention)
+		if err != nil {
+			if r.file != nil {
+				_ = r.file.Close()
+			}
+			return nil, err
+		}
+		r.store = store
+		if data, err := store.recent(opts.RecentLimit); err != nil {
+			_ = store.close()
+			if r.file != nil {
+				_ = r.file.Close()
+			}
+			return nil, err
+		} else {
+			for _, item := range data {
+				r.remember(item)
+			}
+		}
 	}
 	go r.run()
 	return r, nil
@@ -264,6 +288,11 @@ func (r *Recorder) run() {
 			}
 			r.fileMu.Unlock()
 		}
+		if r.store != nil {
+			if err := r.store.close(); err != nil {
+				r.writeErrors.Add(1)
+			}
+		}
 	}()
 	for q := range r.queue {
 		c := q.capture
@@ -309,6 +338,7 @@ func (r *Recorder) run() {
 			continue
 		}
 		r.writeJSONL(data)
+		r.persist(o, data)
 		r.remember(data)
 		r.processed.Add(1)
 	}
@@ -352,6 +382,15 @@ func (r *Recorder) remember(data []byte) {
 	if len(data) <= r.opts.MemoryBytes {
 		r.recent = append(r.recent, data)
 		r.memory += len(data)
+	}
+}
+
+func (r *Recorder) persist(o Observation, data []byte) {
+	if r.store == nil {
+		return
+	}
+	if err := r.store.insert(o, data); err != nil {
+		r.writeErrors.Add(1)
 	}
 }
 
@@ -420,6 +459,7 @@ func (r *Recorder) Reparse(id string) (Observation, error) {
 		return Observation{}, err
 	}
 	r.writeJSONL(data)
+	r.persist(derived, data)
 	r.remember(data)
 	r.processed.Add(1)
 	return derived, nil
