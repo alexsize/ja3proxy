@@ -147,6 +147,10 @@ capture point. Retention удаляет самые старые записи п�
 }
 ```
 
+Каталог приложений хранится в том же реестре и связывается с assignment через
+`application_id`. Старый формат assignment с полем `application` поддерживается
+для совместимости.
+
 Реестр можно изменять через локальный Device Manager API. Все операции требуют
 `expected_version`, равный текущему `config_version`; при конфликте сервер
 возвращает `409`, поэтому клиент должен перечитать список и повторить изменение.
@@ -173,6 +177,13 @@ capture point. Retention удаляет самые старые записи п�
 | `POST /api/v1/device-assignments` | создать привязку периода |
 | `PUT /api/v1/device-assignments/{id}` | изменить привязку периода |
 | `DELETE /api/v1/device-assignments/{id}` | удалить привязку периода |
+| `GET /api/v1/applications` | каталог приложений |
+| `GET /api/v1/applications/{id}` | одно приложение |
+| `POST /api/v1/applications` | создать приложение |
+| `PUT /api/v1/applications/{id}` | изменить приложение |
+| `DELETE /api/v1/applications/{id}` | удалить приложение |
+| `GET /api/v1/fingerprints/timeline` | timeline JA3/JA4 с отметкой изменений |
+| `GET /api/v1/export/observations?format=jsonl|csv` | фильтруемый экспорт |
 | `GET /api/v1/tls/profiles` | библиотека и версия конфигурации TLS-профилей |
 | `POST /api/v1/tls/profiles/from-preset` | черновик из uTLS-пресета |
 | `POST /api/v1/tls/profiles/from-observation` | черновик/профиль из наблюдения |
@@ -273,8 +284,9 @@ append-only JSONL с compare-and-swap по `config_version`; путь задаё
 - Device Manager поддерживает постоянные mappings по username/IP и CAS-защиту
 - Device Manager поддерживает постоянные mappings по username/IP и CAS-защиту
   изменений; временные application assignments теперь поддерживают период
-  `valid_from/valid_to`, а application catalog и правила по приложениям
-  относятся к следующим этапам ТЗ;
+  `valid_from/valid_to`, а application catalog поддерживает CRUD и ссылочную
+  связь assignment через `application_id`; автоматические правила по
+  приложениям относятся к следующим этапам ТЗ;
 - HTTP export выгружает текущее окно, а не содержимое JSONL;
 - SQLite persistence уже есть, но полноценного SQL-поиска/экспорта по всей базе,
   пользователей, ролей и общего audit-журнала конфигурации ещё нет;

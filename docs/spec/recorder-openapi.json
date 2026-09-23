@@ -220,6 +220,81 @@
         }
       }
     },
+    "/api/v1/applications": {
+      "get": {
+        "operationId": "listApplications",
+        "responses": {
+          "200": {
+            "description": "Каталог приложений",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApplicationList"}}}
+          },
+          "403": {"$ref": "#/components/responses/Forbidden"}
+        }
+      },
+      "post": {
+        "operationId": "createApplication",
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApplicationMutation"}}}
+        },
+        "responses": {
+          "201": {
+            "description": "Приложение создано",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApplicationMutationResponse"}}}
+          },
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "403": {"$ref": "#/components/responses/Forbidden"}
+        }
+      }
+    },
+    "/api/v1/applications/{id}": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
+      "get": {
+        "operationId": "getApplication",
+        "responses": {
+          "200": {
+            "description": "Приложение",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Application"}}}
+          },
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "403": {"$ref": "#/components/responses/Forbidden"}
+        }
+      },
+      "put": {
+        "operationId": "updateApplication",
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApplicationMutation"}}}
+        },
+        "responses": {
+          "200": {
+            "description": "Приложение изменено",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApplicationMutationResponse"}}}
+          },
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "403": {"$ref": "#/components/responses/Forbidden"}
+        }
+      },
+      "delete": {
+        "operationId": "deleteApplication",
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ExpectedVersion"}}}
+        },
+        "responses": {
+          "200": {
+            "description": "Приложение удалено",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DeviceRegistry"}}}
+          },
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "403": {"$ref": "#/components/responses/Forbidden"}
+        }
+      }
+    },
     "/api/v1/observations": {
       "get": {
         "operationId": "listObservations",
@@ -250,6 +325,36 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "device_id",
+            "in": "query",
+            "schema": {"type": "string"}
+          },
+          {
+            "name": "application",
+            "in": "query",
+            "schema": {"type": "string"}
+          },
+          {
+            "name": "application_id",
+            "in": "query",
+            "schema": {"type": "string"}
+          },
+          {
+            "name": "application_version",
+            "in": "query",
+            "schema": {"type": "string"}
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {"type": "string", "format": "date-time"}
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {"type": "string", "format": "date-time"}
           }
         ],
         "responses": {
@@ -479,10 +584,40 @@
         "description": "Сравниваются два наблюдения. Проверка ожидаемого шаблона находится в поле verification исходящего наблюдения."
       }
     },
+    "/api/v1/fingerprints/timeline": {
+      "get": {
+        "operationId": "fingerprintTimeline",
+        "parameters": [
+          {"name": "device_id", "in": "query", "schema": {"type": "string"}},
+          {"name": "application", "in": "query", "schema": {"type": "string"}},
+          {"name": "application_id", "in": "query", "schema": {"type": "string"}},
+          {"name": "application_version", "in": "query", "schema": {"type": "string"}},
+          {"name": "from", "in": "query", "schema": {"type": "string", "format": "date-time"}},
+          {"name": "to", "in": "query", "schema": {"type": "string", "format": "date-time"}}
+        ],
+        "responses": {
+          "200": {
+            "description": "Fingerprint timeline",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/FingerprintTimeline"}}}
+          },
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "403": {"$ref": "#/components/responses/Forbidden"}
+        }
+      }
+    },
     "/api/v1/export/observations": {
       "get": {
         "operationId": "exportRetainedObservations",
         "description": "Экспортирует только текущее окно памяти, начиная с новых записей. Raw-данные присутствуют только при включении во время запуска.",
+        "parameters": [
+          {"name": "format", "in": "query", "schema": {"type": "string", "enum": ["jsonl", "csv"], "default": "jsonl"}},
+          {"name": "device_id", "in": "query", "schema": {"type": "string"}},
+          {"name": "application", "in": "query", "schema": {"type": "string"}},
+          {"name": "application_id", "in": "query", "schema": {"type": "string"}},
+          {"name": "application_version", "in": "query", "schema": {"type": "string"}},
+          {"name": "from", "in": "query", "schema": {"type": "string", "format": "date-time"}},
+          {"name": "to", "in": "query", "schema": {"type": "string", "format": "date-time"}}
+        ],
         "responses": {
           "200": {
             "description": "Поток NDJSON",
@@ -491,6 +626,9 @@
                 "schema": {
                   "type": "string"
                 }
+              },
+              "text/csv": {
+                "schema": {"type": "string"}
               }
             }
           },
@@ -803,6 +941,14 @@
           "devices": {
             "type": "array",
             "items": {"$ref": "#/components/schemas/Device"}
+          },
+          "assignments": {
+            "type": "array",
+            "items": {"$ref": "#/components/schemas/ApplicationAssignment"}
+          },
+          "applications": {
+            "type": "array",
+            "items": {"$ref": "#/components/schemas/Application"}
           }
         }
       },
@@ -875,6 +1021,7 @@
         "properties": {
           "id": {"type": "string"},
           "device_id": {"type": "string"},
+          "application_id": {"type": "string"},
           "application": {"type": "string"},
           "version": {"type": "string"},
           "valid_from": {"type": "string", "format": "date-time"},
@@ -883,10 +1030,15 @@
       },
       "ApplicationAssignmentInput": {
         "type": "object",
-        "required": ["device_id", "application", "version", "valid_from"],
+        "required": ["device_id", "version", "valid_from"],
+        "anyOf": [
+          {"required": ["application"]},
+          {"required": ["application_id"]}
+        ],
         "properties": {
           "id": {"type": "string", "description": "Необязателен при создании"},
           "device_id": {"type": "string"},
+          "application_id": {"type": "string"},
           "application": {"type": "string"},
           "version": {"type": "string"},
           "valid_from": {"type": "string", "format": "date-time"},
@@ -916,6 +1068,87 @@
         "properties": {
           "assignment": {"$ref": "#/components/schemas/ApplicationAssignment"},
           "registry": {"$ref": "#/components/schemas/DeviceRegistry"}
+        }
+      },
+      "Application": {
+        "type": "object",
+        "required": ["id", "name", "enabled"],
+        "properties": {
+          "id": {"type": "string"},
+          "name": {"type": "string"},
+          "publisher": {"type": "string"},
+          "platform": {"type": "string"},
+          "package": {"type": "string"},
+          "description": {"type": "string"},
+          "created_at": {"type": "string", "format": "date-time"},
+          "enabled": {"type": "boolean"}
+        }
+      },
+      "ApplicationInput": {
+        "type": "object",
+        "required": ["name", "enabled"],
+        "properties": {
+          "id": {"type": "string", "description": "Необязателен при создании"},
+          "name": {"type": "string"},
+          "publisher": {"type": "string"},
+          "platform": {"type": "string"},
+          "package": {"type": "string"},
+          "description": {"type": "string"},
+          "enabled": {"type": "boolean"}
+        }
+      },
+      "ApplicationList": {
+        "type": "object",
+        "required": ["schema_version", "config_version", "items"],
+        "properties": {
+          "schema_version": {"const": "device-registry/1"},
+          "config_version": {"type": "integer", "minimum": 0},
+          "items": {"type": "array", "items": {"$ref": "#/components/schemas/Application"}}
+        }
+      },
+      "ApplicationMutation": {
+        "type": "object",
+        "required": ["expected_version", "application"],
+        "properties": {
+          "expected_version": {"type": "integer", "minimum": 0},
+          "application": {"$ref": "#/components/schemas/ApplicationInput"}
+        }
+      },
+      "ApplicationMutationResponse": {
+        "type": "object",
+        "required": ["application", "registry"],
+        "properties": {
+          "application": {"$ref": "#/components/schemas/Application"},
+          "registry": {"$ref": "#/components/schemas/DeviceRegistry"}
+        }
+      },
+      "FingerprintTimeline": {
+        "type": "object",
+        "required": ["items"],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {"$ref": "#/components/schemas/FingerprintTimelinePoint"}
+          }
+        }
+      },
+      "FingerprintTimelinePoint": {
+        "type": "object",
+        "required": ["observation_id", "captured_at", "ja3", "ja3_hash", "ja4", "changed"],
+        "properties": {
+          "observation_id": {"type": "string"},
+          "captured_at": {"type": "string", "format": "date-time"},
+          "connection_id": {"type": "string"},
+          "device_id": {"type": "string"},
+          "application": {"type": "string"},
+          "application_id": {"type": "string"},
+          "application_version": {"type": "string"},
+          "ja3": {"type": "string"},
+          "ja3_hash": {"type": "string"},
+          "ja4": {"type": "string"},
+          "profile_id": {"type": "string"},
+          "profile_version": {"type": "integer"},
+          "changed": {"type": "boolean"}
         }
       },
       "Observation": {
@@ -1002,6 +1235,9 @@
             "type": "string"
           },
           "application_version": {
+            "type": "string"
+          },
+          "application_id": {
             "type": "string"
           },
           "application_assignment_id": {

@@ -20,11 +20,13 @@ const (
 )
 
 var (
-	ErrVersionConflict      = errors.New("device registry version conflict")
-	ErrDeviceNotFound       = errors.New("device not found")
-	ErrDeviceHasAssignments = errors.New("device has application assignments")
-	ErrPersistence          = errors.New("device registry persistence error")
-	ErrAssignmentNotFound   = errors.New("device application assignment not found")
+	ErrVersionConflict           = errors.New("device registry version conflict")
+	ErrDeviceNotFound            = errors.New("device not found")
+	ErrDeviceHasAssignments      = errors.New("device has application assignments")
+	ErrPersistence               = errors.New("device registry persistence error")
+	ErrAssignmentNotFound        = errors.New("device application assignment not found")
+	ErrApplicationNotFound       = errors.New("application not found")
+	ErrApplicationHasAssignments = errors.New("application has assignments")
 )
 
 type Device struct {
@@ -46,12 +48,24 @@ type Device struct {
 }
 
 type ApplicationAssignment struct {
+	ID            string `json:"id"`
+	DeviceID      string `json:"device_id"`
+	ApplicationID string `json:"application_id,omitempty"`
+	Application   string `json:"application"`
+	Version       string `json:"version"`
+	ValidFrom     string `json:"valid_from"`
+	ValidTo       string `json:"valid_to,omitempty"`
+}
+
+type Application struct {
 	ID          string `json:"id"`
-	DeviceID    string `json:"device_id"`
-	Application string `json:"application"`
-	Version     string `json:"version"`
-	ValidFrom   string `json:"valid_from"`
-	ValidTo     string `json:"valid_to,omitempty"`
+	Name        string `json:"name"`
+	Publisher   string `json:"publisher,omitempty"`
+	Platform    string `json:"platform,omitempty"`
+	Package     string `json:"package,omitempty"`
+	Description string `json:"description,omitempty"`
+	CreatedAt   string `json:"created_at,omitempty"`
+	Enabled     bool   `json:"enabled"`
 }
 
 type Registry struct {
@@ -59,12 +73,14 @@ type Registry struct {
 	ConfigVersion uint64                  `json:"config_version"`
 	Devices       []Device                `json:"devices"`
 	Assignments   []ApplicationAssignment `json:"assignments,omitempty"`
+	Applications  []Application           `json:"applications,omitempty"`
 }
 
 type Resolution struct {
 	DeviceID            string
 	Application         string
 	ApplicationVersion  string
+	ApplicationID       string
 	AssignmentID        string
 	Ambiguous           bool
 	AssignmentAmbiguous bool
@@ -77,7 +93,7 @@ type Store struct {
 }
 
 func Open(path string) (*Store, error) {
-	store := &Store{path: path, registry: Registry{SchemaVersion: SchemaVersion, Devices: []Device{}, Assignments: []ApplicationAssignment{}}}
+	store := &Store{path: path, registry: Registry{SchemaVersion: SchemaVersion, Devices: []Device{}, Assignments: []ApplicationAssignment{}, Applications: []Application{}}}
 	if path == "" {
 		return store, nil
 	}
@@ -227,7 +243,7 @@ func (s *Store) Delete(id string, expectedVersion uint64) (Registry, error) {
 
 func (s *Store) Snapshot() Registry {
 	if s == nil {
-		return Registry{SchemaVersion: SchemaVersion, Devices: []Device{}, Assignments: []ApplicationAssignment{}}
+		return Registry{SchemaVersion: SchemaVersion, Devices: []Device{}, Assignments: []ApplicationAssignment{}, Applications: []Application{}}
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -280,6 +296,7 @@ func (s *Store) resolveAssignment(resolution Resolution, at time.Time) Resolutio
 	}
 	resolution.Application = matches[0].Application
 	resolution.ApplicationVersion = matches[0].Version
+	resolution.ApplicationID = matches[0].ApplicationID
 	resolution.AssignmentID = matches[0].ID
 	return resolution
 }
@@ -295,6 +312,15 @@ func (s *Store) CreateAssignment(candidate ApplicationAssignment, expectedVersio
 	}
 	if candidate.ID == "" {
 		candidate.ID = newID()
+	}
+	if candidate.ApplicationID != "" {
+		application, found := findApplication(s.registry.Applications, candidate.ApplicationID)
+		if !found {
+			return ApplicationAssignment{}, cloneRegistry(s.registry), ErrApplicationNotFound
+		}
+		if candidate.Application == "" {
+			candidate.Application = application.Name
+		}
 	}
 	if err := validateAssignment(candidate, s.registry); err != nil {
 		return ApplicationAssignment{}, cloneRegistry(s.registry), err
@@ -335,6 +361,15 @@ func (s *Store) UpdateAssignment(id string, candidate ApplicationAssignment, exp
 		return ApplicationAssignment{}, cloneRegistry(s.registry), ErrAssignmentNotFound
 	}
 	candidate.ID = id
+	if candidate.ApplicationID != "" {
+		application, found := findApplication(next.Applications, candidate.ApplicationID)
+		if !found {
+			return ApplicationAssignment{}, cloneRegistry(s.registry), ErrApplicationNotFound
+		}
+		if candidate.Application == "" {
+			candidate.Application = application.Name
+		}
+	}
 	next.Assignments[index] = candidate
 	if err := validateAssignment(candidate, next); err != nil {
 		return ApplicationAssignment{}, cloneRegistry(s.registry), err
@@ -390,6 +425,116 @@ func (s *Store) GetAssignment(id string) (ApplicationAssignment, bool) {
 	return ApplicationAssignment{}, false
 }
 
+func (s *Store) GetApplication(id string) (Application, bool) {
+	if s == nil {
+		return Application{}, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return findApplication(s.registry.Applications, id)
+}
+
+func (s *Store) CreateApplication(candidate Application, expectedVersion uint64) (Application, Registry, error) {
+	if s == nil {
+		return Application{}, Registry{}, errors.New("device registry is unavailable")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.registry.ConfigVersion != expectedVersion {
+		return Application{}, cloneRegistry(s.registry), ErrVersionConflict
+	}
+	if candidate.ID == "" {
+		candidate.ID = newID()
+	}
+	if candidate.CreatedAt == "" {
+		candidate.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	if err := validateApplication(candidate); err != nil {
+		return Application{}, cloneRegistry(s.registry), err
+	}
+	if _, found := findApplication(s.registry.Applications, candidate.ID); found {
+		return Application{}, cloneRegistry(s.registry), fmt.Errorf("duplicate application id %q", candidate.ID)
+	}
+	next := cloneRegistry(s.registry)
+	next.Applications = append(next.Applications, candidate)
+	next.ConfigVersion++
+	if err := s.persist(next); err != nil {
+		return Application{}, cloneRegistry(s.registry), fmt.Errorf("%w: %v", ErrPersistence, err)
+	}
+	s.registry = next
+	return candidate, cloneRegistry(next), nil
+}
+
+func (s *Store) UpdateApplication(id string, candidate Application, expectedVersion uint64) (Application, Registry, error) {
+	if s == nil {
+		return Application{}, Registry{}, errors.New("device registry is unavailable")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.registry.ConfigVersion != expectedVersion {
+		return Application{}, cloneRegistry(s.registry), ErrVersionConflict
+	}
+	next := cloneRegistry(s.registry)
+	index := -1
+	for i, existing := range next.Applications {
+		if existing.ID == id {
+			index = i
+			if candidate.CreatedAt == "" {
+				candidate.CreatedAt = existing.CreatedAt
+			}
+			break
+		}
+	}
+	if index < 0 {
+		return Application{}, cloneRegistry(s.registry), ErrApplicationNotFound
+	}
+	candidate.ID = id
+	if err := validateApplication(candidate); err != nil {
+		return Application{}, cloneRegistry(s.registry), err
+	}
+	next.Applications[index] = candidate
+	next.ConfigVersion++
+	if err := s.persist(next); err != nil {
+		return Application{}, cloneRegistry(s.registry), fmt.Errorf("%w: %v", ErrPersistence, err)
+	}
+	s.registry = next
+	return candidate, cloneRegistry(next), nil
+}
+
+func (s *Store) DeleteApplication(id string, expectedVersion uint64) (Registry, error) {
+	if s == nil {
+		return Registry{}, errors.New("device registry is unavailable")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.registry.ConfigVersion != expectedVersion {
+		return cloneRegistry(s.registry), ErrVersionConflict
+	}
+	next := cloneRegistry(s.registry)
+	index := -1
+	for i, application := range next.Applications {
+		if application.ID == id {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		return cloneRegistry(s.registry), ErrApplicationNotFound
+	}
+	for _, assignment := range next.Assignments {
+		if assignment.ApplicationID == id {
+			return cloneRegistry(s.registry), fmt.Errorf("%w: %q", ErrApplicationHasAssignments, assignment.ID)
+		}
+	}
+	next.Applications = append(next.Applications[:index], next.Applications[index+1:]...)
+	next.ConfigVersion++
+	if err := s.persist(next); err != nil {
+		return cloneRegistry(s.registry), fmt.Errorf("%w: %v", ErrPersistence, err)
+	}
+	s.registry = next
+	return cloneRegistry(next), nil
+}
+
 func (s *Store) matchUsername(username string) []string {
 	var matches []string
 	for _, candidate := range s.registry.Devices {
@@ -427,6 +572,16 @@ func validate(registry Registry) error {
 		}
 		seen[candidate.ID] = struct{}{}
 	}
+	applicationIDs := map[string]struct{}{}
+	for _, application := range registry.Applications {
+		if err := validateApplication(application); err != nil {
+			return err
+		}
+		if _, exists := applicationIDs[application.ID]; exists {
+			return fmt.Errorf("duplicate application id %q", application.ID)
+		}
+		applicationIDs[application.ID] = struct{}{}
+	}
 	assignmentIDs := map[string]struct{}{}
 	for _, assignment := range registry.Assignments {
 		if err := validateAssignment(assignment, registry); err != nil {
@@ -453,11 +608,16 @@ func validateDevice(candidate Device) error {
 }
 
 func validateAssignment(candidate ApplicationAssignment, registry Registry) error {
-	if candidate.ID == "" || candidate.DeviceID == "" || candidate.Application == "" || candidate.Version == "" || candidate.ValidFrom == "" {
-		return errors.New("assignment id, device_id, application, version and valid_from are required")
+	if candidate.ID == "" || candidate.DeviceID == "" || (candidate.Application == "" && candidate.ApplicationID == "") || candidate.Version == "" || candidate.ValidFrom == "" {
+		return errors.New("assignment id, device_id, application or application_id, version and valid_from are required")
 	}
 	if _, found := findDevice(registry.Devices, candidate.DeviceID); !found {
 		return fmt.Errorf("assignment references unknown device %q", candidate.DeviceID)
+	}
+	if candidate.ApplicationID != "" {
+		if _, found := findApplication(registry.Applications, candidate.ApplicationID); !found {
+			return fmt.Errorf("assignment references unknown application %q", candidate.ApplicationID)
+		}
 	}
 	from, err := time.Parse(time.RFC3339, candidate.ValidFrom)
 	if err != nil {
@@ -489,6 +649,13 @@ func validateAssignment(candidate ApplicationAssignment, registry Registry) erro
 	return nil
 }
 
+func validateApplication(candidate Application) error {
+	if candidate.ID == "" || candidate.Name == "" {
+		return errors.New("application id and name are required")
+	}
+	return nil
+}
+
 func findDevice(devices []Device, id string) (Device, bool) {
 	for _, candidate := range devices {
 		if candidate.ID == id {
@@ -496,6 +663,15 @@ func findDevice(devices []Device, id string) (Device, bool) {
 		}
 	}
 	return Device{}, false
+}
+
+func findApplication(applications []Application, id string) (Application, bool) {
+	for _, candidate := range applications {
+		if candidate.ID == id {
+			return candidate, true
+		}
+	}
+	return Application{}, false
 }
 
 func assignmentActive(assignment ApplicationAssignment, at time.Time) bool {
@@ -548,6 +724,7 @@ func cloneRegistry(registry Registry) Registry {
 		cloned.Devices[i] = cloneDevice(candidate)
 	}
 	cloned.Assignments = append([]ApplicationAssignment(nil), registry.Assignments...)
+	cloned.Applications = append([]Application(nil), registry.Applications...)
 	return cloned
 }
 

@@ -35,10 +35,16 @@ func (panel Server) registerRecorderRoutes(mux *http.ServeMux) {
 		"POST /api/v1/device-assignments":        panel.createAssignment,
 		"PUT /api/v1/device-assignments/{id}":    panel.updateAssignment,
 		"DELETE /api/v1/device-assignments/{id}": panel.deleteAssignment,
+		"GET /api/v1/applications":               panel.applications,
+		"GET /api/v1/applications/{id}":          panel.getApplication,
+		"POST /api/v1/applications":              panel.createApplication,
+		"PUT /api/v1/applications/{id}":          panel.updateApplication,
+		"DELETE /api/v1/applications/{id}":       panel.deleteApplication,
 		"GET /api/v1/observations":               panel.observations,
 		"GET /api/v1/observations/{id}":          panel.observation,
 		"POST /api/v1/observations/{id}/reparse": panel.reparseObservation,
 		"GET /api/v1/fingerprints/diff":          panel.fingerprintDiff,
+		"GET /api/v1/fingerprints/timeline":      panel.fingerprintTimeline,
 		"GET /api/v1/export/observations":        panel.exportObservations,
 		"GET /api/v1/tls/presets":                func(w http.ResponseWriter, r *http.Request) { json.NewEncoder(w).Encode(fingerprint.Presets()) },
 	}
@@ -102,6 +108,10 @@ func (panel Server) recorderStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (panel Server) observations(w http.ResponseWriter, r *http.Request) {
+	filter, ok := parseObservationFilter(w, r)
+	if !ok {
+		return
+	}
 	limit := 50
 	if value := r.URL.Query().Get("limit"); value != "" {
 		n, err := strconv.Atoi(value)
@@ -121,6 +131,9 @@ func (panel Server) observations(w http.ResponseWriter, r *http.Request) {
 			if o.ID == cursor {
 				after = true
 			}
+			continue
+		}
+		if !filter.matches(o) {
 			continue
 		}
 		search := o.Destination + " " + o.Source + " " + o.ConnectionID + " " + o.IdentitySource + " " + o.IdentityValue + " " + o.Confidence + " " + o.ResolvedDeviceID + " " + o.Application + " " + o.ApplicationVersion
@@ -203,11 +216,34 @@ func (panel Server) fingerprintDiff(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(recorder.Compare(*left, *right))
 }
 func (panel Server) exportObservations(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/x-ndjson")
-	w.Header().Set("Content-Disposition", `attachment; filename="observations.jsonl"`)
-	if panel.Recorder != nil {
-		_ = panel.Recorder.Export(w)
+	if panel.Recorder == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "recorder is disabled")
+		return
 	}
+	filter, ok := parseObservationFilter(w, r)
+	if !ok {
+		return
+	}
+	format := strings.ToLower(r.URL.Query().Get("format"))
+	if format == "" || format == "jsonl" {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.Header().Set("Content-Disposition", `attachment; filename="observations.jsonl"`)
+		for _, observation := range panel.Recorder.Snapshot() {
+			if filter.matches(observation) {
+				if err := json.NewEncoder(w).Encode(observation); err != nil {
+					return
+				}
+			}
+		}
+		return
+	}
+	if format != "csv" {
+		writeAPIError(w, http.StatusBadRequest, "format must be jsonl or csv")
+		return
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="fingerprints.csv"`)
+	writeFingerprintCSV(w, filteredObservations(panel.Recorder.Snapshot(), filter))
 }
 
 // RecorderMetrics avoids device/host/fingerprint labels with unbounded cardinality.

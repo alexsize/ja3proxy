@@ -43,6 +43,7 @@ type Meta struct {
 	ResolvedDeviceID        string               `json:"resolved_device_id,omitempty"`
 	Application             string               `json:"application,omitempty"`
 	ApplicationVersion      string               `json:"application_version,omitempty"`
+	ApplicationID           string               `json:"application_id,omitempty"`
 	ApplicationAssignmentID string               `json:"application_assignment_id,omitempty"`
 	Profile                 string               `json:"profile,omitempty"`
 	ProfileID               string               `json:"profile_id,omitempty"`

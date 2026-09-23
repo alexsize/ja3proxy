@@ -42,6 +42,10 @@ func TestRecorderAPI(t *testing.T) {
 			meta.IdentitySource = "proxy_username"
 			meta.IdentityValue = "iphone017"
 			meta.Confidence = "exact"
+			meta.ResolvedDeviceID = "iphone-017"
+			meta.Application = "Example"
+			meta.ApplicationID = "example"
+			meta.ApplicationVersion = "1.2.0"
 		}
 		r.TryCapture(meta, tlshello.Capture{Status: "timeout", ErrorCode: "capture_timeout"})
 	}
@@ -76,6 +80,18 @@ func TestRecorderAPI(t *testing.T) {
 	}
 	if filtered.Code != 200 || json.Unmarshal(filtered.Body.Bytes(), &filteredPage) != nil || len(filteredPage.Items) != 1 || filteredPage.Items[0].IdentityValue != "iphone017" {
 		t.Fatalf("identity search = %s", filtered.Body.String())
+	}
+	filtered = requestRecorder(h, "/api/v1/observations?application=Example&application_version=1.2.0")
+	if filtered.Code != 200 || json.Unmarshal(filtered.Body.Bytes(), &filteredPage) != nil || len(filteredPage.Items) != 1 || filteredPage.Items[0].ApplicationID != "example" {
+		t.Fatalf("application filter = %s", filtered.Body.String())
+	}
+	export := requestRecorder(h, "/api/v1/export/observations?format=jsonl&device_id=iphone-017")
+	if export.Code != 200 || !strings.Contains(export.Body.String(), "application_version") || !strings.Contains(export.Body.String(), "1.2.0") {
+		t.Fatalf("filtered JSONL export = %d %s", export.Code, export.Body.String())
+	}
+	csvExport := requestRecorder(h, "/api/v1/export/observations?format=csv&device_id=iphone-017")
+	if csvExport.Code != 200 || !strings.Contains(csvExport.Body.String(), "observation_id,captured_at,device_id") {
+		t.Fatalf("CSV export = %d %s", csvExport.Code, csvExport.Body.String())
 	}
 	for _, path := range []string{"/api/v1/status", "/api/v1/devices", "/api/v1/tls/presets", "/api/v1/observations/" + page.Items[0].ID, "/api/v1/export/observations", "/recorder.html", "/recorder.js", "/profiles.html", "/profiles.js", "/profiles.css"} {
 		if w := requestRecorder(h, path); w.Code != 200 {

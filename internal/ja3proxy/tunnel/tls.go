@@ -477,6 +477,7 @@ func resolveDevice(meta recorder.Meta, username, sourceIP string, devices *devic
 	}
 	meta.Application = resolution.Application
 	meta.ApplicationVersion = resolution.ApplicationVersion
+	meta.ApplicationID = resolution.ApplicationID
 	meta.ApplicationAssignmentID = resolution.AssignmentID
 	return meta
 }

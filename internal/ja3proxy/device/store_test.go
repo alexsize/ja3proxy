@@ -119,3 +119,34 @@ func TestApplicationAssignmentsAreTimeBound(t *testing.T) {
 		t.Fatal("overlapping assignment was accepted")
 	}
 }
+
+func TestApplicationCatalogAssignmentReference(t *testing.T) {
+	store, err := Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, registry, err := store.Create(Device{ID: "phone-018", Name: "Phone 018", ProxyUsername: "phone018", Enabled: true}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	application, registry, err := store.CreateApplication(Application{ID: "example", Name: "Example", Platform: "iOS", Enabled: true}, registry.ConfigVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assignment, registry, err := store.CreateAssignment(ApplicationAssignment{
+		ID: "phone-018-example", DeviceID: created.ID, ApplicationID: application.ID, Version: "4.0.0",
+		ValidFrom: time.Now().UTC().Add(-time.Minute).Format(time.RFC3339),
+	}, registry.ConfigVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if assignment.Application != application.Name || registry.ConfigVersion != 3 {
+		t.Fatalf("catalog assignment = %+v, registry = %+v", assignment, registry)
+	}
+	if got := store.Resolve("phone018", ""); got.ApplicationID != application.ID || got.Application != application.Name {
+		t.Fatalf("catalog resolution = %+v", got)
+	}
+	if _, err := store.DeleteApplication(application.ID, registry.ConfigVersion); !errors.Is(err, ErrApplicationHasAssignments) {
+		t.Fatalf("application with assignment delete error = %v", err)
+	}
+}
