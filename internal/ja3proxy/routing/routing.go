@@ -128,6 +128,22 @@ func (s *Store) Resolve(phase Phase, request Request) Decision {
 	return resolve(*s.current, s.version, phase, request)
 }
 
+// HasPhase reports whether the current immutable snapshot contains an enabled
+// rule for phase. Tunnel code uses it to decide whether a ClientHello must be
+// buffered before selecting a POST_CLIENTHELLO mode.
+func (s *Store) HasPhase(phase Phase) bool {
+	config, _, ok := s.Snapshot()
+	if !ok {
+		return false
+	}
+	for _, rule := range config.Rules {
+		if rule.Enabled && rule.Phase == phase {
+			return true
+		}
+	}
+	return false
+}
+
 func Validate(config Config) error {
 	seenIDs := make(map[string]struct{}, len(config.Rules))
 	for index, rule := range config.Rules {

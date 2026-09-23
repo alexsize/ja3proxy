@@ -79,6 +79,7 @@ JSONL пока не шифруется. Размещайте экспорт в �
 | FR-ROUTING-004: route action pins explicit TLS profile | `tlsprofile.Store.ResolveByID`, tunnel profile selection | TLS profile routing/e2e coverage |
 | FR-ROUTING-005: PRE_TLS route selects upstream per tunnel | request-aware proxy dialer, cached route dialers | `TestDialRoutedTunnelUsesRouteUpstream`, proxy tunnel coverage |
 | FR-ROUTING-006: recorder stores immutable two-phase route evidence | `recorder.RoutingSnapshot`, observation metadata | `TestRoutingSnapshotKeepsTwoPhaseEvidenceWithoutActionSecrets` |
+| FR-ROUTING-007: POST_CLIENTHELLO route transitions tunnel mode after SNI | bounded ClientHello replay, `applyRouteMode` | `TestConnectWithRequestAppliesPostClientHelloPassthrough` |
 | FR-VERIFY-001: expected ↔ фактический PROXY_OUT | `VerifyExpected` | `TestExpectedProfileVerificationStatuses`, `TestCustomTLSProfileProducesExpectedJA4AndVerification` |
 | FR-ENGINE-001.1: раздельные версии capture/parser/fingerprints/engine | version envelope observation/API | `TestRecorderExportAndPrivacy`, `TestObservationAttributesUTLSEngineOnlyToMITMOutbound`, `TestTLSEngineVersionMatchesModulePin`, `TestRecorderAPI` |
 | FR-REPARSE-001.1: повторный разбор сохранённого RAW с immutable revision | `Recorder.Reparse`, `POST /api/v1/observations/{id}/reparse` | `TestRecorderReparseCreatesNewAnalysisRevision`, `TestReparseRequiresRaw`, `TestRecorderReparseAPI` |
@@ -249,8 +250,8 @@ Bearer/Basic значения до передачи записи в backend.
    фильтруемый JSONL/CSV export реализованы; автоматический сбор версии
    приложения ещё остаётся. Сейчас ID объединяет
    только пару TLS observations и создаётся при входе в tunnel handler.
-3. MVP-2: остаётся POST_CLIENTHELLO mode transition. Несколько одновременно
-   активных upstreams и runtime snapshot всех route-фаз уже поддерживаются. Ядро resolver,
+3. MVP-2: несколько одновременно активных upstreams и runtime snapshot всех
+   route-фаз уже поддерживаются. Ядро resolver,
    локальный route tester, PRE_TLS mode/block/upstream и
    POST_CLIENTHELLO block до upstream handshake и явный `action.tls_profile`
    уже реализованы; для

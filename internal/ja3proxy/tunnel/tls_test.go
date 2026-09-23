@@ -300,6 +300,51 @@ func TestResolvePostTLSRouteUsesClientSNI(t *testing.T) {
 	}
 }
 
+func TestConnectWithRequestAppliesPostClientHelloPassthrough(t *testing.T) {
+	routes := &routing.Store{}
+	if err := routes.SetValidated(routing.Config{Rules: []routing.Rule{{
+		ID: "passthrough-sni", Priority: 1, Enabled: true, Phase: routing.PhasePostClientHello,
+		Match: routing.Match{Host: "secure.example.com"}, Action: routing.Action{Mode: "PASSTHROUGH"},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	handler := &TunnelHandler{Routes: routes, CaptureTimeout: time.Second}
+	destConn, destPeer := net.Pipe()
+	clientPeer, clientConn := net.Pipe()
+	defer destPeer.Close()
+	defer clientPeer.Close()
+
+	done := make(chan struct{})
+	go func() {
+		handler.ConnectWithRequest(ConnectRequest{Host: "connect.example.com", Port: 443}, destConn, clientConn)
+		close(done)
+	}()
+
+	client := tls.Client(clientPeer, &tls.Config{ServerName: "secure.example.com", InsecureSkipVerify: true})
+	handshakeDone := make(chan error, 1)
+	go func() { handshakeDone <- client.Handshake() }()
+
+	header := make([]byte, 5)
+	if _, err := io.ReadFull(destPeer, header); err != nil {
+		t.Fatalf("read forwarded ClientHello: %v", err)
+	}
+	if header[0] != 22 {
+		t.Fatalf("forwarded record type = %d, want handshake", header[0])
+	}
+	_ = clientPeer.Close()
+	_ = destPeer.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("post-ClientHello passthrough did not finish")
+	}
+	select {
+	case <-handshakeDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("TLS client did not observe closed passthrough")
+	}
+}
+
 func TestRoutingSnapshotKeepsTwoPhaseEvidenceWithoutActionSecrets(t *testing.T) {
 	pre := routing.Decision{
 		ConfigVersion: 4, Phase: routing.PhasePreTLS, MatchedRuleID: "pre-route",

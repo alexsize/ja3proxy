@@ -305,10 +305,23 @@ func (handler *TunnelHandler) ConnectWithRequest(request ConnectRequest, destCon
 	sni := request.Host
 	routeDecision := handler.resolvePreTLSRoute(request, clientConn)
 	mode := handler.Mode
-	if routeDecision.MatchedRuleID != "" && routeDecision.Action.Mode != "" {
-		mode = strings.ToUpper(routeDecision.Action.Mode)
-		if mode == "ALLOW_AND_RECORD" {
-			mode = "MITM_REISSUE"
+	mode = applyRouteMode(mode, routeDecision.Action.Mode)
+	var postRoute routing.Decision
+	postRouteResolved := false
+	if mode != "BLOCK" && handler.Routes != nil && handler.Routes.HasPhase(routing.PhasePostClientHello) {
+		var capture tlshello.Capture
+		var sniffErr error
+		clientConn, capture, sniffErr = tlshello.Sniff(clientConn, handler.captureTimeout(), tlshello.DefaultLimits())
+		if sniffErr == nil && capture.Status == "complete" {
+			if hello, parseErr := tlshello.Parse(capture.Raw); parseErr == nil {
+				serverName := hello.ServerName
+				if serverName == "" {
+					serverName = request.Host
+				}
+				postRoute = handler.resolvePostTLSRoute(request, serverName, clientConn)
+				postRouteResolved = true
+				mode = applyRouteMode(mode, postRoute.Action.Mode)
+			}
 		}
 	}
 	defer destConn.Close()
@@ -325,10 +338,14 @@ func (handler *TunnelHandler) ConnectWithRequest(request ConnectRequest, destCon
 		var template tlsprofile.Template
 		var configVersion uint64
 		var ok bool
-		if routeDecision.Action.TLSProfile != "" {
-			template, configVersion, ok = handler.TLSProfiles.ResolveByID(routeDecision.Action.TLSProfile)
+		profileRoute := routeDecision
+		if postRouteResolved && postRoute.Action.TLSProfile != "" {
+			profileRoute = postRoute
+		}
+		if profileRoute.Action.TLSProfile != "" {
+			template, configVersion, ok = handler.TLSProfiles.ResolveByID(profileRoute.Action.TLSProfile)
 			if !ok {
-				logutil.Warn("tls_tunnel", "route TLS profile is unavailable", "route_id", routeDecision.MatchedRuleID, "profile_id", routeDecision.Action.TLSProfile)
+				logutil.Warn("tls_tunnel", "route TLS profile is unavailable", "route_id", profileRoute.MatchedRuleID, "profile_id", profileRoute.Action.TLSProfile)
 				return
 			}
 		} else {
@@ -354,11 +371,11 @@ func (handler *TunnelHandler) ConnectWithRequest(request ConnectRequest, destCon
 		}
 		meta := recorder.Meta{ConnectionID: id, CapturePoint: "CLIENT_IN", Direction: "inbound", ByteSource: "client_socket_read", Mode: recordMode, Destination: sni, Source: netutil.RemoteAddr(clientConn)}
 		meta = applyIdentityEvidenceWithRegistry(meta, clientConn, handler.Devices)
-		meta.Routing = routingSnapshot(routeDecision)
+		meta.Routing = routingSnapshotWithPost(routeDecision, postRoute, postRouteResolved)
 		outMeta = meta
 		// Keep inbound and outbound snapshots independent: the post-ClientHello
 		// decision is attached only to the outbound observation later.
-		outMeta.Routing = routingSnapshot(routeDecision)
+		outMeta.Routing = routingSnapshotWithPost(routeDecision, postRoute, postRouteResolved)
 		outMeta.CapturePoint = "PROXY_OUT"
 		outMeta.Direction = "outbound"
 		outMeta.ByteSource = "upstream_socket_successful_write"
@@ -441,15 +458,18 @@ func (handler *TunnelHandler) ConnectWithRequest(request ConnectRequest, destCon
 			if hello.ServerName != "" {
 				serverName = hello.ServerName
 			}
-			postRoute := handler.resolvePostTLSRoute(request, serverName, clientConn)
-			if postEvidence := routeDecisionEvidence(postRoute); postEvidence != nil {
+			resolvedPostRoute := postRoute
+			if !postRouteResolved {
+				resolvedPostRoute = handler.resolvePostTLSRoute(request, serverName, clientConn)
+			}
+			if postEvidence := routeDecisionEvidence(resolvedPostRoute); postEvidence != nil {
 				if outMeta.Routing == nil {
 					outMeta.Routing = &recorder.RoutingSnapshot{}
 				}
 				outMeta.Routing.PostClientHello = postEvidence
 			}
-			if postRoute.MatchedRuleID != "" && strings.EqualFold(postRoute.Action.Mode, "BLOCK") {
-				return nil, fmt.Errorf("route %q blocked POST_CLIENTHELLO", postRoute.MatchedRuleID)
+			if resolvedPostRoute.MatchedRuleID != "" && strings.EqualFold(resolvedPostRoute.Action.Mode, "BLOCK") {
+				return nil, fmt.Errorf("route %q blocked POST_CLIENTHELLO", resolvedPostRoute.MatchedRuleID)
 			}
 			connectionTemplate := selectedTemplate
 			if selectedTemplate != nil {
@@ -536,11 +556,30 @@ func (handler *TunnelHandler) resolveRoute(phase routing.Phase, request ConnectR
 }
 
 func routingSnapshot(decision routing.Decision) *recorder.RoutingSnapshot {
-	evidence := routeDecisionEvidence(decision)
-	if evidence == nil {
+	return routingSnapshotWithPost(decision, routing.Decision{}, false)
+}
+
+func routingSnapshotWithPost(pre, post routing.Decision, postResolved bool) *recorder.RoutingSnapshot {
+	preEvidence := routeDecisionEvidence(pre)
+	postEvidence := routeDecisionEvidence(post)
+	if !postResolved {
+		postEvidence = nil
+	}
+	if preEvidence == nil && postEvidence == nil {
 		return nil
 	}
-	return &recorder.RoutingSnapshot{PreTLS: evidence}
+	return &recorder.RoutingSnapshot{PreTLS: preEvidence, PostClientHello: postEvidence}
+}
+
+func applyRouteMode(current, action string) string {
+	if strings.TrimSpace(action) == "" {
+		return current
+	}
+	mode := strings.ToUpper(strings.TrimSpace(action))
+	if mode == "ALLOW_AND_RECORD" {
+		return "MITM_REISSUE"
+	}
+	return mode
 }
 
 func routeDecisionEvidence(decision routing.Decision) *recorder.RouteDecision {

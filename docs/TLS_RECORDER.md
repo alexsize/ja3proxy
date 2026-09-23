@@ -212,8 +212,10 @@ Route manager загружается через `--route-config-file`. Он ра
 фазах `PRE_TLS` и `POST_CLIENTHELLO`, учитывая host/wildcard, CIDR, порт,
 device/device tag и username. Для проверки без реального соединения доступен
 `POST /api/v1/routes/test`; ответ содержит версию snapshot, список кандидатов,
-победившее правило, action и причину совпадения. PRE_TLS actions `BLOCK`,
-`MITM_REISSUE`, `PASSTHROUGH` и `OBSERVE_ONLY` применяются к новым соединениям;
+победившее правило, action и причину совпадения. PRE_TLS и POST_CLIENTHELLO
+actions `BLOCK`, `MITM_REISSUE`, `PASSTHROUGH` и `OBSERVE_ONLY` применяются к
+новым соединениям; POST_CLIENTHELLO выбирается по SNI после bounded buffering
+первого ClientHello;
 `action.upstream` выбирает HTTP/SOCKS5 upstream для нового туннеля, а
 `action.tls_profile` закрепляет конкретный ID профиля TLS для MITM. При
 отсутствии этих полей используются глобальные upstream и TLS-настройки;
