@@ -77,7 +77,12 @@ func Materialize(template Template, serverName string) (Materialized, error) {
 	if err != nil {
 		return Materialized{}, err
 	}
+	alps, err := effectiveALPS(template, nil, alpn)
+	if err != nil {
+		return Materialized{}, err
+	}
 	effective.Fields.ALPN = alpn
+	effective.Fields.ALPS = alps
 	base, err := buildTemplateSpec(effective, serverName)
 	if err != nil {
 		return Materialized{}, err
@@ -158,6 +163,9 @@ func buildTemplateSpec(template Template, serverName string) (utls.ClientHelloSp
 		}
 		extension := queue[0]
 		byID[id] = queue[1:]
+		if isALPSExtension(extension) && len(template.Fields.ALPS) == 0 {
+			continue
+		}
 		applyEditableFields(extension, template.Fields)
 		ordered = append(ordered, extension)
 	}
@@ -166,6 +174,15 @@ func buildTemplateSpec(template Template, serverName string) (utls.ClientHelloSp
 	}
 	base.Extensions = ordered
 	return base, nil
+}
+
+func isALPSExtension(extension utls.TLSExtension) bool {
+	switch extension.(type) {
+	case *utls.ApplicationSettingsExtension, *utls.ApplicationSettingsExtensionNew:
+		return true
+	default:
+		return false
+	}
 }
 
 func materializeBase(client, version, serverName string) (Materialized, error) {
@@ -195,6 +212,10 @@ func applyEditableFields(extension utls.TLSExtension, fields StaticFields) {
 	switch ext := extension.(type) {
 	case *utls.ALPNExtension:
 		ext.AlpnProtocols = append([]string(nil), fields.ALPN...)
+	case *utls.ApplicationSettingsExtension:
+		ext.SupportedProtocols = append([]string(nil), fields.ALPS...)
+	case *utls.ApplicationSettingsExtensionNew:
+		ext.SupportedProtocols = append([]string(nil), fields.ALPS...)
 	case *utls.SupportedVersionsExtension:
 		ext.Versions = append([]uint16(nil), fields.SupportedVersions...)
 		for i, value := range ext.Versions {

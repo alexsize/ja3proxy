@@ -56,6 +56,7 @@ JSONL пока не шифруется. Размещайте экспорт в �
 | FR-REPARSE-001.1: повторный разбор сохранённого RAW с immutable revision | `Recorder.Reparse`, `POST /api/v1/observations/{id}/reparse` | `TestRecorderReparseCreatesNewAnalysisRevision`, `TestReparseRequiresRaw`, `TestRecorderReparseAPI` |
 | FR-DYNAMIC-001.1: runtime ALPN/ALPS mutations фиксируются | `RuntimeMutation`, outbound recorder metadata | `TestLimitSpecALPN` |
 | FR-DYNAMIC-001.2: явная ALPN policy PROFILE/DOWNSTREAM/INTERSECTION/CUSTOM | `StaticFields.ALPNPolicy`, `ConstrainALPN`, profile UI | `TestALPNPolicies`, `TestCustomALPNPolicyMaterializesConfiguredProtocols` |
+| FR-DYNAMIC-001.3: ALPS согласован с ALPN и имеет явную policy | `StaticFields.ALPSPolicy`, wire parser, materializer | `TestALPSPolicies`, `TestALPSCannotOutliveEffectiveALPN` |
 
 ### Границы захвата
 
@@ -101,6 +102,13 @@ TLS-профиль теперь явно задаёт `fields.alpn_policy`: `PRO
 ALPN профиля, `DOWNSTREAM` использует ALPN клиента, `INTERSECTION` оставляет
 пересечение, а `CUSTOM` использует `fields.custom_alpn`. Пустая policy у
 старых snapshot нормализуется в `INTERSECTION`.
+
+Для ALPS действует отдельная `fields.alps_policy` с теми же четырьмя режимами.
+ALPS разбирается из wire как ordered protocol list. Перед materialization и
+handshake список ALPS пересекается с эффективным ALPN; поэтому протокол,
+удалённый из ALPN, не может остаться в ApplicationSettingsExtension. Режим
+`CUSTOM` отклоняется при несовместимости, а профильные режимы безопасно
+отбрасывают недоступные downstream-протоколы.
 
 JA3 учитывает extension 21 (padding). Прежний тестовый helper, восстанавливавший extension IDs через uTLS, терял padding; теперь он считывает IDs непосредственно из record bytes. Это исправление тестового oracle, а не изменение uTLS-пресетов.
 

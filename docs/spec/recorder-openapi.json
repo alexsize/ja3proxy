@@ -913,6 +913,17 @@
               "custom_alpn": {
                 "type": "array",
                 "items": {"type": "string"}
+              },
+              "alps": {
+                "type": "array",
+                "items": {"type": "string"}
+              },
+              "alps_policy": {
+                "enum": ["PROFILE", "DOWNSTREAM", "INTERSECTION", "CUSTOM"]
+              },
+              "custom_alps": {
+                "type": "array",
+                "items": {"type": "string"}
               }
             },
             "additionalProperties": true

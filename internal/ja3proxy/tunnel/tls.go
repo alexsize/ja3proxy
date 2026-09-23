@@ -380,7 +380,7 @@ func (handler *TunnelHandler) Connect(sni string, destConn net.Conn, clientConn 
 			if selectedTemplate != nil {
 				effective, constrainErr := tlsprofile.ConstrainALPN(*selectedTemplate, upstreamALPN(hello.SupportedProtos))
 				if constrainErr != nil {
-					return nil, fmt.Errorf("TLS profile ALPN: %w", constrainErr)
+					return nil, fmt.Errorf("TLS profile ALPN/ALPS: %w", constrainErr)
 				}
 				connectionTemplate = &effective
 				materialized, materializeErr := tlsprofile.Materialize(effective, serverName)

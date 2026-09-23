@@ -141,9 +141,13 @@ ClientHello и захваченных TLS records на `CLIENT_IN` и успеш
 
 Откройте `http://127.0.0.1:9090/profiles.html`. Шаблон можно создать из
 скомпилированного uTLS-пресета или кнопкой «В профиль» у полного наблюдения.
-Редактируются cipher suites, порядок extensions, ALPN, supported versions,
-supported groups и signature algorithms. JA3/JA4 нельзя править как готовую
-строку — они пересчитываются из materialized ClientHello.
+Редактируются cipher suites, порядок extensions, ALPN/ALPS, их policy,
+supported versions, supported groups и signature algorithms. JA3/JA4 нельзя
+править как готовую строку — они пересчитываются из materialized ClientHello.
+
+ALPS всегда согласуется с эффективным ALPN: если протокол удалён из ALPN,
+соответствующая запись ALPS также удаляется до handshake. Несовместимый
+`CUSTOM`-вариант отклоняется на этапе validation.
 
 Профиль хранит версию, ожидаемый fingerprint, политику MUST/SHOULD,
 `ignored_dynamic`, versioned constraints (`present`, `equals`, `one_of`) и явный

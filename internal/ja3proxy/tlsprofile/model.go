@@ -25,6 +25,10 @@ const (
 	ALPNPolicyDownstream   = "DOWNSTREAM"
 	ALPNPolicyIntersection = "INTERSECTION"
 	ALPNPolicyCustom       = "CUSTOM"
+	ALPSPolicyProfile      = "PROFILE"
+	ALPSPolicyDownstream   = "DOWNSTREAM"
+	ALPSPolicyIntersection = "INTERSECTION"
+	ALPSPolicyCustom       = "CUSTOM"
 )
 
 var ErrVersionConflict = errors.New("tls profile configuration version conflict")
@@ -35,6 +39,9 @@ type StaticFields struct {
 	ALPN                []string `json:"alpn"`
 	ALPNPolicy          string   `json:"alpn_policy,omitempty"`
 	CustomALPN          []string `json:"custom_alpn,omitempty"`
+	ALPS                []string `json:"alps,omitempty"`
+	ALPSPolicy          string   `json:"alps_policy,omitempty"`
+	CustomALPS          []string `json:"custom_alps,omitempty"`
 	SupportedVersions   []uint16 `json:"supported_versions"`
 	SupportedGroups     []uint16 `json:"supported_groups"`
 	SignatureAlgorithms []uint16 `json:"signature_algorithms"`
@@ -150,6 +157,8 @@ func FieldsFromHello(h *tlshello.Hello) (StaticFields, error) {
 		ExtensionOrder:      extensions,
 		ALPN:                alpn,
 		ALPNPolicy:          ALPNPolicyIntersection,
+		ALPS:                append([]string(nil), h.ALPS...),
+		ALPSPolicy:          ALPSPolicyIntersection,
 		SupportedVersions:   versions,
 		SupportedGroups:     groups,
 		SignatureAlgorithms: append([]uint16(nil), h.SignatureAlgorithms...),
@@ -164,7 +173,12 @@ func ConstrainALPN(template Template, offered []string) (Template, error) {
 	if err != nil {
 		return Template{}, err
 	}
+	alps, err := effectiveALPS(template, offered, alpn)
+	if err != nil {
+		return Template{}, err
+	}
 	template.Fields.ALPN = alpn
+	template.Fields.ALPS = alps
 	return template, nil
 }
 
@@ -209,6 +223,69 @@ func effectiveALPN(template Template, offered []string) ([]string, error) {
 	}
 }
 
+func effectiveALPS(template Template, offered []string, effectiveALPN []string) ([]string, error) {
+	policy := template.Fields.ALPSPolicy
+	if policy == "" {
+		policy = ALPSPolicyIntersection
+	}
+	var candidate []string
+	switch policy {
+	case ALPSPolicyProfile:
+		candidate = template.Fields.ALPS
+	case ALPSPolicyDownstream:
+		candidate = template.Fields.ALPS
+		if len(offered) > 0 {
+			candidate = offered
+		}
+	case ALPSPolicyIntersection:
+		candidate = template.Fields.ALPS
+		if len(offered) > 0 {
+			candidate = matchingStrings(template.Fields.ALPS, offered)
+		}
+	case ALPSPolicyCustom:
+		if len(template.Fields.CustomALPS) == 0 {
+			return nil, errors.New("custom_alps обязателен для ALPS policy CUSTOM")
+		}
+		candidate = template.Fields.CustomALPS
+	default:
+		return nil, fmt.Errorf("неподдерживаемая ALPS policy %q", policy)
+	}
+	if len(candidate) == 0 {
+		return nil, nil
+	}
+	allowed := make(map[string]struct{}, len(effectiveALPN))
+	for _, protocol := range effectiveALPN {
+		allowed[protocol] = struct{}{}
+	}
+	filtered := make([]string, 0, len(candidate))
+	for _, protocol := range candidate {
+		if _, ok := allowed[protocol]; ok {
+			filtered = append(filtered, protocol)
+		}
+	}
+	if policy == ALPSPolicyCustom && len(filtered) != len(candidate) {
+		return nil, fmt.Errorf("CUSTOM ALPS содержит протокол, отсутствующий в эффективном ALPN")
+	}
+	if len(filtered) == 0 {
+		return nil, nil
+	}
+	return filtered, nil
+}
+
+func matchingStrings(source, allowed []string) []string {
+	set := make(map[string]struct{}, len(allowed))
+	for _, value := range allowed {
+		set[value] = struct{}{}
+	}
+	matched := make([]string, 0, len(source))
+	for _, value := range source {
+		if _, ok := set[value]; ok {
+			matched = append(matched, value)
+		}
+	}
+	return matched
+}
+
 func normalizeGREASE(value uint16) uint16 {
 	if tlshello.IsGREASE(value) {
 		return GREASEPlaceholder
@@ -232,6 +309,9 @@ func validateTemplate(template Template) error {
 	if template.Fields.ALPNPolicy == "" {
 		template.Fields.ALPNPolicy = ALPNPolicyIntersection
 	}
+	if template.Fields.ALPSPolicy == "" {
+		template.Fields.ALPSPolicy = ALPSPolicyIntersection
+	}
 	switch template.Fields.ALPNPolicy {
 	case ALPNPolicyProfile, ALPNPolicyDownstream, ALPNPolicyIntersection:
 		if len(template.Fields.CustomALPN) != 0 {
@@ -243,6 +323,18 @@ func validateTemplate(template Template) error {
 		}
 	default:
 		return fmt.Errorf("неподдерживаемая ALPN policy %q", template.Fields.ALPNPolicy)
+	}
+	switch template.Fields.ALPSPolicy {
+	case ALPSPolicyProfile, ALPSPolicyDownstream, ALPSPolicyIntersection:
+		if len(template.Fields.CustomALPS) != 0 {
+			return errors.New("custom_alps разрешён только для ALPS policy CUSTOM")
+		}
+	case ALPSPolicyCustom:
+		if len(template.Fields.CustomALPS) == 0 {
+			return errors.New("custom_alps обязателен для ALPS policy CUSTOM")
+		}
+	default:
+		return fmt.Errorf("неподдерживаемая ALPS policy %q", template.Fields.ALPSPolicy)
 	}
 	for _, protocol := range template.Fields.CustomALPN {
 		if len(protocol) == 0 || len(protocol) > 255 {
@@ -256,6 +348,14 @@ func validateTemplate(template Template) error {
 		if len(protocol) == 0 || len(protocol) > 255 {
 			return errors.New("каждый ALPN должен иметь длину 1..255 байт")
 		}
+	}
+	for _, protocol := range append(append([]string{}, template.Fields.ALPS...), template.Fields.CustomALPS...) {
+		if len(protocol) == 0 || len(protocol) > 255 {
+			return errors.New("каждый ALPS должен иметь длину 1..255 байт")
+		}
+	}
+	if (len(template.Fields.ALPS) > 0 || len(template.Fields.CustomALPS) > 0) && !containsALPSExtension(template.Fields.ExtensionOrder) {
+		return errors.New("ALPS настроен, но ApplicationSettingsExtension отсутствует в extension_order")
 	}
 	if len(template.HostPatterns) > 64 {
 		return errors.New("слишком много host patterns")
@@ -299,6 +399,15 @@ func validateTemplate(template Template) error {
 		}
 	}
 	return nil
+}
+
+func containsALPSExtension(extensionOrder []uint16) bool {
+	for _, id := range extensionOrder {
+		if id == 17513 || id == 17613 {
+			return true
+		}
+	}
+	return false
 }
 
 func validatePolicyPaths(normalized json.RawMessage, policy MatchPolicy) error {

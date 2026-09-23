@@ -31,6 +31,7 @@ type Hello struct {
 	Extensions          []Extension `json:"extensions"`
 	ServerName          string      `json:"sni"`
 	ALPN                []string    `json:"alpn_hex"`
+	ALPS                []string    `json:"alps_hex"`
 	SupportedVersions   []uint16    `json:"supported_versions"`
 	SupportedGroups     []uint16    `json:"supported_groups"`
 	SignatureAlgorithms []uint16    `json:"signature_algorithms"`
@@ -98,7 +99,7 @@ func Parse(raw []byte) (*Hello, error) {
 		return nil, ErrMalformed
 	}
 	c := cursor{b: raw[4:]}
-	h := &Hello{LegacyVersion: uint16(c.u16()), Length: len(raw), Extensions: []Extension{}, ALPN: []string{}, SupportedVersions: []uint16{}, SupportedGroups: []uint16{}, SignatureAlgorithms: []uint16{}, PointFormats: []int{}}
+	h := &Hello{LegacyVersion: uint16(c.u16()), Length: len(raw), Extensions: []Extension{}, ALPN: []string{}, ALPS: []string{}, SupportedVersions: []uint16{}, SupportedGroups: []uint16{}, SignatureAlgorithms: []uint16{}, PointFormats: []int{}}
 	c.take(32)
 	h.SessionIDLength = len(c.vector8())
 	var ok bool
@@ -175,7 +176,7 @@ func decodeExtension(h *Hello, e *Extension) error {
 		if e.ID == 11 {
 			h.PointFormats = append(h.PointFormats, v...)
 		}
-	case 16: // ALPN is an opaque byte string, never lossy UTF-8 conversion
+	case 16, 17513, 17613: // ALPN/ALPS carry the same length-prefixed protocol list
 		list := cursor{b: c.vector16()}
 		protocols := []string{}
 		for len(list.b) > 0 && !list.err {
@@ -190,7 +191,11 @@ func decodeExtension(h *Hello, e *Extension) error {
 			return ErrMalformed
 		}
 		e.Fields["protocols_hex"] = protocols
-		h.ALPN = append(h.ALPN, protocols...)
+		if e.ID == 16 {
+			h.ALPN = append(h.ALPN, protocols...)
+		} else {
+			h.ALPS = append(h.ALPS, protocols...)
+		}
 	case 43:
 		v, ok := ids(c.vector8())
 		if !ok {
@@ -263,7 +268,7 @@ func decodeExtension(h *Hello, e *Extension) error {
 		h.ECH = true
 		e.Fields["inner_available"] = false
 		c.take(len(c.b))
-	case 5, 18, 23, 65281, 17513, 17613:
+	case 5, 18, 23, 65281:
 		// Retain non-secret wire parameters as hex for these opaque structures.
 		e.Fields["data_hex"] = hex.EncodeToString(c.take(len(c.b)))
 	default:

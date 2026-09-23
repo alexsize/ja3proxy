@@ -165,6 +165,58 @@ func TestCustomALPNPolicyMaterializesConfiguredProtocols(t *testing.T) {
 	}
 }
 
+func TestALPSPolicies(t *testing.T) {
+	base := Template{Fields: StaticFields{ALPN: []string{"h2", "http/1.1"}, ALPS: []string{"h2"}}}
+	tests := []struct {
+		name    string
+		policy  string
+		custom  []string
+		offered []string
+		want    []string
+	}{
+		{name: "profile filters to effective ALPN", policy: ALPSPolicyProfile, offered: []string{"http/1.1"}},
+		{name: "downstream", policy: ALPSPolicyDownstream, offered: []string{"h2"}, want: []string{"h2"}},
+		{name: "intersection", policy: ALPSPolicyIntersection, offered: []string{"h2", "http/1.1"}, want: []string{"h2"}},
+		{name: "custom", policy: ALPSPolicyCustom, custom: []string{"h2"}, offered: []string{"h2"}, want: []string{"h2"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			template := base
+			template.Fields.ALPSPolicy = tt.policy
+			template.Fields.CustomALPS = tt.custom
+			got, err := ConstrainALPN(template, tt.offered)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got.Fields.ALPS, tt.want) {
+				t.Fatalf("effective ALPS = %v, want %v", got.Fields.ALPS, tt.want)
+			}
+		})
+	}
+	if _, err := ConstrainALPN(Template{Fields: StaticFields{ALPN: []string{"http/1.1"}, ALPS: []string{"h2"}, ALPSPolicy: ALPSPolicyCustom, CustomALPS: []string{"h2"}}}, []string{"http/1.1"}); err == nil {
+		t.Fatal("inconsistent CUSTOM ALPS was accepted")
+	}
+}
+
+func TestALPSCannotOutliveEffectiveALPN(t *testing.T) {
+	template, err := TemplateFromPreset("alps", "Chrome", "120")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(template.Fields.ALPS) == 0 {
+		t.Skip("selected uTLS preset has no ALPS extension")
+	}
+	effective, err := ConstrainALPN(template, []string{"http/1.1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, protocol := range effective.Fields.ALPS {
+		if protocol != "http/1.1" {
+			t.Fatalf("ALPS protocol %q survived without matching ALPN: %v", protocol, effective.Fields.ALPS)
+		}
+	}
+}
+
 func TestStoreVersioningPersistenceAndRouting(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "profiles.jsonl")
 	store, err := Open(path)

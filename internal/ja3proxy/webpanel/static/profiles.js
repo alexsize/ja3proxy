@@ -34,6 +34,7 @@ function collect() {
     fields: {
     cipher_suites: parseArray("ciphers", "number"), extension_order: parseArray("extensions", "number"), alpn: parseArray("alpn", "string"),
       alpn_policy: el("alpn-policy").value, custom_alpn: parseArray("custom-alpn", "string"),
+      alps: parseArray("alps", "string"), alps_policy: el("alps-policy").value, custom_alps: parseArray("custom-alps", "string"),
       supported_versions: parseArray("versions", "number"), supported_groups: parseArray("groups", "number"), signature_algorithms: parseArray("signatures", "number")
     },
 	policy: {...(base.policy || {}), must_match: parseArray("must-match", "string"), should_match: parseArray("should-match", "string"), constraints: parseArray("constraints")}
@@ -46,6 +47,7 @@ function fill(template) {
 	el("preset").value = `${template.base_preset.client}|${template.base_preset.version}`;
   el("ciphers").value = pretty(template.fields.cipher_suites); el("extensions").value = pretty(template.fields.extension_order); el("alpn").value = pretty(template.fields.alpn);
   el("alpn-policy").value = template.fields.alpn_policy || "INTERSECTION"; el("custom-alpn").value = pretty(template.fields.custom_alpn);
+  el("alps").value = pretty(template.fields.alps); el("alps-policy").value = template.fields.alps_policy || "INTERSECTION"; el("custom-alps").value = pretty(template.fields.custom_alps);
   el("versions").value = pretty(template.fields.supported_versions); el("groups").value = pretty(template.fields.supported_groups); el("signatures").value = pretty(template.fields.signature_algorithms);
   el("must-match").value = pretty(template.policy.must_match); el("should-match").value = pretty(template.policy.should_match);
 	el("constraints").value = pretty(template.policy.constraints);
