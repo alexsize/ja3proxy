@@ -46,6 +46,7 @@ JSONL пока не шифруется. Размещайте экспорт в �
 | FR-API-001: поиск/detail/export/diff | `webpanel/recorder.go` | `TestRecorderAPI` |
 | SEC-API-001: локальный доступ | bind/Host/peer/Origin checks | `TestRecorderRejectsRemoteAndRebinding` |
 | SEC-CANARY-001: секреты не отражаются в API/error | config API, HTTP upstream dialer | `TestConfigAPIUpdatesRuntimeConfiguration`, `TestHTTPUpstreamCONNECTErrorDoesNotExposeResponseBodyCanary` |
+| SEC-CANARY-002: секреты не отражаются в логах | централизованный `logutil.NewSanitizedHandler` | `TestSanitizedHandlerRedactsAttributesAndErrors`, `TestSanitizedHandlerRedactsNestedGroups` |
 | FR-CLI-001: feature flag | runtime/CLI | `TestRecorderCLI` |
 | FR-PROFILE-001: шаблон из пресета/наблюдения | `tlsprofile`, profile API/UI | `TestPresetPreviewAndJA4Editing`, `TestTLSProfileAPIWorkflow` |
 | FR-PROFILE-002: immutable versions/CAS/rollback | append-only profile store | `TestStoreVersioningPersistenceAndRouting`, `TestTLSProfileHistoryAndRollbackAPI` |
@@ -165,6 +166,12 @@ Outbound observation содержит одновременно `profile_version`
 По умолчанию: ClientHello 256 KiB, TLS record 18 432 bytes, 64 records; queue 64 observations; окно 256 observations и максимум 32 MiB сериализованных данных. Поддерживаются limits через Go Options; CLI пока предоставляет основные switches. Очередь не ждёт свободного места, dropped events явно считаются. Закрытие recorder дренирует уже принятую очередь.
 
 Это fail-open memory recorder; durable spool, безусловное сохранение critical events, SQL storage, config audit ещё отсутствуют. Статус `recording_degraded` показывает переполнение очереди или ошибки JSONL. JSONL после частичной ошибки записи больше не дописывается.
+
+Логирование проходит через центральный sanitizing `slog.Handler`: секретные
+атрибуты (`password`, `token`, `authorization`, raw/data, ticket/binder и
+подобные) заменяются на `[REDACTED]`, включая значения из `Logger.With` и
+вложенных групп. В строках ошибок дополнительно удаляются credentials из URL и
+Bearer/Basic значения до передачи записи в backend.
 
 ## Оставшиеся этапы ТЗ
 

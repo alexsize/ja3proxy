@@ -29,7 +29,7 @@ percentiles.
 | 11 | bounded timeout/overflow/malformed | PASS | limits, queue overflow и fuzz tests |
 | 12 | recorder feature flag | PASS | runtime/CLI tests |
 | 13 | race-enabled tests | PASS | `go test -race ./... -count=1` |
-| 14 | sensitive canaries | PARTIAL | raw/API/upstream-error tests проходят; централизованного log sanitizer ещё нет |
+| 14 | sensitive canaries | PASS | raw/API/upstream-error и централизованный `slog.Handler` sanitizer покрыты тестами |
 
 Transport-flow ID теперь создаётся сразу после `Accept`, до чтения первого
 байта и protocol detection. Формат — ULID; одно значение проходит через
@@ -85,5 +85,5 @@ throughput и p50/p95/p99.
    распространением, source version, capture method и SHA-256 файла.
 2. Нагрузочный сценарий recorder off/on для HTTP CONNECT и SOCKS5 с
    фиксированными concurrency, payload, duration, throughput и p50/p95/p99.
-3. Централизованный sanitizer для log attributes/errors и canary-проверка всех
-   diagnostic/export путей.
+3. Полная приёмка всё ещё требует расширить canary-прогон на внешние logging
+   backend-интеграции, если они будут добавлены в следующих релизах.

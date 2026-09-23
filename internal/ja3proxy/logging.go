@@ -5,6 +5,7 @@ import (
 	"os"
 
 	cflog "github.com/cloudflare/cfssl/log"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/logutil"
 )
 
 func init() {
@@ -13,7 +14,8 @@ func init() {
 }
 
 func configureDefaultLogger(level slog.Level) {
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+	handler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: level,
-	})))
+	})
+	slog.SetDefault(slog.New(logutil.NewSanitizedHandler(handler)))
 }
