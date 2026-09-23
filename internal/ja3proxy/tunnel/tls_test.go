@@ -304,15 +304,22 @@ func TestConnectWithRequestAppliesPostClientHelloPassthrough(t *testing.T) {
 	routes := &routing.Store{}
 	if err := routes.SetValidated(routing.Config{Rules: []routing.Rule{{
 		ID: "passthrough-sni", Priority: 1, Enabled: true, Phase: routing.PhasePostClientHello,
-		Match: routing.Match{Host: "secure.example.com"}, Action: routing.Action{Mode: "PASSTHROUGH"},
+		Match: routing.Match{Host: "secure.example.com"}, Action: routing.Action{Mode: "PASSTHROUGH", Upstream: "socks5://route.example:1080"},
 	}}}); err != nil {
 		t.Fatal(err)
 	}
 	handler := &TunnelHandler{Routes: routes, CaptureTimeout: time.Second}
 	destConn, destPeer := net.Pipe()
+	selectedConn, selectedPeer := net.Pipe()
 	clientPeer, clientConn := net.Pipe()
 	defer destPeer.Close()
+	defer selectedPeer.Close()
 	defer clientPeer.Close()
+	selectedUpstream := make(chan string, 1)
+	handler.DialUpstream = func(_ ConnectRequest, upstream string) (net.Conn, error) {
+		selectedUpstream <- upstream
+		return selectedConn, nil
+	}
 
 	done := make(chan struct{})
 	go func() {
@@ -324,14 +331,23 @@ func TestConnectWithRequestAppliesPostClientHelloPassthrough(t *testing.T) {
 	handshakeDone := make(chan error, 1)
 	go func() { handshakeDone <- client.Handshake() }()
 
+	select {
+	case upstream := <-selectedUpstream:
+		if upstream != "socks5://route.example:1080" {
+			t.Fatalf("selected upstream = %q", upstream)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for POST_CLIENTHELLO upstream selection")
+	}
 	header := make([]byte, 5)
-	if _, err := io.ReadFull(destPeer, header); err != nil {
+	if _, err := io.ReadFull(selectedPeer, header); err != nil {
 		t.Fatalf("read forwarded ClientHello: %v", err)
 	}
 	if header[0] != 22 {
 		t.Fatalf("forwarded record type = %d, want handshake", header[0])
 	}
 	_ = clientPeer.Close()
+	_ = selectedPeer.Close()
 	_ = destPeer.Close()
 	select {
 	case <-done:

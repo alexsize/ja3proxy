@@ -40,6 +40,9 @@ type TunnelHandler struct {
 	Routes              *routing.Store
 	DefaultTLSClient    string
 	DefaultTLSVersion   string
+	// DialUpstream optionally replaces the already opened destination after a
+	// POST_CLIENTHELLO route selects a different upstream proxy.
+	DialUpstream func(ConnectRequest, string) (net.Conn, error)
 }
 
 func (handler *TunnelHandler) configuredTLSFingerprint() fingerprint.TLSFingerprint {
@@ -306,6 +309,12 @@ func (handler *TunnelHandler) ConnectWithRequest(request ConnectRequest, destCon
 	routeDecision := handler.resolvePreTLSRoute(request, clientConn)
 	mode := handler.Mode
 	mode = applyRouteMode(mode, routeDecision.Action.Mode)
+	defer clientConn.Close()
+	defer func() {
+		if destConn != nil {
+			_ = destConn.Close()
+		}
+	}()
 	var postRoute routing.Decision
 	postRouteResolved := false
 	if mode != "BLOCK" && handler.Routes != nil && handler.Routes.HasPhase(routing.PhasePostClientHello) {
@@ -324,8 +333,17 @@ func (handler *TunnelHandler) ConnectWithRequest(request ConnectRequest, destCon
 			}
 		}
 	}
-	defer destConn.Close()
-	defer clientConn.Close()
+	if mode != "BLOCK" && postRouteResolved && handler.DialUpstream != nil {
+		if selectedUpstream := strings.TrimSpace(postRoute.Action.Upstream); selectedUpstream != "" {
+			nextConn, dialErr := handler.DialUpstream(request, selectedUpstream)
+			if dialErr != nil {
+				logutil.Warn("tls_tunnel", "post-clienthello upstream dial failed", "route_id", postRoute.MatchedRuleID, "err", dialErr)
+				return
+			}
+			_ = destConn.Close()
+			destConn = nextConn
+		}
+	}
 	var destTLSConn *upstreamTLSConn
 	var outMeta recorder.Meta
 	logger := logutil.WithComponent("tls_tunnel", "sni", sni)

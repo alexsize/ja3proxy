@@ -80,6 +80,7 @@ JSONL пока не шифруется. Размещайте экспорт в �
 | FR-ROUTING-005: PRE_TLS route selects upstream per tunnel | request-aware proxy dialer, cached route dialers | `TestDialRoutedTunnelUsesRouteUpstream`, proxy tunnel coverage |
 | FR-ROUTING-006: recorder stores immutable two-phase route evidence | `recorder.RoutingSnapshot`, observation metadata | `TestRoutingSnapshotKeepsTwoPhaseEvidenceWithoutActionSecrets` |
 | FR-ROUTING-007: POST_CLIENTHELLO route transitions tunnel mode after SNI | bounded ClientHello replay, `applyRouteMode` | `TestConnectWithRequestAppliesPostClientHelloPassthrough` |
+| FR-ROUTING-008: POST_CLIENTHELLO route can replace upstream | `TunnelHandler.DialUpstream` | `TestConnectWithRequestAppliesPostClientHelloPassthrough` |
 | FR-VERIFY-001: expected ↔ фактический PROXY_OUT | `VerifyExpected` | `TestExpectedProfileVerificationStatuses`, `TestCustomTLSProfileProducesExpectedJA4AndVerification` |
 | FR-ENGINE-001.1: раздельные версии capture/parser/fingerprints/engine | version envelope observation/API | `TestRecorderExportAndPrivacy`, `TestObservationAttributesUTLSEngineOnlyToMITMOutbound`, `TestTLSEngineVersionMatchesModulePin`, `TestRecorderAPI` |
 | FR-REPARSE-001.1: повторный разбор сохранённого RAW с immutable revision | `Recorder.Reparse`, `POST /api/v1/observations/{id}/reparse` | `TestRecorderReparseCreatesNewAnalysisRevision`, `TestReparseRequiresRaw`, `TestRecorderReparseAPI` |

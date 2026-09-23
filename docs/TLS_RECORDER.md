@@ -216,8 +216,10 @@ device/device tag и username. Для проверки без реального
 actions `BLOCK`, `MITM_REISSUE`, `PASSTHROUGH` и `OBSERVE_ONLY` применяются к
 новым соединениям; POST_CLIENTHELLO выбирается по SNI после bounded buffering
 первого ClientHello;
-`action.upstream` выбирает HTTP/SOCKS5 upstream для нового туннеля, а
-`action.tls_profile` закрепляет конкретный ID профиля TLS для MITM. При
+`action.upstream` выбирает HTTP/SOCKS5 upstream для нового туннеля; PRE_TLS
+выбирает его до CONNECT/SOCKS5-ответа, а POST_CLIENTHELLO может заменить
+destination после определения SNI. `action.tls_profile` закрепляет конкретный
+ID профиля TLS для MITM. При
 отсутствии этих полей используются глобальные upstream и TLS-настройки;
 глобальная конфигурация при этом не изменяется.
 

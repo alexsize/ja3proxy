@@ -330,6 +330,9 @@ func (app *App) buildProxy() (*httpproxy.Proxy, error) {
 	app.routeDialersMu.Unlock()
 
 	handler := app.tunnelHandler()
+	handler.DialUpstream = func(request tunnel.ConnectRequest, upstream string) (net.Conn, error) {
+		return app.dialTunnelThroughUpstream(request, upstream, upstreamDialer)
+	}
 	proxyServer := httpproxy.NewProxy(upstreamDialer.Dial, handler.Connect, upstreamDialer).
 		WithTunnelDialRequest(func(request httpproxy.TunnelRequest) (net.Conn, error) {
 			return app.dialRoutedTunnel(request, upstreamDialer)
@@ -370,8 +373,14 @@ func (app *App) dialRoutedTunnel(request httpproxy.TunnelRequest, defaultDialer 
 	if upstream == defaultDialer.Upstream() {
 		return defaultDialer.Dial("tcp", net.JoinHostPort(request.Host, strconv.Itoa(request.Port)))
 	}
+	return app.dialTunnelThroughUpstream(tunnel.ConnectRequest{Host: request.Host, Port: request.Port, Username: request.Username}, upstream, defaultDialer)
+}
 
-	routeDialer, err := app.routeUpstreamDialer(upstream)
+func (app *App) dialTunnelThroughUpstream(request tunnel.ConnectRequest, upstream string, defaultDialer *dialer.DynamicUpstreamDialer) (net.Conn, error) {
+	if strings.TrimSpace(upstream) == defaultDialer.Upstream() {
+		return defaultDialer.Dial("tcp", net.JoinHostPort(request.Host, strconv.Itoa(request.Port)))
+	}
+	routeDialer, err := app.routeUpstreamDialer(strings.TrimSpace(upstream))
 	if err != nil {
 		return nil, err
 	}

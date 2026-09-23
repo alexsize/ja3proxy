@@ -298,7 +298,8 @@ HTTP CONNECT с аутентификацией:
 CIDR, порт, device/device tag и proxy username. Проверить решение без открытия
 соединения можно через `POST /api/v1/routes/test`. В `action` можно указать
 `mode`, `upstream` и `tls_profile`: `upstream` выбирает SOCKS5/HTTP upstream
-для нового HTTP CONNECT или SOCKS5-туннеля, а `tls_profile` закрепляет ID
+для нового HTTP CONNECT или SOCKS5-туннеля; для POST_CLIENTHELLO выбор
+выполняется после SNI. `tls_profile` закрепляет ID
 профиля TLS для MITM.
 
 ## Аутентификация клиентов
