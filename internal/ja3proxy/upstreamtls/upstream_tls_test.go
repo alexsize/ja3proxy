@@ -77,6 +77,30 @@ func TestUpstreamTLSProfileStoreMatchesRoutes(t *testing.T) {
 	}
 }
 
+func TestUpstreamTLSRoutesUsePriorityThenHostSpecificity(t *testing.T) {
+	store := &UpstreamTLSProfileStore{}
+	config := UpstreamTLSConfig{
+		Default: UpstreamTLSProfile{Protocol: "utls", Client: "Chrome", Version: "120"},
+		Routes: []UpstreamTLSRoute{
+			{Host: "*.example.com", Priority: 10, UpstreamTLSProfile: UpstreamTLSProfile{Protocol: "utls", Client: "Firefox", Version: "105"}},
+			{Host: "api.example.com", Priority: 5, UpstreamTLSProfile: UpstreamTLSProfile{Protocol: "utls", Client: "360Browser", Version: "7.5"}},
+		},
+	}
+	if err := store.SetValidated(config); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := store.Get("api.example.com"); !ok || got.Client != "Firefox" {
+		t.Fatalf("priority selection = %+v, ok=%v", got, ok)
+	}
+	config.Routes[1].Priority = 10
+	if err := store.SetValidated(config); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := store.Get("api.example.com"); !ok || got.Client != "360Browser" {
+		t.Fatalf("exact host tie-break = %+v, ok=%v", got, ok)
+	}
+}
+
 func TestValidateUpstreamTLSConfigRejectsInvalidProfiles(t *testing.T) {
 	tests := []struct {
 		name   string

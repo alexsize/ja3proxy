@@ -70,6 +70,7 @@ JSONL пока не шифруется. Размещайте экспорт в �
 | FR-PROFILE-002: immutable versions/CAS/rollback | append-only profile store | `TestStoreVersioningPersistenceAndRouting`, `TestTLSProfileHistoryAndRollbackAPI` |
 | FR-PROFILE-003: source replayability/constraints | materializer + verification | `TestObservedSourceMustMatchIsCheckedBeforePublish`, `TestTemplateConstraintsAreValidated` |
 | FR-PROFILE-004: multiple active profiles with host priority | `tlsprofile.Store.ResolveWithVersion`, `ActivateMany` | `TestStoreResolvesMultipleActiveProfilesByHostPriority`, `TestTLSProfileMultiActivationAPI` |
+| FR-UPSTREAM-001: explicit upstream TLS route priority | `upstreamtls.UpstreamTLSProfileStore` | `TestUpstreamTLSRoutesUsePriorityThenHostSpecificity` |
 | FR-VERIFY-001: expected ↔ фактический PROXY_OUT | `VerifyExpected` | `TestExpectedProfileVerificationStatuses`, `TestCustomTLSProfileProducesExpectedJA4AndVerification` |
 | FR-ENGINE-001.1: раздельные версии capture/parser/fingerprints/engine | version envelope observation/API | `TestRecorderExportAndPrivacy`, `TestObservationAttributesUTLSEngineOnlyToMITMOutbound`, `TestTLSEngineVersionMatchesModulePin`, `TestRecorderAPI` |
 | FR-REPARSE-001.1: повторный разбор сохранённого RAW с immutable revision | `Recorder.Reparse`, `POST /api/v1/observations/{id}/reparse` | `TestRecorderReparseCreatesNewAnalysisRevision`, `TestReparseRequiresRaw`, `TestRecorderReparseAPI` |
@@ -240,10 +241,12 @@ Bearer/Basic значения до передачи записи в backend.
    фильтруемый JSONL/CSV export реализованы; автоматический сбор версии
    приложения ещё остаётся. Сейчас ID объединяет
    только пару TLS observations и создаётся при входе в tunnel handler.
-3. MVP-2: остаются общий двухфазный route manager, приоритеты/несколько
-   активных upstreams и полноценные runtime snapshots. TLS profile library
-   уже поддерживает несколько активных profiles с exact/wildcard priority;
-   версионируемый TLS template, материализация expected и verification также
+3. MVP-2: остаются общий двухфазный route manager, несколько одновременно
+   активных upstreams и полноценные runtime snapshots. Для upstream TLS routes
+   уже реализована явная priority с детерминированным выбором
+   `priority → exact host → wildcard → порядок в JSON`; TLS profile library
+   также поддерживает несколько активных profiles с exact/wildcard priority.
+   Версионируемый TLS template, материализация expected и verification также
    реализованы.
 4. Release 1: PostgreSQL, users/roles/tokens, HTTPS, audit, encrypted spool, backup/recovery.
 5. Поздние релизы: HTTP/1/2 fingerprints, ServerHello/JA3S/JA4S, TCP/DNS/QUIC

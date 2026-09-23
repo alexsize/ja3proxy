@@ -22,7 +22,8 @@ type UpstreamTLSProfile struct {
 }
 
 type UpstreamTLSRoute struct {
-	Host string `json:"host"`
+	Host     string `json:"host"`
+	Priority int    `json:"priority,omitempty"`
 	UpstreamTLSProfile
 }
 
@@ -165,22 +166,39 @@ func validateHostPattern(pattern string) error {
 
 func (config UpstreamTLSConfig) profileForHost(host string) (UpstreamTLSProfile, bool) {
 	host = normalizeRouteHost(host)
-	for _, route := range config.Routes {
-		if normalizeRouteHost(route.Host) == host {
-			return route.normalizedProfile(), true
+	bestIndex := -1
+	bestPriority := 0
+	bestSpecificity := -1
+	for index, route := range config.Routes {
+		matched, specificity := routeMatchScore(route.Host, host)
+		if !matched {
+			continue
+		}
+		if bestIndex < 0 || route.Priority > bestPriority ||
+			(route.Priority == bestPriority && specificity > bestSpecificity) {
+			bestIndex, bestPriority, bestSpecificity = index, route.Priority, specificity
 		}
 	}
-
-	for _, route := range config.Routes {
-		if hostPatternMatches(route.Host, host) {
-			return route.normalizedProfile(), true
-		}
+	if bestIndex >= 0 {
+		return config.Routes[bestIndex].normalizedProfile(), true
 	}
 
 	if !config.Default.isZero() {
 		return config.Default.normalized(), true
 	}
 	return UpstreamTLSProfile{}, false
+}
+
+func routeMatchScore(pattern, host string) (bool, int) {
+	pattern = normalizeRouteHost(pattern)
+	host = normalizeRouteHost(host)
+	if pattern == host {
+		return true, 2
+	}
+	if hostPatternMatches(pattern, host) {
+		return true, 1
+	}
+	return false, -1
 }
 
 func hostPatternMatches(pattern string, host string) bool {
