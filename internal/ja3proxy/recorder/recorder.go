@@ -18,26 +18,53 @@ type Meta struct {
 	ConnectionID   string               `json:"connection_id"`
 	CapturePoint   string               `json:"capture_point"`
 	Direction      string               `json:"direction"`
+	ByteSource     string               `json:"byte_source"`
 	Mode           string               `json:"mode"`
 	Destination    string               `json:"destination"`
 	Source         string               `json:"source"`
 	Profile        string               `json:"profile,omitempty"`
 	ProfileID      string               `json:"profile_id,omitempty"`
 	ProfileVersion uint64               `json:"profile_version,omitempty"`
+	ConfigVersion  uint64               `json:"config_version,omitempty"`
 	Expected       *FingerprintExpected `json:"-"`
+	Forwarded      *ForwardingExpected  `json:"-"`
+}
+
+type ForwardingExpected struct {
+	Completeness  string
+	RawSHA256     string
+	RecordsSHA256 string
+}
+
+type ForwardingVerification struct {
+	Status                string `json:"status"`
+	Reason                string `json:"reason,omitempty"`
+	InboundRawSHA256      string `json:"inbound_raw_sha256,omitempty"`
+	OutboundRawSHA256     string `json:"outbound_raw_sha256,omitempty"`
+	InboundRecordsSHA256  string `json:"inbound_records_sha256,omitempty"`
+	OutboundRecordsSHA256 string `json:"outbound_records_sha256,omitempty"`
 }
 
 type FingerprintExpected struct {
-	JA3                  string          `json:"ja3"`
-	JA3Hash              string          `json:"ja3_hash"`
-	JA4                  string          `json:"ja4"`
-	NormalizedSHA256     string          `json:"normalized_sha256"`
-	Normalized           json.RawMessage `json:"normalized"`
-	NormalizationVersion string          `json:"normalization_version"`
-	MaterializerVersion  string          `json:"materializer_version"`
-	MustMatch            []string        `json:"must_match"`
-	ShouldMatch          []string        `json:"should_match"`
-	IgnoredDynamic       []string        `json:"ignored_dynamic"`
+	ProfileSchemaVersion string                  `json:"profile_schema_version"`
+	JA3                  string                  `json:"ja3"`
+	JA3Hash              string                  `json:"ja3_hash"`
+	JA4                  string                  `json:"ja4"`
+	NormalizedSHA256     string                  `json:"normalized_sha256"`
+	Normalized           json.RawMessage         `json:"normalized"`
+	NormalizationVersion string                  `json:"normalization_version"`
+	MaterializerVersion  string                  `json:"materializer_version"`
+	MustMatch            []string                `json:"must_match"`
+	ShouldMatch          []string                `json:"should_match"`
+	IgnoredDynamic       []string                `json:"ignored_dynamic"`
+	Constraints          []FingerprintConstraint `json:"constraints"`
+}
+
+type FingerprintConstraint struct {
+	Path     string            `json:"path"`
+	Operator string            `json:"operator"`
+	Value    json.RawMessage   `json:"value,omitempty"`
+	Values   []json.RawMessage `json:"values,omitempty"`
 }
 
 type Verification struct {
@@ -57,18 +84,19 @@ type Observation struct {
 	SchemaVersion string `json:"schema_version"`
 	ID            string `json:"id"`
 	Meta
-	CapturedAt          time.Time              `json:"captured_at"`
-	PersistedAt         time.Time              `json:"processed_at"`
-	Completeness        string                 `json:"completeness"`
-	ErrorCode           string                 `json:"error_code,omitempty"`
-	RecordVersion       uint16                 `json:"record_version"`
-	RecordCount         int                    `json:"record_count"`
-	DeclaredHelloLength int                    `json:"declared_hello_length,omitempty"`
-	Hello               *tlshello.Hello        `json:"decoded,omitempty"`
-	Fingerprints        *tlshello.Fingerprints `json:"fingerprints,omitempty"`
-	Verification        *Verification          `json:"verification,omitempty"`
-	Raw                 []byte                 `json:"raw_client_hello,omitempty"`
-	Records             []byte                 `json:"raw_records,omitempty"`
+	CapturedAt          time.Time               `json:"captured_at"`
+	PersistedAt         time.Time               `json:"processed_at"`
+	Completeness        string                  `json:"completeness"`
+	ErrorCode           string                  `json:"error_code,omitempty"`
+	RecordVersion       uint16                  `json:"record_version"`
+	RecordCount         int                     `json:"record_count"`
+	DeclaredHelloLength int                     `json:"declared_hello_length,omitempty"`
+	Hello               *tlshello.Hello         `json:"decoded,omitempty"`
+	Fingerprints        *tlshello.Fingerprints  `json:"fingerprints,omitempty"`
+	Verification        *Verification           `json:"verification,omitempty"`
+	Forwarding          *ForwardingVerification `json:"forwarding,omitempty"`
+	Raw                 []byte                  `json:"raw_client_hello,omitempty"`
+	Records             []byte                  `json:"raw_records,omitempty"`
 }
 
 type Options struct {
@@ -222,6 +250,9 @@ func (r *Recorder) run() {
 		if q.meta.Expected != nil {
 			o.Verification = VerifyExpected(*q.meta.Expected, o)
 		}
+		if q.meta.Forwarded != nil {
+			o.Forwarding = VerifyForwarding(*q.meta.Forwarded, c)
+		}
 		if r.opts.Raw {
 			o.Raw = c.Raw
 			o.Records = c.Records
@@ -258,6 +289,30 @@ func (r *Recorder) run() {
 		r.mu.Unlock()
 		r.processed.Add(1)
 	}
+}
+
+func ForwardingFromCapture(c tlshello.Capture) *ForwardingExpected {
+	return &ForwardingExpected{
+		Completeness: c.Status, RawSHA256: tlshello.SHA256(c.Raw), RecordsSHA256: tlshello.SHA256(c.Records),
+	}
+}
+
+func VerifyForwarding(expected ForwardingExpected, actual tlshello.Capture) *ForwardingVerification {
+	verification := &ForwardingVerification{
+		Status: "UNVERIFIED", InboundRawSHA256: expected.RawSHA256, InboundRecordsSHA256: expected.RecordsSHA256,
+		OutboundRawSHA256: tlshello.SHA256(actual.Raw), OutboundRecordsSHA256: tlshello.SHA256(actual.Records),
+	}
+	if expected.Completeness != "complete" || actual.Status != "complete" {
+		verification.Reason = "incomplete_capture"
+		return verification
+	}
+	if expected.RawSHA256 != verification.OutboundRawSHA256 || expected.RecordsSHA256 != verification.OutboundRecordsSHA256 {
+		verification.Status = "MISMATCH"
+		verification.Reason = "forwarded_bytes_differ"
+		return verification
+	}
+	verification.Status = "FORWARDED_UNCHANGED"
+	return verification
 }
 
 // Snapshot returns independent observations, newest first, bounded by retention.

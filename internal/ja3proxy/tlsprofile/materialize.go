@@ -50,13 +50,17 @@ func Preview(template Template) (Template, error) {
 	if err := validateTemplate(template); err != nil {
 		return Template{}, err
 	}
-	materialized, err := Materialize(template, "preview.invalid")
+	serverName := "preview.invalid"
+	if template.Source != nil && template.Source.ServerName != "" {
+		serverName = template.Source.ServerName
+	}
+	materialized, err := Materialize(template, serverName)
 	if err != nil {
 		template.Replayability = Replayability{Status: "UNSUPPORTED", Unsupported: []string{err.Error()}}
 		template.Expected = nil
 		return template, nil
 	}
-	template.Replayability = materialized.Replayability
+	template.Replayability = assessObservedSource(template, materialized.Expected)
 	template.Expected = &materialized.Expected
 	return template, nil
 }

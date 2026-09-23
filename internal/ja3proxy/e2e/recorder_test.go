@@ -115,6 +115,9 @@ func TestRecorderOutboundWireThroughProxyMatrix(t *testing.T) {
 						if out.Profile != "" || !bytes.Equal(in.Raw, out.Raw) || !bytes.Equal(in.Records, out.Records) {
 							t.Fatal("passthrough changed or incorrectly labelled")
 						}
+						if out.Forwarding == nil || out.Forwarding.Status != "FORWARDED_UNCHANGED" {
+							t.Fatalf("passthrough forwarding verification = %+v", out.Forwarding)
+						}
 						if recorder.Compare(in, out).Status != "MATCH" {
 							t.Fatal("passthrough diff")
 						}
@@ -277,6 +280,9 @@ func TestCustomTLSProfileProducesExpectedJA4AndVerification(t *testing.T) {
 	_, outbound := recordedPair(t, r)
 	if outbound.ProfileID != created.ID || outbound.ProfileVersion != 1 {
 		t.Fatalf("profile snapshot missing: %+v", outbound.Meta)
+	}
+	if outbound.ConfigVersion != library.ConfigVersion+1 || outbound.ByteSource != "upstream_socket_successful_write" {
+		t.Fatalf("config/byte source snapshot missing: %+v", outbound.Meta)
 	}
 	if outbound.Verification == nil || outbound.Verification.Status != "MATCH" {
 		t.Fatalf("verification = %+v", outbound.Verification)

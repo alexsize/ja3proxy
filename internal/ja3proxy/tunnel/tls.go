@@ -3,8 +3,10 @@ package tunnel
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/capture/tlshello"
@@ -241,9 +243,11 @@ func (handler *TunnelHandler) Connect(sni string, destConn net.Conn, clientConn 
 	// Resolve once. A runtime profile change cannot relabel a running handshake.
 	profile := handler.configuredUpstreamTLSProfile(sni)
 	var selectedTemplate *tlsprofile.Template
+	var selectedConfigVersion uint64
 	if handler.TLSProfiles != nil {
-		if template, ok := handler.TLSProfiles.Resolve(sni); ok {
+		if template, configVersion, ok := handler.TLSProfiles.ResolveWithVersion(sni); ok {
 			selectedTemplate = &template
+			selectedConfigVersion = configVersion
 		}
 	}
 	if handler.Mode == "BLOCK" {
@@ -255,22 +259,40 @@ func (handler *TunnelHandler) Connect(sni string, destConn net.Conn, clientConn 
 			mode = "MITM_REISSUE"
 		}
 		id := recorder.NewID()
-		meta := recorder.Meta{ConnectionID: id, CapturePoint: "CLIENT_IN", Direction: "inbound", Mode: mode, Destination: sni, Source: netutil.RemoteAddr(clientConn)}
+		meta := recorder.Meta{ConnectionID: id, CapturePoint: "CLIENT_IN", Direction: "inbound", ByteSource: "client_socket_read", Mode: mode, Destination: sni, Source: netutil.RemoteAddr(clientConn)}
 		outMeta = meta
 		outMeta.CapturePoint = "PROXY_OUT"
 		outMeta.Direction = "outbound"
+		outMeta.ByteSource = "upstream_socket_successful_write"
 		if mode == "MITM_REISSUE" {
 			if selectedTemplate != nil {
 				outMeta.Profile = selectedTemplate.Name
 				outMeta.ProfileID = selectedTemplate.ID
 				outMeta.ProfileVersion = selectedTemplate.Version
+				outMeta.ConfigVersion = selectedConfigVersion
 			} else {
 				outMeta.Profile = profile.Client + "@" + profile.Version
 			}
 		}
 		if mode == "PASSTHROUGH" || mode == "OBSERVE_ONLY" {
-			in := tlshello.Wrap(clientConn, true, tlshello.DefaultLimits(), func(c tlshello.Capture) { handler.Recorder.TryCapture(meta, c) })
-			out := tlshello.Wrap(destConn, false, tlshello.DefaultLimits(), func(c tlshello.Capture) { handler.Recorder.TryCapture(outMeta, c) })
+			var forwardingMu sync.Mutex
+			var forwarded *recorder.ForwardingExpected
+			in := tlshello.Wrap(clientConn, true, tlshello.DefaultLimits(), func(c tlshello.Capture) {
+				forwardingMu.Lock()
+				forwarded = recorder.ForwardingFromCapture(c)
+				forwardingMu.Unlock()
+				handler.Recorder.TryCapture(meta, c)
+			})
+			out := tlshello.Wrap(destConn, false, tlshello.DefaultLimits(), func(c tlshello.Capture) {
+				forwardingMu.Lock()
+				outboundMeta := outMeta
+				if forwarded != nil {
+					copyExpected := *forwarded
+					outboundMeta.Forwarded = &copyExpected
+				}
+				forwardingMu.Unlock()
+				handler.Recorder.TryCapture(outboundMeta, c)
+			})
 			defer in.Close()
 			defer out.Close()
 			pipe.Junction(out, in)
@@ -291,6 +313,7 @@ func (handler *TunnelHandler) Connect(sni string, destConn net.Conn, clientConn 
 			meta.Mode = "PASSTHROUGH"
 			outMeta.Mode = "PASSTHROUGH"
 			outMeta.Profile = ""
+			outMeta.Forwarded = recorder.ForwardingFromCapture(capture)
 			handler.Recorder.TryCapture(meta, capture)
 			out := tlshello.Wrap(destConn, false, tlshello.DefaultLimits(), func(c tlshello.Capture) { handler.Recorder.TryCapture(outMeta, c) })
 			defer out.Close()
@@ -374,13 +397,30 @@ func (handler *TunnelHandler) Connect(sni string, destConn net.Conn, clientConn 
 }
 
 func expectedForRecorder(expected tlsprofile.Expected, policy tlsprofile.MatchPolicy) *recorder.FingerprintExpected {
+	constraints := make([]recorder.FingerprintConstraint, len(policy.Constraints))
+	for i, constraint := range policy.Constraints {
+		constraints[i] = recorder.FingerprintConstraint{
+			Path: constraint.Path, Operator: constraint.Operator,
+			Value: append([]byte(nil), constraint.Value...), Values: cloneRawMessages(constraint.Values),
+		}
+	}
 	return &recorder.FingerprintExpected{
-		JA3: expected.JA3, JA3Hash: expected.JA3Hash, JA4: expected.JA4,
+		ProfileSchemaVersion: tlsprofile.SchemaVersion,
+		JA3:                  expected.JA3, JA3Hash: expected.JA3Hash, JA4: expected.JA4,
 		NormalizedSHA256: expected.NormalizedSHA256, Normalized: append([]byte(nil), expected.Normalized...),
 		NormalizationVersion: expected.NormalizationVersion, MaterializerVersion: expected.MaterializerVersion,
 		MustMatch: append([]string(nil), policy.MustMatch...), ShouldMatch: append([]string(nil), policy.ShouldMatch...),
 		IgnoredDynamic: append([]string(nil), policy.IgnoredDynamic...),
+		Constraints:    constraints,
 	}
+}
+
+func cloneRawMessages(values []json.RawMessage) []json.RawMessage {
+	cloned := make([]json.RawMessage, len(values))
+	for i, value := range values {
+		cloned[i] = append(json.RawMessage(nil), value...)
+	}
+	return cloned
 }
 
 func (handler *TunnelHandler) captureTimeout() time.Duration {

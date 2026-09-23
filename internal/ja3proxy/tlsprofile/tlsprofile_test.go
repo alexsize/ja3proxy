@@ -1,6 +1,7 @@
 package tlsprofile
 
 import (
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -55,6 +56,44 @@ func TestMissingPolicyPathIsUnsupported(t *testing.T) {
 	}
 }
 
+func TestTemplateConstraintsAreValidated(t *testing.T) {
+	template, err := TemplateFromPreset("Chrome", "Chrome", "120")
+	if err != nil {
+		t.Fatal(err)
+	}
+	template.Policy.Constraints = []Constraint{{Path: "/legacy_version", Operator: "one_of", Values: []json.RawMessage{json.RawMessage(`771`)}}}
+	preview, err := Preview(template)
+	if err != nil || preview.Replayability.Status == "UNSUPPORTED" {
+		t.Fatalf("valid constraint rejected: %+v, %v", preview, err)
+	}
+	template.Policy.Constraints = []Constraint{{Path: "/legacy_version", Operator: "unknown"}}
+	if _, err := Preview(template); err == nil {
+		t.Fatal("unknown constraint operator was accepted")
+	}
+}
+
+func TestObservedSourceMustMatchIsCheckedBeforePublish(t *testing.T) {
+	template, err := TemplateFromPreset("Chrome", "Chrome", "120")
+	if err != nil {
+		t.Fatal(err)
+	}
+	altered := append(json.RawMessage(nil), template.Expected.Normalized...)
+	var normalized map[string]any
+	if err := json.Unmarshal(altered, &normalized); err != nil {
+		t.Fatal(err)
+	}
+	normalized["ciphers"] = []any{float64(4865)}
+	altered, _ = json.Marshal(normalized)
+	template.Source = &ObservedSource{ObservationID: "source", ServerName: "example.com", Normalized: altered, NormalizationVersion: template.Expected.NormalizationVersion}
+	preview, err := Preview(template)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.Replayability.Status != "UNSUPPORTED" || len(preview.Replayability.Unsupported) == 0 {
+		t.Fatalf("source mismatch was hidden: %+v", preview.Replayability)
+	}
+}
+
 func TestConstrainALPNPreservesTemplateOrder(t *testing.T) {
 	template := Template{Fields: StaticFields{ALPN: []string{"h2", "http/1.1", "h3"}}}
 	effective, err := ConstrainALPN(template, []string{"http/1.1", "h2"})
@@ -91,6 +130,16 @@ func TestStoreVersioningPersistenceAndRouting(t *testing.T) {
 	if _, _, err := store.Create(template, 0); !errors.Is(err, ErrVersionConflict) {
 		t.Fatalf("stale write error = %v", err)
 	}
+	edited := created
+	edited.Name = "lab edited"
+	edited, library, err = store.Update(created.ID, edited, library.ConfigVersion)
+	if err != nil || edited.Version != 2 || edited.BasedOnVersion != 1 {
+		t.Fatalf("update = %+v, %+v, %v", edited, library, err)
+	}
+	rolledBack, library, err := store.Rollback(created.ID, 1, library.ConfigVersion)
+	if err != nil || rolledBack.Version != 3 || rolledBack.BasedOnVersion != 1 || rolledBack.Name != created.Name {
+		t.Fatalf("rollback = %+v, %+v, %v", rolledBack, library, err)
+	}
 	library, err = store.Activate(created.ID, library.ConfigVersion)
 	if err != nil {
 		t.Fatal(err)
@@ -107,5 +156,8 @@ func TestStoreVersioningPersistenceAndRouting(t *testing.T) {
 	}
 	if reopened.Snapshot().ConfigVersion != library.ConfigVersion || reopened.Snapshot().ActiveID != created.ID {
 		t.Fatalf("persistence mismatch: %+v", reopened.Snapshot())
+	}
+	if history := reopened.History(created.ID); len(history) != 3 || history[0].Version != 1 || history[2].Version != 3 {
+		t.Fatalf("immutable history mismatch: %+v", history)
 	}
 }

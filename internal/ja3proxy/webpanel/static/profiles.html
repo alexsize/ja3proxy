@@ -35,6 +35,7 @@
         <label>Signature algorithms, JSON-массив uint16<textarea id="signatures" rows="3" required></textarea></label>
         <label>MUST-match, JSON Pointer paths<textarea id="must-match" rows="3" required></textarea></label>
         <label>SHOULD-match, JSON Pointer paths<textarea id="should-match" rows="3" required></textarea></label>
+		<label class="wide">Constraints, JSON-массив объектов path/operator/value(s)<textarea id="constraints" rows="4" required></textarea></label>
       </div>
       <label class="check"><input id="enabled" type="checkbox" checked> Профиль разрешено активировать</label>
       <div class="actions"><button id="preview" type="button">Рассчитать ожидаемый JA4</button><button type="submit">Сохранить новую версию</button><button id="reset" type="button">Новый профиль</button></div>

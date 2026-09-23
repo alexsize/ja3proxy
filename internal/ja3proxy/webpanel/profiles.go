@@ -20,17 +20,28 @@ func (panel Server) registerProfileRoutes(mux *http.ServeMux) {
 	routes := map[string]http.HandlerFunc{
 		"GET /api/v1/tls/profiles":                   panel.listTLSProfiles,
 		"GET /api/v1/tls/profiles/{id}":              panel.getTLSProfile,
+		"GET /api/v1/tls/profiles/{id}/versions":     panel.getTLSProfileVersions,
 		"POST /api/v1/tls/profiles/from-preset":      panel.profileFromPreset,
 		"POST /api/v1/tls/profiles/preview":          panel.previewTLSProfile,
 		"POST /api/v1/tls/profiles/from-observation": panel.profileFromObservation,
 		"POST /api/v1/tls/profiles":                  panel.createTLSProfile,
 		"PUT /api/v1/tls/profiles/{id}":              panel.updateTLSProfile,
 		"DELETE /api/v1/tls/profiles/{id}":           panel.deleteTLSProfile,
+		"POST /api/v1/tls/profiles/{id}/rollback":    panel.rollbackTLSProfile,
 		"PUT /api/v1/tls/profiles/active":            panel.activateTLSProfile,
 	}
 	for pattern, handler := range routes {
 		mux.Handle(pattern, recorderLocalOnly(handler))
 	}
+}
+
+func (panel Server) getTLSProfileVersions(w http.ResponseWriter, r *http.Request) {
+	history := panel.Profiles.History(r.PathValue("id"))
+	if len(history) == 0 {
+		writeAPIError(w, http.StatusNotFound, "история TLS-профиля не найдена")
+		return
+	}
+	json.NewEncoder(w).Encode(history)
 }
 
 func (panel Server) listTLSProfiles(w http.ResponseWriter, _ *http.Request) {
@@ -121,6 +132,21 @@ func (panel Server) deleteTLSProfile(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(library)
 }
 
+func (panel Server) rollbackTLSProfile(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		ExpectedVersion uint64 `json:"expected_version"`
+		TargetVersion   uint64 `json:"target_version"`
+	}
+	if !decodeProfileRequest(w, r, &request) {
+		return
+	}
+	rolledBack, library, err := panel.Profiles.Rollback(r.PathValue("id"), request.TargetVersion, request.ExpectedVersion)
+	if writeProfileMutationError(w, err) {
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]any{"template": rolledBack, "library": library})
+}
+
 func (panel Server) activateTLSProfile(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		ExpectedVersion uint64 `json:"expected_version"`
@@ -155,7 +181,7 @@ func (panel Server) profileFromObservation(w http.ResponseWriter, r *http.Reques
 	var found bool
 	var template tlsprofile.Template
 	for _, observation := range panel.Recorder.Snapshot() {
-		if observation.ID != request.ObservationID || observation.Hello == nil {
+		if observation.ID != request.ObservationID || observation.Hello == nil || observation.Fingerprints == nil {
 			continue
 		}
 		fields, err := tlsprofile.FieldsFromHello(observation.Hello)
@@ -166,6 +192,12 @@ func (panel Server) profileFromObservation(w http.ResponseWriter, r *http.Reques
 		template = tlsprofile.Template{
 			Name: request.Name, Enabled: true, HostPatterns: request.HostPatterns,
 			BasePreset: request.BasePreset, Fields: fields, Policy: tlsprofile.DefaultMatchPolicy(), SourceObservationID: observation.ID,
+			Source: &tlsprofile.ObservedSource{
+				ObservationID: observation.ID, ServerName: observation.Hello.ServerName,
+				JA3: observation.Fingerprints.JA3, JA3Hash: observation.Fingerprints.JA3Hash, JA4: observation.Fingerprints.JA4,
+				NormalizedSHA256: observation.Fingerprints.NormalizedSHA256, Normalized: append([]byte(nil), observation.Fingerprints.Normalized...),
+				NormalizationVersion: observation.Fingerprints.NormalizationVersion,
+			},
 		}
 		found = true
 		break

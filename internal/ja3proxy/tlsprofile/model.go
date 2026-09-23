@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -34,9 +35,17 @@ type StaticFields struct {
 }
 
 type MatchPolicy struct {
-	MustMatch      []string `json:"must_match"`
-	ShouldMatch    []string `json:"should_match"`
-	IgnoredDynamic []string `json:"ignored_dynamic"`
+	MustMatch      []string     `json:"must_match"`
+	ShouldMatch    []string     `json:"should_match"`
+	IgnoredDynamic []string     `json:"ignored_dynamic"`
+	Constraints    []Constraint `json:"constraints"`
+}
+
+type Constraint struct {
+	Path     string            `json:"path"`
+	Operator string            `json:"operator"`
+	Value    json.RawMessage   `json:"value,omitempty"`
+	Values   []json.RawMessage `json:"values,omitempty"`
 }
 
 func DefaultMatchPolicy() MatchPolicy {
@@ -44,6 +53,7 @@ func DefaultMatchPolicy() MatchPolicy {
 		MustMatch:      []string{"/ciphers", "/extensions"},
 		ShouldMatch:    []string{"/legacy_version", "/compression_methods", "/session_id_length"},
 		IgnoredDynamic: []string{"client_random", "session_id_bytes", "key_share_bytes", "psk_identities", "psk_binders", "session_tickets", "grease_values"},
+		Constraints:    []Constraint{},
 	}
 }
 
@@ -64,17 +74,30 @@ type Replayability struct {
 	Warnings    []string `json:"warnings,omitempty"`
 }
 
+type ObservedSource struct {
+	ObservationID        string          `json:"observation_id"`
+	ServerName           string          `json:"server_name,omitempty"`
+	JA3                  string          `json:"ja3"`
+	JA3Hash              string          `json:"ja3_hash"`
+	JA4                  string          `json:"ja4"`
+	NormalizedSHA256     string          `json:"normalized_sha256"`
+	Normalized           json.RawMessage `json:"normalized"`
+	NormalizationVersion string          `json:"normalization_version"`
+}
+
 type Template struct {
 	SchemaVersion       string                     `json:"schema_version"`
 	ID                  string                     `json:"id"`
 	Name                string                     `json:"name"`
 	Version             uint64                     `json:"version"`
+	BasedOnVersion      uint64                     `json:"based_on_version,omitempty"`
 	Enabled             bool                       `json:"enabled"`
 	HostPatterns        []string                   `json:"host_patterns"`
 	BasePreset          fingerprint.TLSFingerprint `json:"base_preset"`
 	Fields              StaticFields               `json:"fields"`
 	Policy              MatchPolicy                `json:"policy"`
 	SourceObservationID string                     `json:"source_observation_id,omitempty"`
+	Source              *ObservedSource            `json:"source,omitempty"`
 	Expected            *Expected                  `json:"expected,omitempty"`
 	Replayability       Replayability              `json:"replayability"`
 	CreatedAt           time.Time                  `json:"created_at"`
@@ -189,7 +212,32 @@ func validateTemplate(template Template) error {
 	if len(template.Policy.MustMatch) == 0 {
 		return errors.New("must_match не может быть пустым")
 	}
-	for _, path := range append(append([]string{}, template.Policy.MustMatch...), template.Policy.ShouldMatch...) {
+	paths := append(append([]string{}, template.Policy.MustMatch...), template.Policy.ShouldMatch...)
+	for _, constraint := range template.Policy.Constraints {
+		paths = append(paths, constraint.Path)
+		switch constraint.Operator {
+		case "present":
+			if len(constraint.Value) != 0 || len(constraint.Values) != 0 {
+				return fmt.Errorf("constraint present для %q не принимает value", constraint.Path)
+			}
+		case "equals":
+			if len(constraint.Value) == 0 || !json.Valid(constraint.Value) || len(constraint.Values) != 0 {
+				return fmt.Errorf("constraint equals для %q требует одно JSON value", constraint.Path)
+			}
+		case "one_of":
+			if len(constraint.Values) == 0 || len(constraint.Value) != 0 {
+				return fmt.Errorf("constraint one_of для %q требует values", constraint.Path)
+			}
+			for _, value := range constraint.Values {
+				if !json.Valid(value) {
+					return fmt.Errorf("constraint one_of для %q содержит некорректный JSON", constraint.Path)
+				}
+			}
+		default:
+			return fmt.Errorf("неподдерживаемый constraint operator %q", constraint.Operator)
+		}
+	}
+	for _, path := range paths {
 		if path == "" || !strings.HasPrefix(path, "/") || strings.Contains(path, "..") {
 			return fmt.Errorf("некорректный путь политики %q", path)
 		}
@@ -203,29 +251,103 @@ func validatePolicyPaths(normalized json.RawMessage, policy MatchPolicy) error {
 		return fmt.Errorf("проверка политики: %w", err)
 	}
 	paths := append(append([]string{}, policy.MustMatch...), policy.ShouldMatch...)
+	for _, constraint := range policy.Constraints {
+		paths = append(paths, constraint.Path)
+	}
 	for _, path := range paths {
-		current := root
-		for _, encoded := range strings.Split(strings.TrimPrefix(path, "/"), "/") {
-			key := strings.ReplaceAll(strings.ReplaceAll(encoded, "~1", "/"), "~0", "~")
-			switch typed := current.(type) {
-			case map[string]any:
-				var ok bool
-				current, ok = typed[key]
-				if !ok {
-					return fmt.Errorf("путь политики %q отсутствует в TLS-NORM", path)
-				}
-			case []any:
-				index, err := strconv.Atoi(key)
-				if err != nil || index < 0 || index >= len(typed) {
-					return fmt.Errorf("путь политики %q отсутствует в TLS-NORM", path)
-				}
-				current = typed[index]
-			default:
-				return fmt.Errorf("путь политики %q отсутствует в TLS-NORM", path)
-			}
+		if _, ok := normalizedValueAtPath(root, path); !ok {
+			return fmt.Errorf("путь политики %q отсутствует в TLS-NORM", path)
 		}
 	}
 	return nil
+}
+
+func normalizedValueAtPath(root any, path string) (any, bool) {
+	current := root
+	for _, encoded := range strings.Split(strings.TrimPrefix(path, "/"), "/") {
+		key := strings.ReplaceAll(strings.ReplaceAll(encoded, "~1", "/"), "~0", "~")
+		switch typed := current.(type) {
+		case map[string]any:
+			var ok bool
+			current, ok = typed[key]
+			if !ok {
+				return nil, false
+			}
+		case []any:
+			index, err := strconv.Atoi(key)
+			if err != nil || index < 0 || index >= len(typed) {
+				return nil, false
+			}
+			current = typed[index]
+		default:
+			return nil, false
+		}
+	}
+	return current, true
+}
+
+func assessObservedSource(template Template, expected Expected) Replayability {
+	status := Replayability{Status: "REPLAYABLE_WITH_DYNAMIC_FIELDS", Warnings: []string{"random, session ID, GREASE и key shares создаются uTLS динамически"}}
+	if template.Source == nil {
+		return status
+	}
+	if template.Source.NormalizationVersion != expected.NormalizationVersion {
+		return Replayability{Status: "UNSUPPORTED", Unsupported: []string{"source observation использует несовместимую версию TLS-NORM"}}
+	}
+	var sourceValue, expectedValue any
+	if json.Unmarshal(template.Source.Normalized, &sourceValue) != nil || json.Unmarshal(expected.Normalized, &expectedValue) != nil {
+		return Replayability{Status: "UNSUPPORTED", Unsupported: []string{"source observation содержит некорректную TLS-NORM"}}
+	}
+	for _, path := range template.Policy.MustMatch {
+		sourceField, sourceOK := normalizedValueAtPath(sourceValue, path)
+		expectedField, expectedOK := normalizedValueAtPath(expectedValue, path)
+		if !sourceOK || !expectedOK || !reflect.DeepEqual(sourceField, expectedField) {
+			status.Status = "UNSUPPORTED"
+			status.Unsupported = append(status.Unsupported, fmt.Sprintf("наблюдаемое MUST-поле %s не воспроизводится выбранным пресетом", path))
+		}
+	}
+	for _, constraint := range template.Policy.Constraints {
+		sourceField, sourceOK := normalizedValueAtPath(sourceValue, constraint.Path)
+		if !templateConstraintMatches(constraint, sourceField, sourceOK) {
+			status.Status = "UNSUPPORTED"
+			status.Unsupported = append(status.Unsupported, fmt.Sprintf("source observation нарушает constraint %s %s", constraint.Path, constraint.Operator))
+		}
+	}
+	if status.Status == "UNSUPPORTED" {
+		return status
+	}
+	for _, path := range template.Policy.ShouldMatch {
+		sourceField, sourceOK := normalizedValueAtPath(sourceValue, path)
+		expectedField, expectedOK := normalizedValueAtPath(expectedValue, path)
+		if !sourceOK || !expectedOK || !reflect.DeepEqual(sourceField, expectedField) {
+			status.Warnings = append(status.Warnings, fmt.Sprintf("наблюдаемое SHOULD-поле %s отличается от materialized ClientHello", path))
+		}
+	}
+	return status
+}
+
+func templateConstraintMatches(constraint Constraint, actual any, exists bool) bool {
+	switch constraint.Operator {
+	case "present":
+		return exists
+	case "equals":
+		if !exists {
+			return false
+		}
+		var expected any
+		return json.Unmarshal(constraint.Value, &expected) == nil && reflect.DeepEqual(expected, actual)
+	case "one_of":
+		if !exists {
+			return false
+		}
+		for _, encoded := range constraint.Values {
+			var allowed any
+			if json.Unmarshal(encoded, &allowed) == nil && reflect.DeepEqual(allowed, actual) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func validateHostPattern(pattern string) error {

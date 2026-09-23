@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Локальный API регистратора JA3Proxy",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "description": "Наблюдения в ограниченной памяти. Доступ только через loopback с проверкой Host, адреса клиента и Origin; аутентификация пользователей пока отсутствует. Это не полный API центра управления."
   },
   "servers": [
@@ -338,6 +338,22 @@
         "responses": {"200": {"description": "Обновлённая библиотека"}, "400": {"description": "Активный профиль сначала нужно отключить"}, "409": {"description": "Устаревшая config_version"}}
       }
     },
+    "/api/v1/tls/profiles/{id}/versions": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
+      "get": {
+        "operationId": "getTLSProfileVersions",
+        "description": "Возвращает неизменяемую историю опубликованных версий профиля.",
+        "responses": {"200": {"description": "История версий", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/TLSProfile"}}}}}, "404": {"description": "История не найдена"}}
+      }
+    },
+    "/api/v1/tls/profiles/{id}/rollback": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
+      "post": {
+        "operationId": "rollbackTLSProfile",
+        "description": "Создаёт новую версию на основе исторической; существующие версии не изменяются.",
+        "responses": {"200": {"description": "Создана новая версия профиля"}, "409": {"description": "Устаревшая config_version"}}
+      }
+    },
     "/api/v1/tls/profiles/from-preset": {
       "post": {
         "operationId": "profileFromPreset",
@@ -536,6 +552,9 @@
               "outbound"
             ]
           },
+          "byte_source": {
+            "enum": ["client_socket_read", "upstream_socket_successful_write"]
+          },
           "mode": {
             "enum": [
               "MITM_REISSUE",
@@ -556,6 +575,9 @@
             "type": "string"
           },
           "profile_version": {
+            "type": "integer"
+          },
+          "config_version": {
             "type": "integer"
           },
           "captured_at": {
@@ -597,6 +619,9 @@
           "verification": {
             "$ref": "#/components/schemas/Verification"
           },
+          "forwarding": {
+            "$ref": "#/components/schemas/ForwardingVerification"
+          },
           "raw_client_hello": {
             "type": "string",
             "contentEncoding": "base64"
@@ -612,6 +637,7 @@
           "connection_id",
           "capture_point",
           "direction",
+          "byte_source",
           "completeness",
           "captured_at",
           "processed_at"
@@ -709,6 +735,19 @@
         },
         "required": ["schema_version", "status", "expected", "diff_algorithm_version", "changes"]
       },
+      "ForwardingVerification": {
+        "type": "object",
+        "description": "Доказательство неизменной передачи ClientHello в PASSTHROUGH/OBSERVE_ONLY.",
+        "properties": {
+          "status": {"enum": ["FORWARDED_UNCHANGED", "MISMATCH", "UNVERIFIED"]},
+          "reason": {"type": "string"},
+          "inbound_raw_sha256": {"type": "string"},
+          "outbound_raw_sha256": {"type": "string"},
+          "inbound_records_sha256": {"type": "string"},
+          "outbound_records_sha256": {"type": "string"}
+        },
+        "required": ["status"]
+      },
       "TLSProfileLibrary": {
         "type": "object",
         "properties": {
@@ -728,11 +767,13 @@
           "id": {"type": "string"},
           "name": {"type": "string"},
           "version": {"type": "integer"},
+          "based_on_version": {"type": "integer"},
           "enabled": {"type": "boolean"},
           "host_patterns": {"type": "array", "items": {"type": "string"}},
           "base_preset": {"type": "object", "additionalProperties": true},
           "fields": {"type": "object", "additionalProperties": true},
           "policy": {"type": "object", "additionalProperties": true},
+          "source": {"type": ["object", "null"], "additionalProperties": true},
           "expected": {"type": ["object", "null"], "additionalProperties": true},
           "replayability": {"type": "object", "additionalProperties": true}
         }

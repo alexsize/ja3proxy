@@ -26,7 +26,8 @@ async function refresh(cursor = "") {
     for (const observation of data.items) {
       const row = document.createElement("tr");
 	  const fingerprint = observation.fingerprints?.ja4 || `${observation.completeness}: ${observation.error_code || ""}`;
-	  const verified = observation.verification?.status ? `${fingerprint} · ${observation.verification.status}` : fingerprint;
+	  const status = observation.verification?.status || observation.forwarding?.status || "";
+	  const verified = status ? `${fingerprint} · ${status}` : fingerprint;
 	  for (const value of [new Date(observation.captured_at).toLocaleTimeString(), observation.destination, observation.capture_point, observation.mode, verified]) {
         const cell = document.createElement("td"); cell.textContent = value; row.append(cell);
       }

@@ -83,6 +83,8 @@ JSONL создаётся с запретом перезаписи существ
 | `POST /api/v1/tls/profiles` | сохранить новый профиль |
 | `PUT /api/v1/tls/profiles/{id}` | сохранить новую версию профиля |
 | `DELETE /api/v1/tls/profiles/{id}` | удалить неактивный профиль |
+| `GET /api/v1/tls/profiles/{id}/versions` | неизменяемая история версий |
+| `POST /api/v1/tls/profiles/{id}/rollback` | откат как новая версия |
 | `PUT /api/v1/tls/profiles/active` | выбрать профиль для новых соединений |
 | `GET /metrics` | метрики в текстовом формате |
 | `GET /health/live` | проверка активности процесса |
@@ -129,6 +131,12 @@ rebinding, но не заменяет будущие аутентификаци�
 `PROXY_OUT`; поэтому проверка не подменяется сравнением объекта конфигурации с
 самим собой.
 
+Для PASSTHROUGH и OBSERVE_ONLY поле `forwarding.status` имеет отдельные значения:
+`FORWARDED_UNCHANGED`, `MISMATCH` или `UNVERIFIED`. Сравниваются SHA-256 полного
+ClientHello и захваченных TLS records на `CLIENT_IN` и успешных записях
+`PROXY_OUT`; неполный захват никогда не объявляется совпадением. Каждая запись
+также содержит нормативный `byte_source`.
+
 ## Редактор TLS-профилей и JA4
 
 Откройте `http://127.0.0.1:9090/profiles.html`. Шаблон можно создать из
@@ -137,10 +145,18 @@ rebinding, но не заменяет будущие аутентификаци�
 supported groups и signature algorithms. JA3/JA4 нельзя править как готовую
 строку — они пересчитываются из materialized ClientHello.
 
-Профиль хранит версию, ожидаемый fingerprint, политику MUST/SHOULD и явный
+Профиль хранит версию, ожидаемый fingerprint, политику MUST/SHOULD,
+`ignored_dynamic`, versioned constraints (`present`, `equals`, `one_of`) и явный
 статус воспроизводимости. `UNSUPPORTED` нельзя активировать. Библиотека —
 append-only JSONL с compare-and-swap по `config_version`; путь задаёт
 `--tls-template-file`, по умолчанию `profiles/tls-templates.jsonl`.
+
+При создании из наблюдения сохраняется source fingerprint. Его MUST-поля
+сравниваются с materialized ClientHello до публикации; скрытая подмена
+неподдерживаемого extension payload содержимым базового пресета переводит
+шаблон в `UNSUPPORTED`. История опубликованных версий доступна через API и
+интерфейс. Откат не переписывает историю, а создаёт новую версию с
+`based_on_version`.
 
 Одновременно выбирается один активный шаблон. Пустой список host patterns
 означает все хосты; поддерживаются точные имена и `*.example.com` без совпадения

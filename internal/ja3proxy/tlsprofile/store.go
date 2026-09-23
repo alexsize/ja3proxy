@@ -22,10 +22,11 @@ type Store struct {
 	mu      sync.RWMutex
 	path    string
 	library Library
+	history map[string][]Template
 }
 
 func Open(path string) (*Store, error) {
-	store := &Store{path: path, library: Library{SchemaVersion: SchemaVersion, Templates: []Template{}}}
+	store := &Store{path: path, library: Library{SchemaVersion: SchemaVersion, Templates: []Template{}}, history: map[string][]Template{}}
 	if path == "" {
 		return store, nil
 	}
@@ -51,6 +52,9 @@ func Open(path string) (*Store, error) {
 		if candidate.SchemaVersion != SchemaVersion {
 			return nil, fmt.Errorf("неподдерживаемая схема TLS-профилей %q", candidate.SchemaVersion)
 		}
+		for _, template := range candidate.Templates {
+			store.recordHistoryLocked(template)
+		}
 		latest = candidate
 	}
 	if err := scanner.Err(); err != nil {
@@ -60,6 +64,21 @@ func Open(path string) (*Store, error) {
 		store.library = latest
 	}
 	return store, nil
+}
+
+func (s *Store) History(id string) []Template {
+	if s == nil {
+		return []Template{}
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	data, _ := json.Marshal(s.history[id])
+	var history []Template
+	_ = json.Unmarshal(data, &history)
+	if history == nil {
+		return []Template{}
+	}
+	return history
 }
 
 func (s *Store) Snapshot() Library {
@@ -85,24 +104,29 @@ func (s *Store) Get(id string) (Template, bool) {
 }
 
 func (s *Store) Resolve(host string) (Template, bool) {
+	template, _, ok := s.ResolveWithVersion(host)
+	return template, ok
+}
+
+func (s *Store) ResolveWithVersion(host string) (Template, uint64, bool) {
 	library := s.Snapshot()
 	if library.ActiveID == "" {
-		return Template{}, false
+		return Template{}, library.ConfigVersion, false
 	}
 	for _, template := range library.Templates {
 		if template.ID != library.ActiveID || !template.Enabled || template.Replayability.Status == "UNSUPPORTED" {
 			continue
 		}
 		if len(template.HostPatterns) == 0 {
-			return template, true
+			return template, library.ConfigVersion, true
 		}
 		for _, pattern := range template.HostPatterns {
 			if hostMatches(pattern, host) {
-				return template, true
+				return template, library.ConfigVersion, true
 			}
 		}
 	}
-	return Template{}, false
+	return Template{}, library.ConfigVersion, false
 }
 
 func (s *Store) Create(template Template, expectedConfigVersion uint64) (Template, Library, error) {
@@ -139,9 +163,42 @@ func (s *Store) Update(id string, template Template, expectedConfigVersion uint6
 		template.ID = previous.ID
 		template.SchemaVersion = SchemaVersion
 		template.Version = previous.Version + 1
+		template.BasedOnVersion = previous.Version
 		template.CreatedAt = previous.CreatedAt
 		template.UpdatedAt = time.Now().UTC()
 		preview, err := Preview(template)
+		if err != nil {
+			return Template{}, err
+		}
+		library.Templates[index] = preview
+		return preview, nil
+	})
+}
+
+func (s *Store) Rollback(id string, targetVersion uint64, expectedConfigVersion uint64) (Template, Library, error) {
+	return s.mutate(expectedConfigVersion, func(library *Library) (Template, error) {
+		index := slices.IndexFunc(library.Templates, func(candidate Template) bool { return candidate.ID == id })
+		if index < 0 {
+			return Template{}, os.ErrNotExist
+		}
+		var target Template
+		for _, version := range s.history[id] {
+			if version.Version == targetVersion {
+				target = version
+				break
+			}
+		}
+		if target.ID == "" {
+			return Template{}, errors.New("запрошенная версия TLS-профиля не найдена")
+		}
+		previous := library.Templates[index]
+		target.ID = previous.ID
+		target.SchemaVersion = SchemaVersion
+		target.Version = previous.Version + 1
+		target.BasedOnVersion = targetVersion
+		target.CreatedAt = previous.CreatedAt
+		target.UpdatedAt = time.Now().UTC()
+		preview, err := Preview(target)
 		if err != nil {
 			return Template{}, err
 		}
@@ -207,7 +264,19 @@ func (s *Store) mutate(expectedVersion uint64, apply func(*Library) (Template, e
 		return Template{}, s.library, err
 	}
 	s.library = candidate
+	s.recordHistoryLocked(result)
 	return result, s.library, nil
+}
+
+func (s *Store) recordHistoryLocked(template Template) {
+	if template.ID == "" || template.Version == 0 {
+		return
+	}
+	versions := s.history[template.ID]
+	if slices.ContainsFunc(versions, func(candidate Template) bool { return candidate.Version == template.Version }) {
+		return
+	}
+	s.history[template.ID] = append(versions, template)
 }
 
 func (s *Store) append(library Library) error {

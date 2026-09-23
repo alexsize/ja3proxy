@@ -33,6 +33,7 @@ JSONL пока не шифруется. Размещайте экспорт в �
 | FR-FP-001: JA3/JA4 | `Calculate` | `TestGoldenMinimal`, `TestJA4PublishedVector`, независимый e2e JA3 parser |
 | FR-FP-002: TLS-NORM-1 | `Normalize` | `TestGoldenMinimal`, `TestNormalizationDynamicAndUnknown`, `TestPSKIdentityRedaction` |
 | FR-MODE-001: passthrough/observe | `TunnelHandler.Connect` | matrix: 2 клиентских × 3 upstream × 3 режима |
+| FR-MODE-002: доказательство forwarded unchanged | forwarding verification | `TestForwardingVerification`, matrix passthrough/observe |
 | FR-FAIL-001: отказ MITM-клиента | capture до TLS termination | `TestRecorderKeepsHelloWhenClientRejectsCA` |
 | FR-DIFF-001: структурный diff | `recorder.Compare` | `TestDiff` |
 | REL-QUEUE-001: bounded queue | `Recorder.TryCapture` | `TestQueueOverflowIsNonblocking`, `TestRecorderBoundsAndConcurrentClose` |
@@ -42,7 +43,8 @@ JSONL пока не шифруется. Размещайте экспорт в �
 | SEC-API-001: локальный доступ | bind/Host/peer/Origin checks | `TestRecorderRejectsRemoteAndRebinding` |
 | FR-CLI-001: feature flag | runtime/CLI | `TestRecorderCLI` |
 | FR-PROFILE-001: шаблон из пресета/наблюдения | `tlsprofile`, profile API/UI | `TestPresetPreviewAndJA4Editing`, `TestTLSProfileAPIWorkflow` |
-| FR-PROFILE-002: версионирование/CAS | append-only profile store | `TestStoreVersioningPersistenceAndRouting`, `TestTLSProfileAPIWorkflow` |
+| FR-PROFILE-002: immutable versions/CAS/rollback | append-only profile store | `TestStoreVersioningPersistenceAndRouting`, `TestTLSProfileHistoryAndRollbackAPI` |
+| FR-PROFILE-003: source replayability/constraints | materializer + verification | `TestObservedSourceMustMatchIsCheckedBeforePublish`, `TestTemplateConstraintsAreValidated` |
 | FR-VERIFY-001: expected ↔ фактический PROXY_OUT | `VerifyExpected` | `TestExpectedProfileVerificationStatuses`, `TestCustomTLSProfileProducesExpectedJA4AndVerification` |
 
 ### Границы захвата
@@ -51,7 +53,7 @@ JSONL пока не шифруется. Размещайте экспорт в �
 
 Успех `Write` означает приём байтов нижележащим `net.Conn`; он не доказывает получение удалённым сервером. В e2e-тестах есть независимое подтверждение с сервера.
 
-Sniffer читает до 5 секунд, сохраняет прочитанное и возвращает replay connection. При non-TLS, malformed/oversized или timeout в режиме MITM применяется passthrough и фиксируется причина. Это может задержать server-first протокол на нестандартном SOCKS-порту до timeout. PASSTHROUGH/OBSERVE_ONLY используют пассивные wrappers без предварительного чтения.
+Sniffer читает до 5 секунд, сохраняет прочитанное и возвращает replay connection. При non-TLS, malformed/oversized или timeout в режиме MITM применяется passthrough и фиксируется причина. Это может задержать server-first протокол на нестандартном SOCKS-порту до timeout. PASSTHROUGH/OBSERVE_ONLY используют пассивные wrappers без предварительного чтения. Для них outbound observation содержит `forwarding`: только полное совпадение SHA-256 handshake bytes и TLS records получает `FORWARDED_UNCHANGED`; неполный захват получает `UNVERIFIED`. `byte_source` различает чтение client socket и успешную запись upstream socket.
 
 При выключенном `--capture-tls` используется прежний путь распознавания TLS. Изменения глобального `--tls-mode` применяются при старте. Общая двухфазная таблица routing ещё не реализована.
 
@@ -89,6 +91,8 @@ PARTIAL_MATCH, MISMATCH или UNKNOWN. В запись входят верси�
 материализатора и нормализации, обе стороны сравнения и полный структурный
 diff. Для массивов до 256 элементов обнаруживаются move; более длинные
 изменённые массивы возвращаются как replace для ограничения стоимости.
+Проверка также применяет constraints `present`, `equals`, `one_of` и отклоняет
+несовместимые версии profile schema, materializer и normalization.
 
 ### Редактируемые TLS-профили
 
@@ -98,6 +102,10 @@ diff. Для массивов до 256 элементов обнаруживаю
 помечает шаблон `UNSUPPORTED`. Случайные bytes, session ID, GREASE и key shares
 явно считаются динамическими.
 
+Для профиля из observation сохраняются source JA3/JA4/TLS-NORM и SNI,
+использованный для preview. Materialized MUST-поля сравниваются с source до
+публикации; невоспроизводимый payload не маскируется базовым пресетом.
+
 Конфигурация хранится как append-only последовательность полных snapshot в
 `profiles/tls-templates.jsonl` (путь можно изменить). Записи защищены
 `config_version` CAS. Для соединения snapshot профиля выбирается один раз;
@@ -105,6 +113,10 @@ diff. Для массивов до 256 элементов обнаруживаю
 может действовать для всех хостов или exact/`*.` patterns. Его ALPN на каждом
 соединении пересекается с ALPN входящего клиента, а expected рассчитывается уже
 по этому эффективному шаблону.
+Все опубликованные profile versions остаются доступны после update/delete.
+Rollback создаёт очередную immutable version и записывает `based_on_version`.
+Outbound observation содержит одновременно `profile_version` и
+`config_version` выбранного snapshot.
 
 ### Лимиты и отказоустойчивость
 

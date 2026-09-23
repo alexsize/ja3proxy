@@ -35,7 +35,7 @@ function collect() {
       cipher_suites: parseArray("ciphers", "number"), extension_order: parseArray("extensions", "number"), alpn: parseArray("alpn", "string"),
       supported_versions: parseArray("versions", "number"), supported_groups: parseArray("groups", "number"), signature_algorithms: parseArray("signatures", "number")
     },
-    policy: {...(base.policy || {}), must_match: parseArray("must-match", "string"), should_match: parseArray("should-match", "string")}
+	policy: {...(base.policy || {}), must_match: parseArray("must-match", "string"), should_match: parseArray("should-match", "string"), constraints: parseArray("constraints")}
   };
 }
 function fill(template) {
@@ -46,6 +46,7 @@ function fill(template) {
   el("ciphers").value = pretty(template.fields.cipher_suites); el("extensions").value = pretty(template.fields.extension_order); el("alpn").value = pretty(template.fields.alpn);
   el("versions").value = pretty(template.fields.supported_versions); el("groups").value = pretty(template.fields.supported_groups); el("signatures").value = pretty(template.fields.signature_algorithms);
   el("must-match").value = pretty(template.policy.must_match); el("should-match").value = pretty(template.policy.should_match);
+	el("constraints").value = pretty(template.policy.constraints);
   renderPreview(template);
 }
 function renderPreview(template) {
@@ -63,8 +64,10 @@ function renderLibrary() {
     if (profile.id === library.active_id) row.className = "active";
     const actions = document.createElement("td");
     const edit = document.createElement("button"); edit.type = "button"; edit.textContent = "Изменить"; edit.onclick = () => fill(profile); actions.append(edit);
-    const activate = document.createElement("button"); activate.type = "button"; activate.textContent = "Активировать"; activate.disabled = profile.replayability.status === "UNSUPPORTED" || !profile.enabled; activate.onclick = () => setActive(profile.id); actions.append(activate); row.append(actions); body.append(row);
+	const activate = document.createElement("button"); activate.type = "button"; activate.textContent = "Активировать"; activate.disabled = profile.replayability.status === "UNSUPPORTED" || !profile.enabled; activate.onclick = () => setActive(profile.id); actions.append(activate);
+	const history = document.createElement("button"); history.type = "button"; history.textContent = "История / откат"; history.onclick = () => profileHistory(profile).catch(error => show(error.message, true)); actions.append(history);
 	const remove = document.createElement("button"); remove.type = "button"; remove.textContent = "Удалить"; remove.disabled = profile.id === library.active_id; remove.onclick = () => deleteProfile(profile); actions.append(remove);
+	row.append(actions); body.append(row);
   }
   if (!library.templates.length) { const row=document.createElement("tr"), cell=document.createElement("td"); cell.colSpan=7; cell.textContent="Сохранённых профилей нет."; row.append(cell); body.append(row); }
 }
@@ -88,6 +91,15 @@ async function save(event) {
 }
 async function setActive(id) { library = await api("/api/v1/tls/profiles/active", request("PUT", {expected_version:library.config_version, id})); renderLibrary(); show(id ? "Профиль активирован для новых соединений." : "Пользовательский профиль отключён."); }
 async function deleteProfile(profile) { if (!confirm(`Удалить профиль «${profile.name}»?`)) return; library = await api(`/api/v1/tls/profiles/${encodeURIComponent(profile.id)}`, request("DELETE", {expected_version:library.config_version})); if (draft?.id === profile.id) reset(); renderLibrary(); show("Профиль удалён из текущей конфигурации; прежние snapshot остаются в журнале версий."); }
+async function profileHistory(profile) {
+	const versions = await api(`/api/v1/tls/profiles/${encodeURIComponent(profile.id)}/versions`);
+	el("preview-json").textContent = JSON.stringify(versions, null, 2);
+	const answer = prompt(`Версии профиля: ${versions.map(item => item.version).join(", ")}. Для отката введите номер версии или оставьте поле пустым.`);
+	if (answer === null || answer.trim() === "") { show("История версий показана ниже."); return; }
+	const target = Number(answer); if (!Number.isSafeInteger(target) || target < 1 || !versions.some(item => item.version === target)) throw new Error("Такой версии профиля нет.");
+	const result = await api(`/api/v1/tls/profiles/${encodeURIComponent(profile.id)}/rollback`, request("POST", {expected_version:library.config_version, target_version:target}));
+	library = result.library; fill(result.template); renderLibrary(); show(`Откат оформлен как новая версия ${result.template.version}.`);
+}
 function reset() { draft=null; el("profile-form").reset(); el("editor-title").textContent="Новый профиль"; el("preview-json").textContent="Сначала загрузите пресет или наблюдение."; el("expected-ja4").textContent=el("expected-ja3").textContent=el("expected-normalized").textContent=el("replayability").textContent="—"; }
 
 el("from-preset").onclick = () => fromPreset().catch(error => show(error.message, true)); el("preview").onclick = () => preview().catch(error => show(error.message, true)); el("profile-form").onsubmit = event => save(event).catch(error => show(error.message, true)); el("deactivate").onclick = () => setActive("").catch(error => show(error.message, true)); el("reset").onclick = reset;

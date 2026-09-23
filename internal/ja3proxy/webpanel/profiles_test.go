@@ -128,3 +128,42 @@ func TestTLSProfilePreviewFromObservation(t *testing.T) {
 		t.Fatalf("unexpected observed template: %+v", observed)
 	}
 }
+
+func TestTLSProfileHistoryAndRollbackAPI(t *testing.T) {
+	store, err := tlsprofile.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	template, err := tlsprofile.TemplateFromPreset("v1", "Chrome", "120")
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, library, err := store.Create(template, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template.Name = "v2"
+	updated, library, err := store.Update(created.ID, template, library.ConfigVersion)
+	if err != nil || updated.Version != 2 {
+		t.Fatal(err)
+	}
+	handler := Server{Profiles: store}.Handler()
+	response := profileRequest(handler, http.MethodGet, "/api/v1/tls/profiles/"+created.ID+"/versions", nil)
+	if response.Code != http.StatusOK {
+		t.Fatal(response.Body.String())
+	}
+	var history []tlsprofile.Template
+	if err := json.Unmarshal(response.Body.Bytes(), &history); err != nil || len(history) != 2 {
+		t.Fatal(response.Body.String())
+	}
+	response = profileRequest(handler, http.MethodPost, "/api/v1/tls/profiles/"+created.ID+"/rollback", map[string]any{"expected_version": library.ConfigVersion, "target_version": 1})
+	if response.Code != http.StatusOK {
+		t.Fatal(response.Body.String())
+	}
+	var result struct {
+		Template tlsprofile.Template `json:"template"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || result.Template.Version != 3 || result.Template.BasedOnVersion != 1 || result.Template.Name != "v1" {
+		t.Fatal(response.Body.String())
+	}
+}

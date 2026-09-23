@@ -160,6 +160,7 @@ func TestDiff(t *testing.T) {
 func TestExpectedProfileVerificationStatuses(t *testing.T) {
 	normalized := json.RawMessage(`{"ciphers":[1,2],"extensions":[{"id":0}],"legacy_version":771,"session_id_length":32}`)
 	expected := FingerprintExpected{
+		ProfileSchemaVersion: SupportedProfileSchemaVersion,
 		JA4:                  "expected-ja4",
 		Normalized:           normalized,
 		NormalizationVersion: "TLS-NORM-1",
@@ -192,5 +193,28 @@ func TestExpectedProfileVerificationStatuses(t *testing.T) {
 	expected.MustMatch = []string{"/missing"}
 	if got := VerifyExpected(expected, actual); got.Status != "MISMATCH" {
 		t.Fatalf("missing MUST path verification = %+v", got)
+	}
+	expected.MustMatch = []string{"/ciphers"}
+	expected.Constraints = []FingerprintConstraint{{Path: "/legacy_version", Operator: "one_of", Values: []json.RawMessage{json.RawMessage(`772`)}}}
+	if got := VerifyExpected(expected, actual); got.Status != "MISMATCH" || got.Reason != "constraint_violation" {
+		t.Fatalf("constraint verification = %+v", got)
+	}
+}
+
+func TestForwardingVerification(t *testing.T) {
+	inbound := tlshello.Capture{Status: "complete", Raw: []byte("hello"), Records: []byte("record")}
+	expected := ForwardingFromCapture(inbound)
+	if got := VerifyForwarding(*expected, inbound); got.Status != "FORWARDED_UNCHANGED" {
+		t.Fatalf("unchanged forwarding = %+v", got)
+	}
+	changed := inbound
+	changed.Raw = []byte("changed")
+	if got := VerifyForwarding(*expected, changed); got.Status != "MISMATCH" {
+		t.Fatalf("changed forwarding = %+v", got)
+	}
+	incomplete := inbound
+	incomplete.Status = "truncated"
+	if got := VerifyForwarding(*expected, incomplete); got.Status != "UNVERIFIED" {
+		t.Fatalf("incomplete forwarding = %+v", got)
 	}
 }

@@ -10,8 +10,9 @@ import (
 )
 
 const (
-	DiffAlgorithmVersion         = "tls-normalized-diff/1"
-	SupportedMaterializerVersion = "utls-template-materializer/1"
+	DiffAlgorithmVersion          = "tls-normalized-diff/1"
+	SupportedMaterializerVersion  = "utls-template-materializer/1"
+	SupportedProfileSchemaVersion = "tls-profile-template/1"
 )
 
 type Change struct {
@@ -74,12 +75,24 @@ func VerifyExpected(expected FingerprintExpected, actual Observation) *Verificat
 		verification.Reason = "incompatible_materializer_version"
 		return verification
 	}
+	if expected.ProfileSchemaVersion != SupportedProfileSchemaVersion {
+		verification.Reason = "incompatible_profile_schema_version"
+		return verification
+	}
 	var expectedValue, actualValue any
 	if json.Unmarshal(expected.Normalized, &expectedValue) != nil || json.Unmarshal(actual.Fingerprints.Normalized, &actualValue) != nil {
 		verification.Reason = "invalid_normalized_data"
 		return verification
 	}
 	diffValue("", expectedValue, actualValue, &verification.Changes)
+	for _, constraint := range expected.Constraints {
+		actualConstraintValue, exists := valueAtPointer(actualValue, constraint.Path)
+		if !constraintMatches(constraint, actualConstraintValue, exists) {
+			verification.Status = "MISMATCH"
+			verification.Reason = "constraint_violation"
+			return verification
+		}
+	}
 	for _, path := range expected.MustMatch {
 		left, leftOK := valueAtPointer(expectedValue, path)
 		right, rightOK := valueAtPointer(actualValue, path)
@@ -100,6 +113,30 @@ func VerifyExpected(expected FingerprintExpected, actual Observation) *Verificat
 	}
 	verification.Status = "MATCH"
 	return verification
+}
+
+func constraintMatches(constraint FingerprintConstraint, actual any, exists bool) bool {
+	switch constraint.Operator {
+	case "present":
+		return exists
+	case "equals":
+		if !exists {
+			return false
+		}
+		var expected any
+		return json.Unmarshal(constraint.Value, &expected) == nil && reflect.DeepEqual(expected, actual)
+	case "one_of":
+		if !exists {
+			return false
+		}
+		for _, encoded := range constraint.Values {
+			var allowed any
+			if json.Unmarshal(encoded, &allowed) == nil && reflect.DeepEqual(allowed, actual) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func valueAtPointer(value any, path string) (any, bool) {
