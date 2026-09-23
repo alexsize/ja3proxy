@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/certstore"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/device"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/fingerprint"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/flowid"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/recorder"
@@ -37,6 +38,32 @@ func TestApplyIdentityEvidenceUsesUsernameThenSourceIP(t *testing.T) {
 	meta = applyIdentityEvidence(recorder.Meta{Source: "not-an-ip:1234"}, left)
 	if meta.IdentitySource != "" || meta.IdentityValue != "" || meta.Confidence != "" {
 		t.Fatalf("invalid source produced identity = %+v", meta)
+	}
+}
+
+func TestApplyIdentityEvidenceIncludesActiveApplicationAssignment(t *testing.T) {
+	left, right := net.Pipe()
+	defer left.Close()
+	defer right.Close()
+
+	store, err := device.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, registry, err := store.Create(device.Device{ID: "phone-017", Name: "Phone 017", ProxyUsername: "iphone017", Enabled: true}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = store.CreateAssignment(device.ApplicationAssignment{
+		ID: "phone-017-app", DeviceID: created.ID, Application: "Example", Version: "1.2.0",
+		ValidFrom: time.Now().UTC().Add(-time.Hour).Format(time.RFC3339),
+	}, registry.ConfigVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := applyIdentityEvidenceWithRegistry(recorder.Meta{Source: "192.0.2.10:53122"}, flowid.WithProxyUsername(left, "iphone017"), store)
+	if meta.ResolvedDeviceID != created.ID || meta.Application != "Example" || meta.ApplicationVersion != "1.2.0" || meta.ApplicationAssignmentID != "phone-017-app" {
+		t.Fatalf("application assignment identity = %+v", meta)
 	}
 }
 

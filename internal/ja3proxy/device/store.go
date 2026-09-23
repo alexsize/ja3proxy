@@ -20,9 +20,11 @@ const (
 )
 
 var (
-	ErrVersionConflict = errors.New("device registry version conflict")
-	ErrDeviceNotFound  = errors.New("device not found")
-	ErrPersistence     = errors.New("device registry persistence error")
+	ErrVersionConflict      = errors.New("device registry version conflict")
+	ErrDeviceNotFound       = errors.New("device not found")
+	ErrDeviceHasAssignments = errors.New("device has application assignments")
+	ErrPersistence          = errors.New("device registry persistence error")
+	ErrAssignmentNotFound   = errors.New("device application assignment not found")
 )
 
 type Device struct {
@@ -43,15 +45,29 @@ type Device struct {
 	Enabled       bool     `json:"enabled"`
 }
 
+type ApplicationAssignment struct {
+	ID          string `json:"id"`
+	DeviceID    string `json:"device_id"`
+	Application string `json:"application"`
+	Version     string `json:"version"`
+	ValidFrom   string `json:"valid_from"`
+	ValidTo     string `json:"valid_to,omitempty"`
+}
+
 type Registry struct {
-	SchemaVersion string   `json:"schema_version"`
-	ConfigVersion uint64   `json:"config_version"`
-	Devices       []Device `json:"devices"`
+	SchemaVersion string                  `json:"schema_version"`
+	ConfigVersion uint64                  `json:"config_version"`
+	Devices       []Device                `json:"devices"`
+	Assignments   []ApplicationAssignment `json:"assignments,omitempty"`
 }
 
 type Resolution struct {
-	DeviceID  string
-	Ambiguous bool
+	DeviceID            string
+	Application         string
+	ApplicationVersion  string
+	AssignmentID        string
+	Ambiguous           bool
+	AssignmentAmbiguous bool
 }
 
 type Store struct {
@@ -61,7 +77,7 @@ type Store struct {
 }
 
 func Open(path string) (*Store, error) {
-	store := &Store{path: path, registry: Registry{SchemaVersion: SchemaVersion, Devices: []Device{}}}
+	store := &Store{path: path, registry: Registry{SchemaVersion: SchemaVersion, Devices: []Device{}, Assignments: []ApplicationAssignment{}}}
 	if path == "" {
 		return store, nil
 	}
@@ -195,6 +211,11 @@ func (s *Store) Delete(id string, expectedVersion uint64) (Registry, error) {
 	if index < 0 {
 		return cloneRegistry(s.registry), ErrDeviceNotFound
 	}
+	for _, assignment := range next.Assignments {
+		if assignment.DeviceID == id {
+			return cloneRegistry(s.registry), fmt.Errorf("%w: %q", ErrDeviceHasAssignments, assignment.ID)
+		}
+	}
 	next.Devices = append(next.Devices[:index], next.Devices[index+1:]...)
 	next.ConfigVersion++
 	if err := s.persist(next); err != nil {
@@ -206,7 +227,7 @@ func (s *Store) Delete(id string, expectedVersion uint64) (Registry, error) {
 
 func (s *Store) Snapshot() Registry {
 	if s == nil {
-		return Registry{SchemaVersion: SchemaVersion, Devices: []Device{}}
+		return Registry{SchemaVersion: SchemaVersion, Devices: []Device{}, Assignments: []ApplicationAssignment{}}
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -214,6 +235,10 @@ func (s *Store) Snapshot() Registry {
 }
 
 func (s *Store) Resolve(proxyUsername, sourceIP string) Resolution {
+	return s.ResolveAt(proxyUsername, sourceIP, time.Now().UTC())
+}
+
+func (s *Store) ResolveAt(proxyUsername, sourceIP string, at time.Time) Resolution {
 	if s == nil {
 		return Resolution{}
 	}
@@ -222,7 +247,7 @@ func (s *Store) Resolve(proxyUsername, sourceIP string) Resolution {
 	if proxyUsername != "" {
 		matches := s.matchUsername(proxyUsername)
 		if len(matches) == 1 {
-			return Resolution{DeviceID: matches[0]}
+			return s.resolveAssignment(Resolution{DeviceID: matches[0]}, at)
 		}
 		if len(matches) > 1 {
 			return Resolution{Ambiguous: true}
@@ -231,13 +256,138 @@ func (s *Store) Resolve(proxyUsername, sourceIP string) Resolution {
 	if ip := net.ParseIP(sourceIP); ip != nil {
 		matches := s.matchIP(ip.String())
 		if len(matches) == 1 {
-			return Resolution{DeviceID: matches[0]}
+			return s.resolveAssignment(Resolution{DeviceID: matches[0]}, at)
 		}
 		if len(matches) > 1 {
 			return Resolution{Ambiguous: true}
 		}
 	}
 	return Resolution{}
+}
+
+func (s *Store) resolveAssignment(resolution Resolution, at time.Time) Resolution {
+	var matches []ApplicationAssignment
+	for _, assignment := range s.registry.Assignments {
+		if assignment.DeviceID == resolution.DeviceID && assignmentActive(assignment, at) {
+			matches = append(matches, assignment)
+		}
+	}
+	if len(matches) != 1 {
+		if len(matches) > 1 {
+			resolution.AssignmentAmbiguous = true
+		}
+		return resolution
+	}
+	resolution.Application = matches[0].Application
+	resolution.ApplicationVersion = matches[0].Version
+	resolution.AssignmentID = matches[0].ID
+	return resolution
+}
+
+func (s *Store) CreateAssignment(candidate ApplicationAssignment, expectedVersion uint64) (ApplicationAssignment, Registry, error) {
+	if s == nil {
+		return ApplicationAssignment{}, Registry{}, errors.New("device registry is unavailable")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.registry.ConfigVersion != expectedVersion {
+		return ApplicationAssignment{}, cloneRegistry(s.registry), ErrVersionConflict
+	}
+	if candidate.ID == "" {
+		candidate.ID = newID()
+	}
+	if err := validateAssignment(candidate, s.registry); err != nil {
+		return ApplicationAssignment{}, cloneRegistry(s.registry), err
+	}
+	for _, existing := range s.registry.Assignments {
+		if existing.ID == candidate.ID {
+			return ApplicationAssignment{}, cloneRegistry(s.registry), fmt.Errorf("duplicate assignment id %q", candidate.ID)
+		}
+	}
+	next := cloneRegistry(s.registry)
+	next.Assignments = append(next.Assignments, candidate)
+	next.ConfigVersion++
+	if err := s.persist(next); err != nil {
+		return ApplicationAssignment{}, cloneRegistry(s.registry), fmt.Errorf("%w: %v", ErrPersistence, err)
+	}
+	s.registry = next
+	return candidate, cloneRegistry(next), nil
+}
+
+func (s *Store) UpdateAssignment(id string, candidate ApplicationAssignment, expectedVersion uint64) (ApplicationAssignment, Registry, error) {
+	if s == nil {
+		return ApplicationAssignment{}, Registry{}, errors.New("device registry is unavailable")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.registry.ConfigVersion != expectedVersion {
+		return ApplicationAssignment{}, cloneRegistry(s.registry), ErrVersionConflict
+	}
+	next := cloneRegistry(s.registry)
+	index := -1
+	for i, existing := range next.Assignments {
+		if existing.ID == id {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		return ApplicationAssignment{}, cloneRegistry(s.registry), ErrAssignmentNotFound
+	}
+	candidate.ID = id
+	next.Assignments[index] = candidate
+	if err := validateAssignment(candidate, next); err != nil {
+		return ApplicationAssignment{}, cloneRegistry(s.registry), err
+	}
+	next.ConfigVersion++
+	if err := s.persist(next); err != nil {
+		return ApplicationAssignment{}, cloneRegistry(s.registry), fmt.Errorf("%w: %v", ErrPersistence, err)
+	}
+	s.registry = next
+	return candidate, cloneRegistry(next), nil
+}
+
+func (s *Store) DeleteAssignment(id string, expectedVersion uint64) (Registry, error) {
+	if s == nil {
+		return Registry{}, errors.New("device registry is unavailable")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.registry.ConfigVersion != expectedVersion {
+		return cloneRegistry(s.registry), ErrVersionConflict
+	}
+	next := cloneRegistry(s.registry)
+	index := -1
+	for i, assignment := range next.Assignments {
+		if assignment.ID == id {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		return cloneRegistry(s.registry), ErrAssignmentNotFound
+	}
+	next.Assignments = append(next.Assignments[:index], next.Assignments[index+1:]...)
+	next.ConfigVersion++
+	if err := s.persist(next); err != nil {
+		return cloneRegistry(s.registry), fmt.Errorf("%w: %v", ErrPersistence, err)
+	}
+	s.registry = next
+	return cloneRegistry(next), nil
+}
+
+func (s *Store) GetAssignment(id string) (ApplicationAssignment, bool) {
+	if s == nil {
+		return ApplicationAssignment{}, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, assignment := range s.registry.Assignments {
+		if assignment.ID == id {
+			return assignment, true
+		}
+	}
+	return ApplicationAssignment{}, false
 }
 
 func (s *Store) matchUsername(username string) []string {
@@ -277,6 +427,16 @@ func validate(registry Registry) error {
 		}
 		seen[candidate.ID] = struct{}{}
 	}
+	assignmentIDs := map[string]struct{}{}
+	for _, assignment := range registry.Assignments {
+		if err := validateAssignment(assignment, registry); err != nil {
+			return err
+		}
+		if _, exists := assignmentIDs[assignment.ID]; exists {
+			return fmt.Errorf("duplicate assignment id %q", assignment.ID)
+		}
+		assignmentIDs[assignment.ID] = struct{}{}
+	}
 	return nil
 }
 
@@ -290,6 +450,68 @@ func validateDevice(candidate Device) error {
 		}
 	}
 	return nil
+}
+
+func validateAssignment(candidate ApplicationAssignment, registry Registry) error {
+	if candidate.ID == "" || candidate.DeviceID == "" || candidate.Application == "" || candidate.Version == "" || candidate.ValidFrom == "" {
+		return errors.New("assignment id, device_id, application, version and valid_from are required")
+	}
+	if _, found := findDevice(registry.Devices, candidate.DeviceID); !found {
+		return fmt.Errorf("assignment references unknown device %q", candidate.DeviceID)
+	}
+	from, err := time.Parse(time.RFC3339, candidate.ValidFrom)
+	if err != nil {
+		return fmt.Errorf("assignment %q has invalid valid_from: %w", candidate.ID, err)
+	}
+	var to time.Time
+	if candidate.ValidTo != "" {
+		to, err = time.Parse(time.RFC3339, candidate.ValidTo)
+		if err != nil {
+			return fmt.Errorf("assignment %q has invalid valid_to: %w", candidate.ID, err)
+		}
+		if !from.Before(to) {
+			return fmt.Errorf("assignment %q valid_from must be before valid_to", candidate.ID)
+		}
+	}
+	for _, existing := range registry.Assignments {
+		if existing.ID == candidate.ID || existing.DeviceID != candidate.DeviceID {
+			continue
+		}
+		existingFrom, _ := time.Parse(time.RFC3339, existing.ValidFrom)
+		var existingTo time.Time
+		if existing.ValidTo != "" {
+			existingTo, _ = time.Parse(time.RFC3339, existing.ValidTo)
+		}
+		if intervalsOverlap(from, to, existingFrom, existingTo) {
+			return fmt.Errorf("assignment %q overlaps assignment %q", candidate.ID, existing.ID)
+		}
+	}
+	return nil
+}
+
+func findDevice(devices []Device, id string) (Device, bool) {
+	for _, candidate := range devices {
+		if candidate.ID == id {
+			return candidate, true
+		}
+	}
+	return Device{}, false
+}
+
+func assignmentActive(assignment ApplicationAssignment, at time.Time) bool {
+	from, err := time.Parse(time.RFC3339, assignment.ValidFrom)
+	if err != nil || at.Before(from) {
+		return false
+	}
+	if assignment.ValidTo == "" {
+		return true
+	}
+	to, err := time.Parse(time.RFC3339, assignment.ValidTo)
+	return err == nil && at.Before(to)
+}
+
+func intervalsOverlap(leftFrom, leftTo, rightFrom, rightTo time.Time) bool {
+	return (leftTo.IsZero() || rightFrom.Before(leftTo)) && (rightTo.IsZero() || leftFrom.Before(rightTo))
 }
 
 func (s *Store) persist(registry Registry) error {
@@ -325,6 +547,7 @@ func cloneRegistry(registry Registry) Registry {
 	for i, candidate := range registry.Devices {
 		cloned.Devices[i] = cloneDevice(candidate)
 	}
+	cloned.Assignments = append([]ApplicationAssignment(nil), registry.Assignments...)
 	return cloned
 }
 

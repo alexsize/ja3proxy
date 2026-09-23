@@ -465,13 +465,19 @@ func resolveDevice(meta recorder.Meta, username, sourceIP string, devices *devic
 	if devices == nil {
 		return meta
 	}
-	resolution := devices.Resolve(username, sourceIP)
+	resolution := devices.ResolveAt(username, sourceIP, time.Now().UTC())
 	if resolution.Ambiguous {
 		meta.Confidence = "ambiguous"
 		meta.ResolvedDeviceID = ""
 		return meta
 	}
 	meta.ResolvedDeviceID = resolution.DeviceID
+	if resolution.AssignmentAmbiguous {
+		return meta
+	}
+	meta.Application = resolution.Application
+	meta.ApplicationVersion = resolution.ApplicationVersion
+	meta.ApplicationAssignmentID = resolution.AssignmentID
 	return meta
 }
 

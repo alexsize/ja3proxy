@@ -86,6 +86,8 @@ func writeDeviceMutationError(w http.ResponseWriter, err error) bool {
 		writeAPIError(w, http.StatusConflict, "реестр устройств изменился; обновите список и повторите действие")
 	case errors.Is(err, device.ErrDeviceNotFound):
 		writeAPIError(w, http.StatusNotFound, "устройство не найдено")
+	case errors.Is(err, device.ErrDeviceHasAssignments):
+		writeAPIError(w, http.StatusConflict, "сначала удалите временные привязки устройства")
 	case errors.Is(err, device.ErrPersistence):
 		writeAPIError(w, http.StatusServiceUnavailable, "не удалось сохранить реестр устройств")
 	default:

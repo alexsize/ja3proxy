@@ -30,6 +30,11 @@ func (panel Server) registerRecorderRoutes(mux *http.ServeMux) {
 		"POST /api/v1/devices":                   panel.createDevice,
 		"PUT /api/v1/devices/{id}":               panel.updateDevice,
 		"DELETE /api/v1/devices/{id}":            panel.deleteDevice,
+		"GET /api/v1/device-assignments":         panel.assignments,
+		"GET /api/v1/device-assignments/{id}":    panel.getAssignment,
+		"POST /api/v1/device-assignments":        panel.createAssignment,
+		"PUT /api/v1/device-assignments/{id}":    panel.updateAssignment,
+		"DELETE /api/v1/device-assignments/{id}": panel.deleteAssignment,
 		"GET /api/v1/observations":               panel.observations,
 		"GET /api/v1/observations/{id}":          panel.observation,
 		"POST /api/v1/observations/{id}/reparse": panel.reparseObservation,
@@ -118,7 +123,7 @@ func (panel Server) observations(w http.ResponseWriter, r *http.Request) {
 			}
 			continue
 		}
-		search := o.Destination + " " + o.Source + " " + o.ConnectionID + " " + o.IdentitySource + " " + o.IdentityValue + " " + o.Confidence + " " + o.ResolvedDeviceID
+		search := o.Destination + " " + o.Source + " " + o.ConnectionID + " " + o.IdentitySource + " " + o.IdentityValue + " " + o.Confidence + " " + o.ResolvedDeviceID + " " + o.Application + " " + o.ApplicationVersion
 		if o.Fingerprints != nil {
 			search += " " + o.Fingerprints.JA3 + " " + o.Fingerprints.JA3Hash + " " + o.Fingerprints.JA4
 		}

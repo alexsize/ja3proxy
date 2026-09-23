@@ -44,6 +44,7 @@ JSONL пока не шифруется. Размещайте экспорт в �
 | FR-CONN-001: ID до protocol detection | `flowid`, `MixedProxyListener` | `TestMixedProxyListenerAssignsConnectionIDBeforeProtocolDetection`, `TestWrapAssignsOneStableIDThroughWrappers` |
 | FR-IDENTITY-001: proxy username → source IP fallback с confidence | `flowid`, proxy auth, recorder metadata | `TestProxyUsernameSurvivesTransparentWrappers`, `TestApplyIdentityEvidenceUsesUsernameThenSourceIP` |
 | FR-DEVICE-001: explicit device mapping с username/IP priority и CAS CRUD | `device.Store`, tunnel resolver, Device Manager API | `TestOpenAndResolveDeviceMappings`, `TestAmbiguousUsernameDoesNotFallBackToIP`, `TestMutationsPersistAndRejectStaleVersions`, `TestDeviceManagerAPI` |
+| FR-DEVICE-002: time-bound device/application/version assignment | `device.Store`, recorder identity metadata, assignment API | `TestApplicationAssignmentsAreTimeBound`, `TestDeviceAssignmentAPI` |
 | FR-FP-001: JA3/JA4 | `Calculate` | `TestGoldenMinimal`, `TestJA4PublishedVector`, независимый e2e JA3 parser |
 | FR-SESSION-001: варианты FULL/RESUMED/PSK и PSK metadata | `Hello`/`Fingerprints` model | `TestPSKIdentityRedaction`, `TestResumedHandshakeVariantCanBeDeclared` |
 | FR-SESSION-002: PSK presets явно отделены от full-handshake | fingerprint catalog/API/UI | `TestPSKPresetsAreMarkedAsResumptionProfiles` |
@@ -230,9 +231,10 @@ Bearer/Basic значения до передачи записи в backend.
    Текущий versioned corpus manifest честно отделяет runtime wire captures,
    published vector и synthetic fixtures и перечисляет оставшиеся пробелы.
 2. MVP-1: SQLite, миграции и retention реализованы через `--capture-sqlite`;
-   identity evidence username/IP и явный mapping уже сохраняются с confidence,
-   но временные назначения и полноценная привязка приложений ещё остаются. Сейчас ID
-   объединяет только пару TLS observations и создаётся при входе в tunnel handler.
+   identity evidence username/IP, явный mapping и time-bound application
+   assignments сохраняются с confidence. Полный application catalog и
+   автоматический сбор версии приложения ещё остаются. Сейчас ID объединяет
+   только пару TLS observations и создаётся при входе в tunnel handler.
 3. MVP-2: остаются общий двухфазный route manager, приоритеты/несколько
    активных profiles/upstreams и полноценные runtime snapshots. Версионируемый
    TLS template, материализация expected и verification уже реализованы для

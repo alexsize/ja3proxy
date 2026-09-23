@@ -145,6 +145,81 @@
         }
       }
     },
+    "/api/v1/device-assignments": {
+      "get": {
+        "operationId": "listDeviceAssignments",
+        "responses": {
+          "200": {
+            "description": "Временные привязки приложения к устройствам",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AssignmentList"}}}
+          },
+          "403": {"$ref": "#/components/responses/Forbidden"}
+        }
+      },
+      "post": {
+        "operationId": "createDeviceAssignment",
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AssignmentMutation"}}}
+        },
+        "responses": {
+          "201": {
+            "description": "Привязка создана",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AssignmentMutationResponse"}}}
+          },
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "403": {"$ref": "#/components/responses/Forbidden"}
+        }
+      }
+    },
+    "/api/v1/device-assignments/{id}": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
+      "get": {
+        "operationId": "getDeviceAssignment",
+        "responses": {
+          "200": {
+            "description": "Временная привязка",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApplicationAssignment"}}}
+          },
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "403": {"$ref": "#/components/responses/Forbidden"}
+        }
+      },
+      "put": {
+        "operationId": "updateDeviceAssignment",
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AssignmentMutation"}}}
+        },
+        "responses": {
+          "200": {
+            "description": "Привязка изменена",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AssignmentMutationResponse"}}}
+          },
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "403": {"$ref": "#/components/responses/Forbidden"}
+        }
+      },
+      "delete": {
+        "operationId": "deleteDeviceAssignment",
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ExpectedVersion"}}}
+        },
+        "responses": {
+          "200": {
+            "description": "Привязка удалена",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DeviceRegistry"}}}
+          },
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "403": {"$ref": "#/components/responses/Forbidden"}
+        }
+      }
+    },
     "/api/v1/observations": {
       "get": {
         "operationId": "listObservations",
@@ -794,6 +869,55 @@
           "expected_version": {"type": "integer", "minimum": 0}
         }
       },
+      "ApplicationAssignment": {
+        "type": "object",
+        "required": ["id", "device_id", "application", "version", "valid_from"],
+        "properties": {
+          "id": {"type": "string"},
+          "device_id": {"type": "string"},
+          "application": {"type": "string"},
+          "version": {"type": "string"},
+          "valid_from": {"type": "string", "format": "date-time"},
+          "valid_to": {"type": "string", "format": "date-time"}
+        }
+      },
+      "ApplicationAssignmentInput": {
+        "type": "object",
+        "required": ["device_id", "application", "version", "valid_from"],
+        "properties": {
+          "id": {"type": "string", "description": "Необязателен при создании"},
+          "device_id": {"type": "string"},
+          "application": {"type": "string"},
+          "version": {"type": "string"},
+          "valid_from": {"type": "string", "format": "date-time"},
+          "valid_to": {"type": "string", "format": "date-time"}
+        }
+      },
+      "AssignmentList": {
+        "type": "object",
+        "required": ["schema_version", "config_version", "items"],
+        "properties": {
+          "schema_version": {"const": "device-registry/1"},
+          "config_version": {"type": "integer", "minimum": 0},
+          "items": {"type": "array", "items": {"$ref": "#/components/schemas/ApplicationAssignment"}}
+        }
+      },
+      "AssignmentMutation": {
+        "type": "object",
+        "required": ["expected_version", "assignment"],
+        "properties": {
+          "expected_version": {"type": "integer", "minimum": 0},
+          "assignment": {"$ref": "#/components/schemas/ApplicationAssignmentInput"}
+        }
+      },
+      "AssignmentMutationResponse": {
+        "type": "object",
+        "required": ["assignment", "registry"],
+        "properties": {
+          "assignment": {"$ref": "#/components/schemas/ApplicationAssignment"},
+          "registry": {"$ref": "#/components/schemas/DeviceRegistry"}
+        }
+      },
       "Observation": {
         "type": "object",
         "properties": {
@@ -872,6 +996,15 @@
             "enum": ["exact", "inferred", "ambiguous"]
           },
           "resolved_device_id": {
+            "type": "string"
+          },
+          "application": {
+            "type": "string"
+          },
+          "application_version": {
+            "type": "string"
+          },
+          "application_assignment_id": {
             "type": "string"
           },
           "profile": {

@@ -30,24 +30,27 @@ var (
 )
 
 type Meta struct {
-	ConnectionID     string               `json:"connection_id"`
-	CapturePoint     string               `json:"capture_point"`
-	Direction        string               `json:"direction"`
-	ByteSource       string               `json:"byte_source"`
-	Mode             string               `json:"mode"`
-	Destination      string               `json:"destination"`
-	Source           string               `json:"source"`
-	IdentitySource   string               `json:"identity_source,omitempty"`
-	IdentityValue    string               `json:"identity_value,omitempty"`
-	Confidence       string               `json:"confidence,omitempty"`
-	ResolvedDeviceID string               `json:"resolved_device_id,omitempty"`
-	Profile          string               `json:"profile,omitempty"`
-	ProfileID        string               `json:"profile_id,omitempty"`
-	ProfileVersion   uint64               `json:"profile_version,omitempty"`
-	ConfigVersion    uint64               `json:"config_version,omitempty"`
-	RuntimeMutations []RuntimeMutation    `json:"runtime_mutations,omitempty"`
-	Expected         *FingerprintExpected `json:"-"`
-	Forwarded        *ForwardingExpected  `json:"-"`
+	ConnectionID            string               `json:"connection_id"`
+	CapturePoint            string               `json:"capture_point"`
+	Direction               string               `json:"direction"`
+	ByteSource              string               `json:"byte_source"`
+	Mode                    string               `json:"mode"`
+	Destination             string               `json:"destination"`
+	Source                  string               `json:"source"`
+	IdentitySource          string               `json:"identity_source,omitempty"`
+	IdentityValue           string               `json:"identity_value,omitempty"`
+	Confidence              string               `json:"confidence,omitempty"`
+	ResolvedDeviceID        string               `json:"resolved_device_id,omitempty"`
+	Application             string               `json:"application,omitempty"`
+	ApplicationVersion      string               `json:"application_version,omitempty"`
+	ApplicationAssignmentID string               `json:"application_assignment_id,omitempty"`
+	Profile                 string               `json:"profile,omitempty"`
+	ProfileID               string               `json:"profile_id,omitempty"`
+	ProfileVersion          uint64               `json:"profile_version,omitempty"`
+	ConfigVersion           uint64               `json:"config_version,omitempty"`
+	RuntimeMutations        []RuntimeMutation    `json:"runtime_mutations,omitempty"`
+	Expected                *FingerprintExpected `json:"-"`
+	Forwarded               *ForwardingExpected  `json:"-"`
 }
 
 type RuntimeMutation struct {

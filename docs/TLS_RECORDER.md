@@ -48,6 +48,11 @@ Observation сохраняет identity evidence отдельно от fingerpri
 - `proxy_username` с confidence `exact`, если клиент прошёл HTTP/SOCKS5-аутентификацию;
 - `source_ip` с confidence `inferred`, если username отсутствует и source —
   валидный IP-адрес.
+- При активной временной привязке observation также получает `application`,
+  `application_version` и `application_assignment_id`. Интервал действует как
+  `[valid_from, valid_to)`, а пустой `valid_to` означает открытый конец.
+  Для одного устройства пересекающиеся интервалы запрещены, поэтому активная
+  assignment однозначна.
 
 Пароль, `Proxy-Authorization` и другие секреты не попадают в observation.
 Fingerprint сам по себе не назначает устройство; `resolved_device_id` остаётся
@@ -163,6 +168,11 @@ capture point. Retention удаляет самые старые записи п�
 | `POST /api/v1/devices` | создать устройство с проверкой версии |
 | `PUT /api/v1/devices/{id}` | заменить mapping с проверкой версии |
 | `DELETE /api/v1/devices/{id}` | удалить mapping с проверкой версии |
+| `GET /api/v1/device-assignments` | временные привязки приложения к устройствам |
+| `GET /api/v1/device-assignments/{id}` | одна временная привязка |
+| `POST /api/v1/device-assignments` | создать привязку периода |
+| `PUT /api/v1/device-assignments/{id}` | изменить привязку периода |
+| `DELETE /api/v1/device-assignments/{id}` | удалить привязку периода |
 | `GET /api/v1/tls/profiles` | библиотека и версия конфигурации TLS-профилей |
 | `POST /api/v1/tls/profiles/from-preset` | черновик из uTLS-пресета |
 | `POST /api/v1/tls/profiles/from-observation` | черновик/профиль из наблюдения |
@@ -261,7 +271,9 @@ append-only JSONL с compare-and-swap по `config_version`; путь задаё
 - второй ClientHello после HelloRetryRequest не сопоставляется;
 - без `--capture-sqlite` хранилище в памяти не является durable spool;
 - Device Manager поддерживает постоянные mappings по username/IP и CAS-защиту
-  изменений; временные mappings, application catalog и правила по приложениям
+- Device Manager поддерживает постоянные mappings по username/IP и CAS-защиту
+  изменений; временные application assignments теперь поддерживают период
+  `valid_from/valid_to`, а application catalog и правила по приложениям
   относятся к следующим этапам ТЗ;
 - HTTP export выгружает текущее окно, а не содержимое JSONL;
 - SQLite persistence уже есть, но полноценного SQL-поиска/экспорта по всей базе,

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestOpenAndResolveDeviceMappings(t *testing.T) {
@@ -78,5 +79,43 @@ func TestMutationsPersistAndRejectStaleVersions(t *testing.T) {
 	}
 	if snapshot := reopened.Snapshot(); snapshot.ConfigVersion != 3 || len(snapshot.Devices) != 0 {
 		t.Fatalf("reopened registry = %+v", snapshot)
+	}
+}
+
+func TestApplicationAssignmentsAreTimeBound(t *testing.T) {
+	store, err := Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, registry, err := store.Create(Device{ID: "phone-017", Name: "Phone 017", ProxyUsername: "phone017", Enabled: true}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	from := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	assignment, registry, err := store.CreateAssignment(ApplicationAssignment{
+		ID: "phone-017-app-1", DeviceID: created.ID, Application: "Example", Version: "1.2.0",
+		ValidFrom: from.Format(time.RFC3339), ValidTo: from.Add(24 * time.Hour).Format(time.RFC3339),
+	}, registry.ConfigVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if assignment.ID == "" || registry.ConfigVersion != 2 {
+		t.Fatalf("assignment result = %+v, registry = %+v", assignment, registry)
+	}
+	if got := store.ResolveAt("phone017", "", from.Add(time.Hour)); got.DeviceID != created.ID || got.Application != "Example" || got.ApplicationVersion != "1.2.0" || got.AssignmentID != assignment.ID {
+		t.Fatalf("active assignment resolution = %+v", got)
+	}
+	if got := store.ResolveAt("phone017", "", from.Add(24*time.Hour)); got.Application != "" || got.AssignmentID != "" {
+		t.Fatalf("expired assignment resolution = %+v", got)
+	}
+	if _, err := store.Delete(created.ID, registry.ConfigVersion); !errors.Is(err, ErrDeviceHasAssignments) {
+		t.Fatalf("device with assignment delete error = %v", err)
+	}
+	_, _, err = store.CreateAssignment(ApplicationAssignment{
+		ID: "overlap", DeviceID: created.ID, Application: "Other", Version: "2.0.0",
+		ValidFrom: from.Add(12 * time.Hour).Format(time.RFC3339),
+	}, registry.ConfigVersion)
+	if err == nil {
+		t.Fatal("overlapping assignment was accepted")
 	}
 }
