@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -32,14 +33,21 @@ func (conn *bufferedReadConn) Read(p []byte) (int, error) {
 }
 
 type Proxy struct {
-	inspectTLS    bool
-	blockTunnels  bool
-	tunnelDial    func(network, addr string) (net.Conn, error)
-	tunnelConnect func(sni string, destConn net.Conn, clientConn net.Conn)
-	httpTransport http.RoundTripper
-	traffic       *traffic.TrafficMonitor
-	credentialsMu sync.RWMutex
-	credentials   proxyCredentials
+	inspectTLS           bool
+	blockTunnels         bool
+	tunnelDial           func(network, addr string) (net.Conn, error)
+	tunnelConnect        func(sni string, destConn net.Conn, clientConn net.Conn)
+	tunnelConnectRequest func(TunnelRequest, net.Conn, net.Conn)
+	httpTransport        http.RoundTripper
+	traffic              *traffic.TrafficMonitor
+	credentialsMu        sync.RWMutex
+	credentials          proxyCredentials
+}
+
+type TunnelRequest struct {
+	Host     string
+	Port     int
+	Username string
 }
 
 // WithTLSInspection delegates protocol detection to the bounded tunnel recorder.
@@ -67,6 +75,15 @@ func NewProxy(
 		tunnelConnect: connect,
 		httpTransport: transport,
 	}
+}
+
+// WithTunnelConnectRequest adds destination context without breaking the
+// legacy tunnel callback API.
+func (p *Proxy) WithTunnelConnectRequest(connect func(TunnelRequest, net.Conn, net.Conn)) *Proxy {
+	if p != nil {
+		p.tunnelConnectRequest = connect
+	}
+	return p
 }
 
 func (p *Proxy) WithTrafficMonitor(monitor *traffic.TrafficMonitor) *Proxy {
@@ -101,6 +118,14 @@ func (p *Proxy) connect(sni string, destConn net.Conn, clientConn net.Conn) {
 		return
 	}
 	defaultTunnelConnect(sni, destConn, clientConn)
+}
+
+func (p *Proxy) connectRequest(request TunnelRequest, destConn net.Conn, clientConn net.Conn) {
+	if p != nil && p.tunnelConnectRequest != nil {
+		p.tunnelConnectRequest(request, destConn, clientConn)
+		return
+	}
+	p.connect(request.Host, destConn, clientConn)
 }
 
 func (p *Proxy) transport() http.RoundTripper {
@@ -192,8 +217,17 @@ func (p *Proxy) handleTunneling(w http.ResponseWriter, r *http.Request, proxyUse
 	destConn, tunnelClientConn = traffic.WrapTunnel(session, destConn, tunnelClientConn)
 	go func() {
 		defer session.Finish()
-		p.connect(netutil.StripPort(r.Host), destConn, tunnelClientConn)
+		p.connectRequest(TunnelRequest{Host: netutil.StripPort(r.Host), Port: targetPort(r.Host), Username: proxyUsername}, destConn, tunnelClientConn)
 	}()
+}
+
+func targetPort(address string) int {
+	if _, port, err := net.SplitHostPort(address); err == nil {
+		if value, err := strconv.Atoi(port); err == nil {
+			return value
+		}
+	}
+	return 443
 }
 
 func defaultTunnelDial(network, addr string) (net.Conn, error) {

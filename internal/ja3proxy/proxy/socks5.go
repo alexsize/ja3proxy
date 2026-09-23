@@ -281,7 +281,7 @@ func (p *Proxy) handleSOCKS5Tunnel(tunnel socks5Tunnel) {
 	if p.inspectTLS || tunnel.request.port == 443 {
 		tunnelClientConn := flowid.WithProxyUsername(tunnel.bufferedClientConn(), tunnel.username)
 		destConn, wrappedClientConn := traffic.WrapTunnel(session, destConn, tunnelClientConn)
-		p.connect(tunnel.request.host, destConn, wrappedClientConn)
+		p.connectRequest(TunnelRequest{Host: tunnel.request.host, Port: int(tunnel.request.port), Username: tunnel.username}, destConn, wrappedClientConn)
 		return
 	}
 
@@ -310,7 +310,7 @@ func (p *Proxy) handleSOCKS5Tunnel(tunnel socks5Tunnel) {
 	tunnelClientConn := tunnel.bufferedClientConn()
 	if len(first) > 0 && first[0] == tlsHandshakeRecord {
 		destConn, wrappedClientConn := traffic.WrapTunnel(session, destConn, tunnelClientConn)
-		p.connect(tunnel.request.host, destConn, wrappedClientConn)
+		p.connectRequest(TunnelRequest{Host: tunnel.request.host, Port: int(tunnel.request.port), Username: tunnel.username}, destConn, wrappedClientConn)
 		return
 	}
 

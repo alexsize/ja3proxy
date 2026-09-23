@@ -144,6 +144,9 @@ func Validate(config Config) error {
 		if err := validateMatch(rule.ID, rule.Match); err != nil {
 			return err
 		}
+		if err := validateAction(rule.ID, rule.Action); err != nil {
+			return err
+		}
 	}
 	for i, left := range config.Rules {
 		if !left.Enabled {
@@ -163,6 +166,15 @@ func Validate(config Config) error {
 		}
 	}
 	return nil
+}
+
+func validateAction(id string, action Action) error {
+	switch strings.ToUpper(strings.TrimSpace(action.Mode)) {
+	case "", "ALLOW_AND_RECORD", "MITM_REISSUE", "PASSTHROUGH", "OBSERVE_ONLY", "BLOCK":
+		return nil
+	default:
+		return fmt.Errorf("route rule %q: unsupported action mode %q", id, action.Mode)
+	}
 }
 
 func validateMatch(id string, match Match) error {

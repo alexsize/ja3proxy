@@ -212,7 +212,9 @@ Route manager загружается через `--route-config-file`. Он ра
 фазах `PRE_TLS` и `POST_CLIENTHELLO`, учитывая host/wildcard, CIDR, порт,
 device/device tag и username. Для проверки без реального соединения доступен
 `POST /api/v1/routes/test`; ответ содержит версию snapshot, список кандидатов,
-победившее правило, action и причину совпадения.
+победившее правило, action и причину совпадения. PRE_TLS actions `BLOCK`,
+`MITM_REISSUE`, `PASSTHROUGH` и `OBSERVE_ONLY` применяются к новым соединениям;
+глобальная конфигурация при этом не изменяется.
 
 Если курсор уже вытеснен из ограниченного окна, API возвращает `409`, и клиент
 должен обновить список с начала.

@@ -321,7 +321,11 @@ func (app *App) buildProxy() (*httpproxy.Proxy, error) {
 	}
 	app.UpstreamDialer = upstreamDialer
 
-	proxyServer := httpproxy.NewProxy(upstreamDialer.Dial, app.tunnelHandler().Connect, upstreamDialer).
+	handler := app.tunnelHandler()
+	proxyServer := httpproxy.NewProxy(upstreamDialer.Dial, handler.Connect, upstreamDialer).
+		WithTunnelConnectRequest(func(request httpproxy.TunnelRequest, destConn net.Conn, clientConn net.Conn) {
+			handler.ConnectWithRequest(tunnel.ConnectRequest{Host: request.Host, Port: request.Port, Username: request.Username}, destConn, clientConn)
+		}).
 		WithAuthentication(app.Config.ProxyUsername, app.Config.ProxyPassword).
 		WithTLSInspection(app.Config.CaptureTLS || (app.Config.TLSMode != "" && app.Config.TLSMode != "MITM_REISSUE")).
 		WithBlockedTunnels(app.Config.TLSMode == "BLOCK")
@@ -638,6 +642,7 @@ func (app *App) tunnelHandler() *tunnel.TunnelHandler {
 		SessionKey:          app.SessionKey,
 		TLSFingerprints:     app.TLSFingerprints,
 		UpstreamTLSProfiles: app.UpstreamTLSProfiles,
+		Routes:              app.Routes,
 		DefaultTLSClient:    app.Config.TLSClient,
 		DefaultTLSVersion:   app.Config.TLSVersion,
 	}

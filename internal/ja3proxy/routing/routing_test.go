@@ -71,6 +71,16 @@ func TestValidateRejectsAmbiguousRulesAndAcceptsDisjointRules(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsUnsupportedActionMode(t *testing.T) {
+	err := Validate(Config{Rules: []Rule{{
+		ID: "bad-action", Priority: 1, Enabled: true, Phase: PhasePreTLS,
+		Match: Match{Host: "example.com"}, Action: Action{Mode: "REWRITE"},
+	}}})
+	if err == nil {
+		t.Fatal("Validate() accepted unsupported action mode")
+	}
+}
+
 func TestStoreSnapshotIsImmutableAndVersioned(t *testing.T) {
 	store := &Store{}
 	config := Config{Rules: []Rule{{ID: "one", Priority: 1, Enabled: true, Phase: PhasePreTLS, Match: Match{Host: "one.example.com"}}}}

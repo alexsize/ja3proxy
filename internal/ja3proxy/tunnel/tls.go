@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/netip"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,6 +20,7 @@ import (
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/netutil"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/pipe"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/recorder"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/routing"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/tlsprofile"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/upstreamtls"
 	utls "github.com/refraction-networking/utls"
@@ -34,6 +37,7 @@ type TunnelHandler struct {
 	SessionKey          *certstore.SessionKeyHelper
 	TLSFingerprints     *fingerprint.TLSFingerprintStore
 	UpstreamTLSProfiles *upstreamtls.UpstreamTLSProfileStore
+	Routes              *routing.Store
 	DefaultTLSClient    string
 	DefaultTLSVersion   string
 }
@@ -85,6 +89,12 @@ type upstreamTLSConn struct {
 	net.Conn
 	negotiatedProtocol string
 	runtimeMutations   []recorder.RuntimeMutation
+}
+
+type ConnectRequest struct {
+	Host     string
+	Port     int
+	Username string
 }
 
 func (conn *upstreamTLSConn) NegotiatedProtocol() string {
@@ -288,6 +298,19 @@ func (handler *TunnelHandler) generateCertificate(sni string) (tls.Certificate, 
 }
 
 func (handler *TunnelHandler) Connect(sni string, destConn net.Conn, clientConn net.Conn) {
+	handler.ConnectWithRequest(ConnectRequest{Host: sni}, destConn, clientConn)
+}
+
+func (handler *TunnelHandler) ConnectWithRequest(request ConnectRequest, destConn net.Conn, clientConn net.Conn) {
+	sni := request.Host
+	routeDecision := handler.resolvePreTLSRoute(request, clientConn)
+	mode := handler.Mode
+	if routeDecision.MatchedRuleID != "" && routeDecision.Action.Mode != "" {
+		mode = strings.ToUpper(routeDecision.Action.Mode)
+		if mode == "ALLOW_AND_RECORD" {
+			mode = "MITM_REISSUE"
+		}
+	}
 	defer destConn.Close()
 	defer clientConn.Close()
 	var destTLSConn *upstreamTLSConn
@@ -304,26 +327,26 @@ func (handler *TunnelHandler) Connect(sni string, destConn net.Conn, clientConn 
 			selectedConfigVersion = configVersion
 		}
 	}
-	if handler.Mode == "BLOCK" {
+	if mode == "BLOCK" {
 		return
 	}
 	if handler.Recorder != nil {
-		mode := handler.Mode
-		if mode == "" {
-			mode = "MITM_REISSUE"
+		recordMode := mode
+		if recordMode == "" {
+			recordMode = "MITM_REISSUE"
 		}
 		id := flowid.From(clientConn)
 		if id == "" {
 			// Direct TunnelHandler users do not pass through MixedProxyListener.
 			id = recorder.NewID()
 		}
-		meta := recorder.Meta{ConnectionID: id, CapturePoint: "CLIENT_IN", Direction: "inbound", ByteSource: "client_socket_read", Mode: mode, Destination: sni, Source: netutil.RemoteAddr(clientConn)}
+		meta := recorder.Meta{ConnectionID: id, CapturePoint: "CLIENT_IN", Direction: "inbound", ByteSource: "client_socket_read", Mode: recordMode, Destination: sni, Source: netutil.RemoteAddr(clientConn)}
 		meta = applyIdentityEvidenceWithRegistry(meta, clientConn, handler.Devices)
 		outMeta = meta
 		outMeta.CapturePoint = "PROXY_OUT"
 		outMeta.Direction = "outbound"
 		outMeta.ByteSource = "upstream_socket_successful_write"
-		if mode == "MITM_REISSUE" {
+		if recordMode == "MITM_REISSUE" {
 			outMeta.UpstreamConfigVersion = upstreamResolution.ConfigVersion
 			outMeta.MatchedRouteID = upstreamResolution.RouteID
 			if upstreamResolution.Matched && upstreamResolution.MatchReason != "fingerprint_fallback" {
@@ -340,7 +363,7 @@ func (handler *TunnelHandler) Connect(sni string, destConn net.Conn, clientConn 
 				outMeta.Profile = profile.Client + "@" + profile.Version
 			}
 		}
-		if mode == "PASSTHROUGH" || mode == "OBSERVE_ONLY" {
+		if recordMode == "PASSTHROUGH" || recordMode == "OBSERVE_ONLY" {
 			var forwardingMu sync.Mutex
 			var forwarded *recorder.ForwardingExpected
 			in := tlshello.Wrap(clientConn, true, tlshello.DefaultLimits(), func(c tlshello.Capture) {
@@ -390,7 +413,7 @@ func (handler *TunnelHandler) Connect(sni string, destConn net.Conn, clientConn 
 		out := tlshello.Wrap(destConn, false, tlshello.DefaultLimits(), func(c tlshello.Capture) { handler.Recorder.TryCapture(outMeta, c) })
 		defer out.Close()
 		destConn = out
-	} else if handler.Mode == "PASSTHROUGH" || handler.Mode == "OBSERVE_ONLY" {
+	} else if mode == "PASSTHROUGH" || mode == "OBSERVE_ONLY" {
 		pipe.Junction(destConn, clientConn)
 		return
 	}
@@ -461,6 +484,21 @@ func (handler *TunnelHandler) Connect(sni string, destConn net.Conn, clientConn 
 	} else {
 		pipe.Junction(destTLSConn, clientTLSConn)
 	}
+}
+
+func (handler *TunnelHandler) resolvePreTLSRoute(request ConnectRequest, clientConn net.Conn) routing.Decision {
+	if handler == nil || handler.Routes == nil {
+		return routing.Decision{}
+	}
+	var ip netip.Addr
+	if host := netutil.RemoteAddr(clientConn); host != "" {
+		if parsed, _, err := net.SplitHostPort(host); err == nil {
+			ip, _ = netip.ParseAddr(parsed)
+		}
+	}
+	return handler.Routes.Resolve(routing.PhasePreTLS, routing.Request{
+		Host: request.Host, IP: ip, Port: request.Port, Username: request.Username,
+	})
 }
 
 func applyIdentityEvidence(meta recorder.Meta, clientConn net.Conn) recorder.Meta {

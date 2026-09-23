@@ -16,6 +16,7 @@ import (
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/fingerprint"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/flowid"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/recorder"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/routing"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/upstreamtls"
 	utls "github.com/refraction-networking/utls"
 )
@@ -251,6 +252,35 @@ func TestConfiguredUpstreamTLSResolutionReturnsRouteEvidence(t *testing.T) {
 	resolution := handler.configuredUpstreamTLSResolution("api.example.com")
 	if resolution.RouteID != "api-route" || resolution.Priority != 7 || resolution.MatchReason != "exact" || resolution.ConfigVersion != 1 {
 		t.Fatalf("resolution = %+v", resolution)
+	}
+}
+
+func TestConnectWithRequestAppliesRouteBlock(t *testing.T) {
+	profiles := &routing.Store{}
+	if err := profiles.SetValidated(routing.Config{Rules: []routing.Rule{{
+		ID: "blocked", Priority: 1, Enabled: true, Phase: routing.PhasePreTLS,
+		Match: routing.Match{Host: "blocked.example.com"}, Action: routing.Action{Mode: "BLOCK"},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	handler := &TunnelHandler{Routes: profiles}
+	destServer, destPeer := net.Pipe()
+	clientPeer, clientServer := net.Pipe()
+	defer destPeer.Close()
+	defer clientPeer.Close()
+
+	done := make(chan struct{})
+	go func() {
+		handler.ConnectWithRequest(ConnectRequest{Host: "blocked.example.com", Port: 443}, destServer, clientServer)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("blocked route did not return")
+	}
+	if _, err := clientPeer.Write([]byte("blocked")); err == nil {
+		t.Fatal("blocked route left client connection writable")
 	}
 }
 
