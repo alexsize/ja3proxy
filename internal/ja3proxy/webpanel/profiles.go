@@ -149,13 +149,20 @@ func (panel Server) rollbackTLSProfile(w http.ResponseWriter, r *http.Request) {
 
 func (panel Server) activateTLSProfile(w http.ResponseWriter, r *http.Request) {
 	var request struct {
-		ExpectedVersion uint64 `json:"expected_version"`
-		ID              string `json:"id"`
+		ExpectedVersion uint64   `json:"expected_version"`
+		ID              string   `json:"id"`
+		IDs             []string `json:"ids"`
 	}
 	if !decodeProfileRequest(w, r, &request) {
 		return
 	}
-	library, err := panel.Profiles.Activate(request.ID, request.ExpectedVersion)
+	var library tlsprofile.Library
+	var err error
+	if len(request.IDs) > 0 {
+		library, err = panel.Profiles.ActivateMany(request.IDs, request.ExpectedVersion)
+	} else {
+		library, err = panel.Profiles.Activate(request.ID, request.ExpectedVersion)
+	}
 	if writeProfileMutationError(w, err) {
 		return
 	}

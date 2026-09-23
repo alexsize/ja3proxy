@@ -1,6 +1,6 @@
 "use strict";
 const el = id => document.getElementById(id);
-let library = {config_version: 0, active_id: "", templates: []};
+let library = {config_version: 0, active_id: "", active_ids: [], templates: []};
 let draft = null;
 const sourceObservation = new URLSearchParams(location.search).get("observation") || "";
 
@@ -60,17 +60,18 @@ function renderPreview(template) {
   el("preview-json").textContent = JSON.stringify(template, null, 2);
 }
 function renderLibrary() {
-  el("config-version").textContent = library.config_version; const active = library.templates.find(item => item.id === library.active_id); el("active-profile").textContent = active?.name || "не выбран";
+  const activeIDs = new Set(library.active_ids?.length ? library.active_ids : (library.active_id ? [library.active_id] : []));
+  el("config-version").textContent = library.config_version; const active = library.templates.filter(item => activeIDs.has(item.id)); el("active-profile").textContent = active.map(item => item.name).join(", ") || "не выбран";
   const body = el("profiles"); body.replaceChildren();
   for (const profile of library.templates) {
     const row = document.createElement("tr");
     for (const value of [profile.name, profile.version, `${profile.base_preset.client}@${profile.base_preset.version}`, (profile.host_patterns || []).join(", ") || "все", profile.expected?.ja4 || "—", profile.replayability.status]) { const cell = document.createElement("td"); cell.textContent = value; row.append(cell); }
-    if (profile.id === library.active_id) row.className = "active";
+    if (activeIDs.has(profile.id)) row.className = "active";
     const actions = document.createElement("td");
     const edit = document.createElement("button"); edit.type = "button"; edit.textContent = "Изменить"; edit.onclick = () => fill(profile); actions.append(edit);
 	const activate = document.createElement("button"); activate.type = "button"; activate.textContent = "Активировать"; activate.disabled = profile.replayability.status === "UNSUPPORTED" || !profile.enabled; activate.onclick = () => setActive(profile.id); actions.append(activate);
 	const history = document.createElement("button"); history.type = "button"; history.textContent = "История / откат"; history.onclick = () => profileHistory(profile).catch(error => show(error.message, true)); actions.append(history);
-	const remove = document.createElement("button"); remove.type = "button"; remove.textContent = "Удалить"; remove.disabled = profile.id === library.active_id; remove.onclick = () => deleteProfile(profile); actions.append(remove);
+	const remove = document.createElement("button"); remove.type = "button"; remove.textContent = "Удалить"; remove.disabled = activeIDs.has(profile.id); remove.onclick = () => deleteProfile(profile); actions.append(remove);
 	row.append(actions); body.append(row);
   }
   if (!library.templates.length) { const row=document.createElement("tr"), cell=document.createElement("td"); cell.colSpan=7; cell.textContent="Сохранённых профилей нет."; row.append(cell); body.append(row); }

@@ -121,6 +121,7 @@ type Library struct {
 	SchemaVersion string     `json:"schema_version"`
 	ConfigVersion uint64     `json:"config_version"`
 	ActiveID      string     `json:"active_id,omitempty"`
+	ActiveIDs     []string   `json:"active_ids,omitempty"`
 	Templates     []Template `json:"templates"`
 }
 

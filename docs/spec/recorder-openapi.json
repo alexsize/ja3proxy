@@ -752,8 +752,16 @@
     "/api/v1/tls/profiles/active": {
       "put": {
         "operationId": "activateTLSProfile",
-        "description": "Атомарно выбирает профиль для новых соединений; пустой id отключает пользовательский шаблон.",
-        "responses": {"200": {"description": "Обновлённая библиотека"}, "409": {"description": "Устаревшая config_version"}}
+        "description": "Атомарно выбирает один или несколько профилей для новых соединений; ids задаёт tie-break priority, пустой id отключает пользовательские шаблоны.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/TLSProfileActivation"}
+            }
+          }
+        },
+        "responses": {"200": {"description": "Обновлённая библиотека", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TLSProfileLibrary"}}}}, "409": {"description": "Устаревшая config_version"}}
       }
     },
     "/metrics": {
@@ -1495,9 +1503,19 @@
           "schema_version": {"const": "tls-profile-template/1"},
           "config_version": {"type": "integer"},
           "active_id": {"type": "string"},
+          "active_ids": {"type": "array", "items": {"type": "string"}},
           "templates": {"type": "array", "items": {"$ref": "#/components/schemas/TLSProfile"}}
         },
         "required": ["schema_version", "config_version", "templates"]
+      },
+      "TLSProfileActivation": {
+        "type": "object",
+        "required": ["expected_version"],
+        "properties": {
+          "expected_version": {"type": "integer", "minimum": 0},
+          "id": {"type": "string", "description": "Обратная совместимость для одного профиля"},
+          "ids": {"type": "array", "items": {"type": "string"}, "description": "Профили в порядке tie-break priority"}
+        }
       },
       "TLSProfile": {
         "type": "object",

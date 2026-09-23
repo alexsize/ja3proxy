@@ -266,3 +266,44 @@ func TestStoreVersioningPersistenceAndRouting(t *testing.T) {
 		t.Fatalf("immutable history mismatch: %+v", history)
 	}
 }
+
+func TestStoreResolvesMultipleActiveProfilesByHostPriority(t *testing.T) {
+	store, err := Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wildcard, err := TemplateFromPreset("wildcard", "Chrome", "120")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wildcard.HostPatterns = []string{"*.example.com"}
+	wildcard, library, err := store.Create(wildcard, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exact, err := TemplateFromPreset("exact", "Firefox", "105")
+	if err != nil {
+		t.Fatal(err)
+	}
+	exact.HostPatterns = []string{"api.example.com"}
+	exact, library, err = store.Create(exact, library.ConfigVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	library, err = store.ActivateMany([]string{wildcard.ID, exact.ID}, library.ConfigVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(library.ActiveIDs) != 2 || library.ActiveID != "" {
+		t.Fatalf("active profile set = %+v", library)
+	}
+	if resolved, ok := store.Resolve("api.example.com"); !ok || resolved.ID != exact.ID {
+		t.Fatalf("exact route = %+v, ok=%v", resolved, ok)
+	}
+	if resolved, ok := store.Resolve("www.example.com"); !ok || resolved.ID != wildcard.ID {
+		t.Fatalf("wildcard route = %+v, ok=%v", resolved, ok)
+	}
+	if _, err := store.Delete(exact.ID, library.ConfigVersion); err == nil {
+		t.Fatal("active profile was deleted")
+	}
+}

@@ -110,23 +110,57 @@ func (s *Store) Resolve(host string) (Template, bool) {
 
 func (s *Store) ResolveWithVersion(host string) (Template, uint64, bool) {
 	library := s.Snapshot()
-	if library.ActiveID == "" {
+	activeIDs := library.ActiveIDs
+	if len(activeIDs) == 0 && library.ActiveID != "" {
+		activeIDs = []string{library.ActiveID}
+	}
+	if len(activeIDs) == 0 {
 		return Template{}, library.ConfigVersion, false
 	}
-	for _, template := range library.Templates {
-		if template.ID != library.ActiveID || !template.Enabled || template.Replayability.Status == "UNSUPPORTED" {
-			continue
-		}
-		if len(template.HostPatterns) == 0 {
-			return template, library.ConfigVersion, true
-		}
-		for _, pattern := range template.HostPatterns {
-			if hostMatches(pattern, host) {
-				return template, library.ConfigVersion, true
+	var best Template
+	bestScore := -1
+	bestOrder := len(activeIDs)
+	for order, activeID := range activeIDs {
+		for _, template := range library.Templates {
+			if template.ID != activeID || !template.Enabled || template.Replayability.Status == "UNSUPPORTED" {
+				continue
 			}
+			score := templateHostScore(template, host)
+			if score < 0 || score < bestScore || (score == bestScore && order >= bestOrder) {
+				continue
+			}
+			best = template
+			bestScore = score
+			bestOrder = order
 		}
 	}
-	return Template{}, library.ConfigVersion, false
+	if bestScore < 0 {
+		return Template{}, library.ConfigVersion, false
+	}
+	return best, library.ConfigVersion, true
+}
+
+func templateHostScore(template Template, host string) int {
+	best := -1
+	for _, pattern := range template.HostPatterns {
+		if !hostMatches(pattern, host) {
+			continue
+		}
+		score := 1
+		if strings.TrimSuffix(strings.ToLower(strings.TrimSpace(pattern)), ".") == strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".") {
+			score = 2
+		}
+		if score > best {
+			best = score
+		}
+	}
+	if best >= 0 {
+		return best
+	}
+	if len(template.HostPatterns) == 0 {
+		return 0
+	}
+	return -1
 }
 
 func (s *Store) Create(template Template, expectedConfigVersion uint64) (Template, Library, error) {
@@ -209,7 +243,7 @@ func (s *Store) Rollback(id string, targetVersion uint64, expectedConfigVersion 
 
 func (s *Store) Delete(id string, expectedConfigVersion uint64) (Library, error) {
 	_, library, err := s.mutate(expectedConfigVersion, func(library *Library) (Template, error) {
-		if library.ActiveID == id {
+		if library.ActiveID == id || slices.Contains(library.ActiveIDs, id) {
 			return Template{}, errors.New("сначала отключите активный TLS-профиль")
 		}
 		index := slices.IndexFunc(library.Templates, func(candidate Template) bool { return candidate.ID == id })
@@ -227,6 +261,7 @@ func (s *Store) Activate(id string, expectedConfigVersion uint64) (Library, erro
 	_, library, err := s.mutate(expectedConfigVersion, func(library *Library) (Template, error) {
 		if id == "" {
 			library.ActiveID = ""
+			library.ActiveIDs = nil
 			return Template{}, nil
 		}
 		for _, template := range library.Templates {
@@ -235,12 +270,77 @@ func (s *Store) Activate(id string, expectedConfigVersion uint64) (Library, erro
 					return Template{}, errors.New("профиль выключен или невоспроизводим")
 				}
 				library.ActiveID = id
+				library.ActiveIDs = nil
 				return template, nil
 			}
 		}
 		return Template{}, os.ErrNotExist
 	})
 	return library, err
+}
+
+func (s *Store) ActivateMany(ids []string, expectedConfigVersion uint64) (Library, error) {
+	return s.mutateLibrary(expectedConfigVersion, func(library *Library) error {
+		if len(ids) == 0 {
+			library.ActiveID = ""
+			library.ActiveIDs = nil
+			return nil
+		}
+		seen := make(map[string]struct{}, len(ids))
+		for _, id := range ids {
+			if id == "" {
+				return errors.New("TLS-профиль в active_ids не может быть пустым")
+			}
+			if _, exists := seen[id]; exists {
+				return fmt.Errorf("TLS-профиль %q указан более одного раза", id)
+			}
+			seen[id] = struct{}{}
+			found := false
+			for _, template := range library.Templates {
+				if template.ID == id {
+					if !template.Enabled || template.Replayability.Status == "UNSUPPORTED" {
+						return errors.New("профиль выключен или невоспроизводим")
+					}
+					found = true
+					break
+				}
+			}
+			if !found {
+				return os.ErrNotExist
+			}
+		}
+		library.ActiveID = ""
+		library.ActiveIDs = append([]string(nil), ids...)
+		if len(ids) == 1 {
+			library.ActiveID = ids[0]
+			library.ActiveIDs = nil
+		}
+		return nil
+	})
+}
+
+func (s *Store) mutateLibrary(expectedVersion uint64, apply func(*Library) error) (Library, error) {
+	if s == nil {
+		return Library{}, errors.New("библиотека TLS-профилей недоступна")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if expectedVersion != s.library.ConfigVersion {
+		return s.library, ErrVersionConflict
+	}
+	candidate := s.library
+	candidate.Templates = append([]Template(nil), s.library.Templates...)
+	candidate.ActiveIDs = append([]string(nil), s.library.ActiveIDs...)
+	if err := apply(&candidate); err != nil {
+		return s.library, err
+	}
+	candidate.SchemaVersion = SchemaVersion
+	candidate.ConfigVersion++
+	if err := s.append(candidate); err != nil {
+		return s.library, err
+	}
+	s.library = candidate
+	return s.library, nil
 }
 
 func (s *Store) mutate(expectedVersion uint64, apply func(*Library) (Template, error)) (Template, Library, error) {

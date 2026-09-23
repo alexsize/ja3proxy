@@ -69,6 +69,7 @@ JSONL пока не шифруется. Размещайте экспорт в �
 | FR-PROFILE-001: шаблон из пресета/наблюдения | `tlsprofile`, profile API/UI | `TestPresetPreviewAndJA4Editing`, `TestTLSProfileAPIWorkflow` |
 | FR-PROFILE-002: immutable versions/CAS/rollback | append-only profile store | `TestStoreVersioningPersistenceAndRouting`, `TestTLSProfileHistoryAndRollbackAPI` |
 | FR-PROFILE-003: source replayability/constraints | materializer + verification | `TestObservedSourceMustMatchIsCheckedBeforePublish`, `TestTemplateConstraintsAreValidated` |
+| FR-PROFILE-004: multiple active profiles with host priority | `tlsprofile.Store.ResolveWithVersion`, `ActivateMany` | `TestStoreResolvesMultipleActiveProfilesByHostPriority`, `TestTLSProfileMultiActivationAPI` |
 | FR-VERIFY-001: expected ↔ фактический PROXY_OUT | `VerifyExpected` | `TestExpectedProfileVerificationStatuses`, `TestCustomTLSProfileProducesExpectedJA4AndVerification` |
 | FR-ENGINE-001.1: раздельные версии capture/parser/fingerprints/engine | version envelope observation/API | `TestRecorderExportAndPrivacy`, `TestObservationAttributesUTLSEngineOnlyToMITMOutbound`, `TestTLSEngineVersionMatchesModulePin`, `TestRecorderAPI` |
 | FR-REPARSE-001.1: повторный разбор сохранённого RAW с immutable revision | `Recorder.Reparse`, `POST /api/v1/observations/{id}/reparse` | `TestRecorderReparseCreatesNewAnalysisRevision`, `TestReparseRequiresRaw`, `TestRecorderReparseAPI` |
@@ -240,9 +241,10 @@ Bearer/Basic значения до передачи записи в backend.
    приложения ещё остаётся. Сейчас ID объединяет
    только пару TLS observations и создаётся при входе в tunnel handler.
 3. MVP-2: остаются общий двухфазный route manager, приоритеты/несколько
-   активных profiles/upstreams и полноценные runtime snapshots. Версионируемый
-   TLS template, материализация expected и verification уже реализованы для
-   одного активного профиля.
+   активных upstreams и полноценные runtime snapshots. TLS profile library
+   уже поддерживает несколько активных profiles с exact/wildcard priority;
+   версионируемый TLS template, материализация expected и verification также
+   реализованы.
 4. Release 1: PostgreSQL, users/roles/tokens, HTTPS, audit, encrypted spool, backup/recovery.
 5. Поздние релизы: HTTP/1/2 fingerprints, ServerHello/JA3S/JA4S, TCP/DNS/QUIC
    sensors и families; базовый TLS template builder уже реализован.

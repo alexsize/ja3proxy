@@ -87,6 +87,48 @@ func TestTLSProfileAPIWorkflow(t *testing.T) {
 	}
 }
 
+func TestTLSProfileMultiActivationAPI(t *testing.T) {
+	store, err := tlsprofile.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := tlsprofile.TemplateFromPreset("wildcard", "Chrome", "120")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.HostPatterns = []string{"*.example.com"}
+	createdFirst, library, err := store.Create(first, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := tlsprofile.TemplateFromPreset("exact", "Firefox", "105")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second.HostPatterns = []string{"api.example.com"}
+	createdSecond, library, err := store.Create(second, library.ConfigVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := profileRequest(Server{Profiles: store}.Handler(), http.MethodPut, "/api/v1/tls/profiles/active", map[string]any{
+		"expected_version": library.ConfigVersion,
+		"ids":              []string{createdFirst.ID, createdSecond.ID},
+	})
+	if response.Code != http.StatusOK {
+		t.Fatal(response.Body.String())
+	}
+	var activated tlsprofile.Library
+	if err := json.Unmarshal(response.Body.Bytes(), &activated); err != nil {
+		t.Fatal(err)
+	}
+	if len(activated.ActiveIDs) != 2 || activated.ActiveID != "" {
+		t.Fatalf("multi-activation response = %+v", activated)
+	}
+	if resolved, ok := store.Resolve("api.example.com"); !ok || resolved.ID != createdSecond.ID {
+		t.Fatalf("exact profile selection = %+v, ok=%v", resolved, ok)
+	}
+}
+
 func TestTLSProfilePreviewFromObservation(t *testing.T) {
 	template, err := tlsprofile.TemplateFromPreset("observed", "Chrome", "120")
 	if err != nil {
