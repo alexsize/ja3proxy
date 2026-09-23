@@ -28,11 +28,18 @@ Recorder выключен по умолчанию. Параметры `--capture
 - SHA-256 исходного ClientHello;
 - SHA-256 захваченных TLS records;
 - SHA-256 канонической нормализованной структуры.
+- тип handshake: `FULL`, `RESUMED` или `PSK`;
+- признаки `session_resumption`, `psk_present`, число PSK identities и `early_data`.
 
 GREASE нормализуется в распознанных списках. SNI, random, session ID bytes,
 ключевые данные key share, PSK identities и binders не входят в
 нормализованный hash. Длины и структурное положение сохраняются там, где это
 нужно для сравнения.
+
+Для capture только ClientHello тип `PSK` определяется по extension
+`pre_shared_key`; `RESUMED` требует подтверждения последующими handshake
+сообщениями и может быть передан внешним state. Поля не раскрывают ticket,
+identity или binder bytes.
 
 ## Лимиты по умолчанию
 

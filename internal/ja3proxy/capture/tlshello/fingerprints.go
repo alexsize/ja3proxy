@@ -16,6 +16,13 @@ const ImplementationVersion = "ja3proxy-recorder/1"
 const ParserVersion = "1.0.0"
 const JA3Version = "JA3/1"
 const JA4Version = "FoxIO-JA4-TCP/2026-09-22"
+const FingerprintModelVersion = "TLS-FP/1"
+
+const (
+	HandshakeTypeFull    = "FULL"
+	HandshakeTypeResumed = "RESUMED"
+	HandshakeTypePSK     = "PSK"
+)
 
 type Fingerprints struct {
 	JA3                   string          `json:"ja3"`
@@ -26,6 +33,12 @@ type Fingerprints struct {
 	JA4B                  string          `json:"ja4_b"`
 	JA4C                  string          `json:"ja4_c"`
 	JA4Version            string          `json:"ja4_version"`
+	FingerprintModel      string          `json:"fingerprint_model"`
+	HandshakeType         string          `json:"handshake_type"`
+	SessionResumption     bool            `json:"session_resumption"`
+	PSKPresent            bool            `json:"psk_present"`
+	PSKIdentityCount      int             `json:"psk_identity_count"`
+	EarlyData             bool            `json:"early_data"`
 	NormalizationVersion  string          `json:"normalization_version"`
 	ImplementationVersion string          `json:"implementation_version"`
 	RawSHA256             string          `json:"raw_sha256"`
@@ -137,6 +150,10 @@ func Normalize(h *Hello) ([]byte, error) {
 
 // Calculate derives fingerprints from a successfully parsed wire message.
 func Calculate(h *Hello, raw, records []byte) (Fingerprints, error) {
+	if h == nil {
+		return Fingerprints{}, fmt.Errorf("ClientHello отсутствует")
+	}
+	refreshHandshakeMetadata(h)
 	norm, err := Normalize(h)
 	if err != nil {
 		return Fingerprints{}, err
@@ -202,7 +219,49 @@ func Calculate(h *Hello, raw, records []byte) (Fingerprints, error) {
 		}
 		c = shortHash(extString)
 	}
-	return Fingerprints{JA3: ja3, JA3Hash: hex.EncodeToString(md[:]), JA3Version: JA3Version, JA4: a + "_" + b + "_" + c, JA4A: a, JA4B: b, JA4C: c, JA4Version: JA4Version, NormalizationVersion: NormalizationVersion, ImplementationVersion: ImplementationVersion, RawSHA256: SHA256(raw), RecordsSHA256: SHA256(records), NormalizedSHA256: SHA256(append([]byte(NormalizationVersion+"\n"), norm...)), Normalized: norm}, nil
+	return Fingerprints{
+		JA3: ja3, JA3Hash: hex.EncodeToString(md[:]), JA3Version: JA3Version,
+		JA4: a + "_" + b + "_" + c, JA4A: a, JA4B: b, JA4C: c, JA4Version: JA4Version,
+		FingerprintModel: FingerprintModelVersion, HandshakeType: h.HandshakeType,
+		SessionResumption: h.SessionResumption, PSKPresent: h.PSKPresent,
+		PSKIdentityCount: h.PSKIdentityCount, EarlyData: h.EarlyData,
+		NormalizationVersion: NormalizationVersion, ImplementationVersion: ImplementationVersion,
+		RawSHA256: SHA256(raw), RecordsSHA256: SHA256(records),
+		NormalizedSHA256: SHA256(append([]byte(NormalizationVersion+"\n"), norm...)), Normalized: norm,
+	}, nil
+}
+
+func refreshHandshakeMetadata(h *Hello) {
+	if h == nil {
+		return
+	}
+	if h.PSKIdentityCount == 0 {
+		for _, extension := range h.Extensions {
+			if extension.ID != 41 {
+				continue
+			}
+			if identities, ok := extension.Fields["identities"].([]any); ok {
+				h.PSKIdentityCount = len(identities)
+			}
+		}
+	}
+	if h.PSKIdentityCount > 0 {
+		h.PSKPresent = true
+	}
+	if h.HandshakeType != HandshakeTypeFull && h.HandshakeType != HandshakeTypeResumed && h.HandshakeType != HandshakeTypePSK {
+		h.HandshakeType = ""
+	}
+	if h.HandshakeType == "" || h.HandshakeType == HandshakeTypeFull && h.PSKPresent {
+		if h.PSKPresent {
+			h.HandshakeType = HandshakeTypePSK
+		} else {
+			h.HandshakeType = HandshakeTypeFull
+		}
+	}
+	if h.HandshakeType == HandshakeTypePSK {
+		h.PSKPresent = true
+	}
+	h.SessionResumption = h.PSKPresent || h.HandshakeType == HandshakeTypeResumed
 }
 
 func alphaNum(b byte) bool {

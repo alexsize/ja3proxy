@@ -35,6 +35,7 @@ JSONL пока не шифруется. Размещайте экспорт в �
 | FR-CAP-002: успешные outbound Write bytes | `tlshello.Conn` | `TestRecordingConnShortWrites`, серверная проверка raw в matrix |
 | FR-CONN-001: ID до protocol detection | `flowid`, `MixedProxyListener` | `TestMixedProxyListenerAssignsConnectionIDBeforeProtocolDetection`, `TestWrapAssignsOneStableIDThroughWrappers` |
 | FR-FP-001: JA3/JA4 | `Calculate` | `TestGoldenMinimal`, `TestJA4PublishedVector`, независимый e2e JA3 parser |
+| FR-SESSION-001: варианты FULL/RESUMED/PSK и PSK metadata | `Hello`/`Fingerprints` model | `TestPSKIdentityRedaction`, `TestResumedHandshakeVariantCanBeDeclared` |
 | FR-FP-002: TLS-NORM-1 | `Normalize` | `TestGoldenMinimal`, `TestNormalizationDynamicAndUnknown`, `TestPSKIdentityRedaction` |
 | FR-MODE-001: passthrough/observe | `TunnelHandler.Connect` | matrix: 2 клиентских × 3 upstream × 3 режима |
 | FR-MODE-002: доказательство forwarded unchanged | forwarding verification | `TestForwardingVerification`, matrix passthrough/observe |
@@ -111,6 +112,14 @@ handshake список ALPS пересекается с эффективным A
 отбрасывают недоступные downstream-протоколы.
 
 JA3 учитывает extension 21 (padding). Прежний тестовый helper, восстанавливавший extension IDs через uTLS, терял padding; теперь он считывает IDs непосредственно из record bytes. Это исправление тестового oracle, а не изменение uTLS-пресетов.
+
+Fingerprint model также публикует `handshake_type` (`FULL`, `RESUMED` или
+`PSK`), `session_resumption`, `psk_present`, `psk_identity_count` и
+`early_data`. В ClientHello-only capture тип `PSK` определяется по
+`pre_shared_key`, а `RESUMED` может быть выставлен только внешним handshake
+state, когда он подтверждён последующими сообщениями. Сами PSK identities,
+ticket и binder bytes не публикуются. Автоматическое объединение наблюдений в
+Fingerprint Family намеренно не включено без утверждённого алгоритма family.
 
 Источники golden/runtime-векторов, их лицензии и тесты перечислены в
 `internal/ja3proxy/capture/tlshello/testdata/clienthello-corpus/manifest.json`.

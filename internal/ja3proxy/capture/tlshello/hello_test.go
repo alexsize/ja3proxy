@@ -334,12 +334,18 @@ func BenchmarkRecordingConnOnOff(b *testing.B) {
 func TestPSKIdentityRedaction(t *testing.T) {
 	ident := append(vector16([]byte("SECRET_TICKET")), 0, 0, 0, 42)
 	psk := append(vector16(ident), vector16(append([]byte{32}, bytes.Repeat([]byte{0xab}, 32)...))...)
-	raw := fixture(extension(41, psk))
+	raw := fixture(append(extension(41, psk), extension(42, nil)...))
 	h, err := Parse(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
 	fp, _ := Calculate(h, raw, record(raw))
+	if h.HandshakeType != HandshakeTypePSK || !h.SessionResumption || !h.PSKPresent || h.PSKIdentityCount != 1 || !h.EarlyData {
+		t.Fatalf("PSK metadata = %+v", h)
+	}
+	if fp.FingerprintModel != FingerprintModelVersion || fp.HandshakeType != HandshakeTypePSK || !fp.SessionResumption || fp.PSKIdentityCount != 1 || !fp.EarlyData {
+		t.Fatalf("fingerprint session metadata = %+v", fp)
+	}
 	if bytes.Contains(fp.Normalized, []byte("ticket_age")) {
 		t.Fatal("dynamic age in normalized")
 	}
@@ -347,5 +353,21 @@ func TestPSKIdentityRedaction(t *testing.T) {
 	binary.BigEndian.PutUint16(bad[:2], 0xffff)
 	if _, err := Parse(fixture(extension(41, bad))); err == nil {
 		t.Fatal("malformed PSK accepted")
+	}
+}
+
+func TestResumedHandshakeVariantCanBeDeclared(t *testing.T) {
+	raw := fixture(nil)
+	h, err := Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.HandshakeType = HandshakeTypeResumed
+	fp, err := Calculate(h, raw, record(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fp.HandshakeType != HandshakeTypeResumed || !fp.SessionResumption {
+		t.Fatalf("resumed metadata = %+v", fp)
 	}
 }

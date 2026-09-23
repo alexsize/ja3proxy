@@ -37,6 +37,11 @@ type Hello struct {
 	SignatureAlgorithms []uint16    `json:"signature_algorithms"`
 	PointFormats        []int       `json:"point_formats"`
 	ECH                 bool        `json:"ech_detected"`
+	HandshakeType       string      `json:"handshake_type"`
+	SessionResumption   bool        `json:"session_resumption"`
+	PSKPresent          bool        `json:"psk_present"`
+	PSKIdentityCount    int         `json:"psk_identity_count"`
+	EarlyData           bool        `json:"early_data"`
 	Length              int         `json:"length"`
 }
 
@@ -112,6 +117,7 @@ func Parse(raw []byte) (*Hello, error) {
 		return nil, ErrMalformed
 	}
 	if c.done() {
+		refreshHandshakeMetadata(h)
 		return h, nil
 	} // pre-extension ClientHello
 	e := cursor{b: c.vector16()}
@@ -133,6 +139,7 @@ func Parse(raw []byte) (*Hello, error) {
 	if !e.done() {
 		return nil, ErrMalformed
 	}
+	refreshHandshakeMetadata(h)
 	return h, nil
 }
 
@@ -245,6 +252,12 @@ func decodeExtension(h *Hello, e *Extension) error {
 		}
 		e.Fields["identities"] = identities
 		e.Fields["binder_lengths"] = lengths
+		h.PSKPresent = true
+		h.PSKIdentityCount = len(identities)
+	case 42:
+		h.EarlyData = true
+		e.Fields["present"] = true
+		c.take(len(c.b))
 	case 27:
 		v, ok := ids(c.vector8())
 		if !ok {

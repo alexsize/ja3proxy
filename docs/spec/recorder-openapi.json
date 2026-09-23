@@ -780,6 +780,26 @@
           "ja4_version": {
             "type": "string"
           },
+          "fingerprint_model": {
+            "type": "string",
+            "const": "TLS-FP/1"
+          },
+          "handshake_type": {
+            "enum": ["FULL", "RESUMED", "PSK"]
+          },
+          "session_resumption": {
+            "type": "boolean"
+          },
+          "psk_present": {
+            "type": "boolean"
+          },
+          "psk_identity_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "early_data": {
+            "type": "boolean"
+          },
           "normalization_version": {
             "type": "string"
           },
