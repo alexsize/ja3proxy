@@ -103,6 +103,8 @@ func writeAssignmentMutationError(w http.ResponseWriter, err error) bool {
 		writeAPIError(w, http.StatusConflict, "реестр устройств изменился; обновите список и повторите действие")
 	case errors.Is(err, device.ErrAssignmentNotFound):
 		writeAPIError(w, http.StatusNotFound, "временная привязка не найдена")
+	case errors.Is(err, device.ErrApplicationNotFound):
+		writeAPIError(w, http.StatusNotFound, "приложение не найдено")
 	case errors.Is(err, device.ErrPersistence):
 		writeAPIError(w, http.StatusServiceUnavailable, "не удалось сохранить реестр устройств")
 	default:
