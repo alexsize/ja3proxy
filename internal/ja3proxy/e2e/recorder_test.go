@@ -260,7 +260,16 @@ func TestCustomTLSProfileProducesExpectedJA4AndVerification(t *testing.T) {
 	handler.TLSProfiles = store
 	upstreamProfiles := &upstreamtls.UpstreamTLSProfileStore{}
 	upstreamProfiles.Set(upstreamtls.UpstreamTLSConfig{
-		Default: upstreamtls.UpstreamTLSProfile{Protocol: upstreamtls.ProtocolUTLS, Client: utls.HelloGolang.Client, Version: utls.HelloGolang.Version},
+		Routes: []upstreamtls.UpstreamTLSRoute{{
+			ID:       "localhost-route",
+			Host:     "localhost",
+			Priority: 3,
+			UpstreamTLSProfile: upstreamtls.UpstreamTLSProfile{
+				Protocol: upstreamtls.ProtocolUTLS,
+				Client:   utls.HelloGolang.Client,
+				Version:  utls.HelloGolang.Version,
+			},
+		}},
 	})
 	handler.UpstreamTLSProfiles = upstreamProfiles
 	serverAddr, results := newJA3CaptureTLSServer(t)
@@ -292,6 +301,9 @@ func TestCustomTLSProfileProducesExpectedJA4AndVerification(t *testing.T) {
 	}
 	if outbound.UpstreamConfigVersion != 1 {
 		t.Fatalf("upstream config snapshot missing: %+v", outbound.Meta)
+	}
+	if outbound.MatchedRouteID != "localhost-route" || outbound.MatchedRoutePriority == nil || *outbound.MatchedRoutePriority != 3 || outbound.RouteMatchReason != "exact" {
+		t.Fatalf("upstream route evidence missing: %+v", outbound.Meta)
 	}
 	if outbound.Verification == nil || outbound.Verification.Status != "MATCH" {
 		t.Fatalf("verification = %+v", outbound.Verification)

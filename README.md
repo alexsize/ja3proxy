@@ -240,6 +240,9 @@ Recorder и диагностика:
 с большей priority, затем точное имя хоста выигрывает у wildcard, а при полном
 равенстве сохраняется порядок маршрутов в JSON. Версия выбранной upstream
 конфигурации фиксируется в `upstream_config_version` исходящей MITM observation.
+Там же сохраняются `matched_route_id`, `matched_route_priority` и
+`route_match_reason`; для старого маршрута без `id` используется стабильный
+идентификатор `upstream-tls:<normalized-host>`.
 
 ### Редактирование JA4 через шаблоны
 

@@ -63,12 +63,22 @@ func (handler *TunnelHandler) configuredUpstreamTLSProfile(host string) upstream
 }
 
 func (handler *TunnelHandler) configuredUpstreamTLSProfileWithVersion(host string) (upstreamtls.UpstreamTLSProfile, uint64, bool) {
+	resolution := handler.configuredUpstreamTLSResolution(host)
+	return resolution.Profile, resolution.ConfigVersion, resolution.Matched
+}
+
+func (handler *TunnelHandler) configuredUpstreamTLSResolution(host string) upstreamtls.RouteResolution {
 	if handler != nil && handler.UpstreamTLSProfiles != nil {
-		if profile, version, ok := handler.UpstreamTLSProfiles.GetWithVersion(host); ok {
-			return profile, version, true
+		resolution := handler.UpstreamTLSProfiles.Resolve(host)
+		if resolution.Matched {
+			return resolution
 		}
 	}
-	return upstreamtls.ProfileFromFingerprint(handler.configuredTLSFingerprint()), 0, false
+	return upstreamtls.RouteResolution{
+		Profile:     upstreamtls.ProfileFromFingerprint(handler.configuredTLSFingerprint()),
+		MatchReason: "fingerprint_fallback",
+		Matched:     true,
+	}
 }
 
 type upstreamTLSConn struct {
@@ -284,7 +294,8 @@ func (handler *TunnelHandler) Connect(sni string, destConn net.Conn, clientConn 
 	var outMeta recorder.Meta
 	logger := logutil.WithComponent("tls_tunnel", "sni", sni)
 	// Resolve once. A runtime profile change cannot relabel a running handshake.
-	profile, upstreamConfigVersion, _ := handler.configuredUpstreamTLSProfileWithVersion(sni)
+	upstreamResolution := handler.configuredUpstreamTLSResolution(sni)
+	profile := upstreamResolution.Profile
 	var selectedTemplate *tlsprofile.Template
 	var selectedConfigVersion uint64
 	if handler.TLSProfiles != nil {
@@ -313,7 +324,13 @@ func (handler *TunnelHandler) Connect(sni string, destConn net.Conn, clientConn 
 		outMeta.Direction = "outbound"
 		outMeta.ByteSource = "upstream_socket_successful_write"
 		if mode == "MITM_REISSUE" {
-			outMeta.UpstreamConfigVersion = upstreamConfigVersion
+			outMeta.UpstreamConfigVersion = upstreamResolution.ConfigVersion
+			outMeta.MatchedRouteID = upstreamResolution.RouteID
+			if upstreamResolution.Matched && upstreamResolution.MatchReason != "fingerprint_fallback" {
+				priority := upstreamResolution.Priority
+				outMeta.MatchedRoutePriority = &priority
+			}
+			outMeta.RouteMatchReason = upstreamResolution.MatchReason
 			if selectedTemplate != nil {
 				outMeta.Profile = selectedTemplate.Name
 				outMeta.ProfileID = selectedTemplate.ID

@@ -1266,6 +1266,15 @@
           "upstream_config_version": {
             "type": "integer"
           },
+          "matched_route_id": {
+            "type": "string"
+          },
+          "matched_route_priority": {
+            "type": "integer"
+          },
+          "route_match_reason": {
+            "type": "string"
+          },
           "runtime_mutations": {
             "type": "array",
             "items": {

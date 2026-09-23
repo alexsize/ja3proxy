@@ -50,6 +50,9 @@ type Meta struct {
 	ProfileVersion          uint64               `json:"profile_version,omitempty"`
 	ConfigVersion           uint64               `json:"config_version,omitempty"`
 	UpstreamConfigVersion   uint64               `json:"upstream_config_version,omitempty"`
+	MatchedRouteID          string               `json:"matched_route_id,omitempty"`
+	MatchedRoutePriority    *int                 `json:"matched_route_priority,omitempty"`
+	RouteMatchReason        string               `json:"route_match_reason,omitempty"`
 	RuntimeMutations        []RuntimeMutation    `json:"runtime_mutations,omitempty"`
 	Expected                *FingerprintExpected `json:"-"`
 	Forwarded               *ForwardingExpected  `json:"-"`

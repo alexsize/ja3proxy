@@ -126,6 +126,30 @@ func TestUpstreamTLSStoreVersionsAreImmutableSnapshots(t *testing.T) {
 	}
 }
 
+func TestUpstreamTLSResolveReturnsRouteEvidence(t *testing.T) {
+	store := &UpstreamTLSProfileStore{}
+	store.Set(UpstreamTLSConfig{
+		Default: UpstreamTLSProfile{Protocol: "utls", Client: "Chrome", Version: "120"},
+		Routes: []UpstreamTLSRoute{
+			{ID: "wildcard", Host: "*.example.com", Priority: 10, UpstreamTLSProfile: UpstreamTLSProfile{Protocol: "utls", Client: "Firefox", Version: "105"}},
+			{ID: "exact", Host: "api.example.com", Priority: 10, UpstreamTLSProfile: UpstreamTLSProfile{Protocol: "utls", Client: "Safari", Version: "17.0"}},
+		},
+	})
+
+	exact := store.Resolve("api.example.com")
+	if exact.ConfigVersion != 1 || !exact.Matched || exact.RouteID != "exact" || exact.MatchReason != "exact" || exact.Priority != 10 || exact.Profile.Client != "Safari" {
+		t.Fatalf("exact resolution = %+v", exact)
+	}
+	wildcard := store.Resolve("www.example.com")
+	if wildcard.RouteID != "wildcard" || wildcard.MatchReason != "wildcard" || wildcard.Profile.Client != "Firefox" {
+		t.Fatalf("wildcard resolution = %+v", wildcard)
+	}
+	defaultRoute := store.Resolve("example.org")
+	if defaultRoute.RouteID != "" || defaultRoute.MatchReason != "default" || defaultRoute.Profile.Client != "Chrome" {
+		t.Fatalf("default resolution = %+v", defaultRoute)
+	}
+}
+
 func TestValidateUpstreamTLSConfigRejectsInvalidProfiles(t *testing.T) {
 	tests := []struct {
 		name   string

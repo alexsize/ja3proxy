@@ -236,6 +236,24 @@ func TestConfiguredUpstreamTLSProfileReturnsSnapshotVersion(t *testing.T) {
 	}
 }
 
+func TestConfiguredUpstreamTLSResolutionReturnsRouteEvidence(t *testing.T) {
+	profiles := &upstreamtls.UpstreamTLSProfileStore{}
+	profiles.Set(upstreamtls.UpstreamTLSConfig{
+		Routes: []upstreamtls.UpstreamTLSRoute{{
+			ID:                 "api-route",
+			Host:               "api.example.com",
+			Priority:           7,
+			UpstreamTLSProfile: upstreamtls.UpstreamTLSProfile{Protocol: "utls", Client: "Firefox", Version: "105"},
+		}},
+	})
+	handler := &TunnelHandler{UpstreamTLSProfiles: profiles}
+
+	resolution := handler.configuredUpstreamTLSResolution("api.example.com")
+	if resolution.RouteID != "api-route" || resolution.Priority != 7 || resolution.MatchReason != "exact" || resolution.ConfigVersion != 1 {
+		t.Fatalf("resolution = %+v", resolution)
+	}
+}
+
 func TestLimitSpecALPN(t *testing.T) {
 	spec := &utls.ClientHelloSpec{
 		Extensions: []utls.TLSExtension{

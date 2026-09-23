@@ -22,9 +22,20 @@ type UpstreamTLSProfile struct {
 }
 
 type UpstreamTLSRoute struct {
+	ID       string `json:"id,omitempty"`
 	Host     string `json:"host"`
 	Priority int    `json:"priority,omitempty"`
 	UpstreamTLSProfile
+}
+
+type RouteResolution struct {
+	Profile       UpstreamTLSProfile
+	ConfigVersion uint64
+	RouteID       string
+	RouteHost     string
+	Priority      int
+	MatchReason   string
+	Matched       bool
 }
 
 type UpstreamTLSConfig struct {
@@ -39,21 +50,28 @@ type UpstreamTLSProfileStore struct {
 }
 
 func (s *UpstreamTLSProfileStore) Get(host string) (UpstreamTLSProfile, bool) {
-	profile, _, ok := s.GetWithVersion(host)
-	return profile, ok
+	resolution := s.Resolve(host)
+	return resolution.Profile, resolution.Matched
 }
 
 // GetWithVersion resolves a profile from one immutable configuration snapshot.
 // The returned version identifies the snapshot used for the resolution.
 func (s *UpstreamTLSProfileStore) GetWithVersion(host string) (UpstreamTLSProfile, uint64, bool) {
+	resolution := s.Resolve(host)
+	return resolution.Profile, resolution.ConfigVersion, resolution.Matched
+}
+
+// Resolve returns the exact route decision made from one immutable snapshot.
+func (s *UpstreamTLSProfileStore) Resolve(host string) RouteResolution {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	if s.current == nil {
-		return UpstreamTLSProfile{}, s.version, false
+		return RouteResolution{ConfigVersion: s.version}
 	}
-	profile, ok := s.current.profileForHost(host)
-	return profile, s.version, ok
+	resolution := s.current.resolve(host)
+	resolution.ConfigVersion = s.version
+	return resolution
 }
 
 func (s *UpstreamTLSProfileStore) Set(config UpstreamTLSConfig) {
@@ -175,6 +193,11 @@ func validateHostPattern(pattern string) error {
 }
 
 func (config UpstreamTLSConfig) profileForHost(host string) (UpstreamTLSProfile, bool) {
+	resolution := config.resolve(host)
+	return resolution.Profile, resolution.Matched
+}
+
+func (config UpstreamTLSConfig) resolve(host string) RouteResolution {
 	host = normalizeRouteHost(host)
 	bestIndex := -1
 	bestPriority := 0
@@ -190,13 +213,29 @@ func (config UpstreamTLSConfig) profileForHost(host string) (UpstreamTLSProfile,
 		}
 	}
 	if bestIndex >= 0 {
-		return config.Routes[bestIndex].normalizedProfile(), true
+		route := config.Routes[bestIndex]
+		reason := "wildcard"
+		if bestSpecificity == 2 {
+			reason = "exact"
+		}
+		return RouteResolution{
+			Profile:     route.normalizedProfile(),
+			RouteID:     routeID(route),
+			RouteHost:   normalizeRouteHost(route.Host),
+			Priority:    route.Priority,
+			MatchReason: reason,
+			Matched:     true,
+		}
 	}
 
 	if !config.Default.isZero() {
-		return config.Default.normalized(), true
+		return RouteResolution{
+			Profile:     config.Default.normalized(),
+			MatchReason: "default",
+			Matched:     true,
+		}
 	}
-	return UpstreamTLSProfile{}, false
+	return RouteResolution{}
 }
 
 func routeMatchScore(pattern, host string) (bool, int) {
@@ -263,6 +302,13 @@ func (profile UpstreamTLSProfile) isZero() bool {
 
 func (route UpstreamTLSRoute) normalizedProfile() UpstreamTLSProfile {
 	return route.UpstreamTLSProfile.normalized()
+}
+
+func routeID(route UpstreamTLSRoute) string {
+	if id := strings.TrimSpace(route.ID); id != "" {
+		return id
+	}
+	return "upstream-tls:" + normalizeRouteHost(route.Host)
 }
 
 func cloneUpstreamTLSConfig(config UpstreamTLSConfig) UpstreamTLSConfig {
