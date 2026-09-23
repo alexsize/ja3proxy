@@ -103,6 +103,20 @@ func (s *Store) Get(id string) (Template, bool) {
 	return Template{}, false
 }
 
+// ResolveByID returns an explicitly selected profile from the current
+// immutable library snapshot. Route actions use this path instead of host
+// matching so a rule can pin one profile deterministically.
+func (s *Store) ResolveByID(id string) (Template, uint64, bool) {
+	library := s.Snapshot()
+	for _, template := range library.Templates {
+		if template.ID != id || !template.Enabled || template.Replayability.Status == "UNSUPPORTED" {
+			continue
+		}
+		return template, library.ConfigVersion, true
+	}
+	return Template{}, library.ConfigVersion, false
+}
+
 func (s *Store) Resolve(host string) (Template, bool) {
 	template, _, ok := s.ResolveWithVersion(host)
 	return template, ok

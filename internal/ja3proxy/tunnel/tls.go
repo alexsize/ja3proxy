@@ -322,7 +322,19 @@ func (handler *TunnelHandler) ConnectWithRequest(request ConnectRequest, destCon
 	var selectedTemplate *tlsprofile.Template
 	var selectedConfigVersion uint64
 	if handler.TLSProfiles != nil {
-		if template, configVersion, ok := handler.TLSProfiles.ResolveWithVersion(sni); ok {
+		var template tlsprofile.Template
+		var configVersion uint64
+		var ok bool
+		if routeDecision.Action.TLSProfile != "" {
+			template, configVersion, ok = handler.TLSProfiles.ResolveByID(routeDecision.Action.TLSProfile)
+			if !ok {
+				logutil.Warn("tls_tunnel", "route TLS profile is unavailable", "route_id", routeDecision.MatchedRuleID, "profile_id", routeDecision.Action.TLSProfile)
+				return
+			}
+		} else {
+			template, configVersion, ok = handler.TLSProfiles.ResolveWithVersion(sni)
+		}
+		if ok {
 			selectedTemplate = &template
 			selectedConfigVersion = configVersion
 		}

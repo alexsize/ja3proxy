@@ -76,6 +76,8 @@ JSONL пока не шифруется. Размещайте экспорт в �
 | FR-ROUTING-001: two-phase route resolver and route tester | `routing.Store`, `POST /api/v1/routes/test` | `TestStoreResolvesTwoPhaseRulesByPriorityAndSpecificity`, `TestStoreMatchesCIDRPortDeviceTagAndUsername`, `TestRouteTestAPIResolvesConfiguredRule` |
 | FR-ROUTING-002: PRE_TLS route action applies per connection | contextual tunnel request, `TunnelHandler.ConnectWithRequest` | `TestConnectWithRequestAppliesRouteBlock`, proxy/e2e matrix |
 | FR-ROUTING-003: POST_CLIENTHELLO route block before upstream handshake | `TunnelHandler.resolvePostTLSRoute` | `TestResolvePostTLSRouteUsesClientSNI` |
+| FR-ROUTING-004: route action pins explicit TLS profile | `tlsprofile.Store.ResolveByID`, tunnel profile selection | TLS profile routing/e2e coverage |
+| FR-ROUTING-005: PRE_TLS route selects upstream per tunnel | request-aware proxy dialer, cached route dialers | `TestDialRoutedTunnelUsesRouteUpstream`, proxy tunnel coverage |
 | FR-VERIFY-001: expected ↔ фактический PROXY_OUT | `VerifyExpected` | `TestExpectedProfileVerificationStatuses`, `TestCustomTLSProfileProducesExpectedJA4AndVerification` |
 | FR-ENGINE-001.1: раздельные версии capture/parser/fingerprints/engine | version envelope observation/API | `TestRecorderExportAndPrivacy`, `TestObservationAttributesUTLSEngineOnlyToMITMOutbound`, `TestTLSEngineVersionMatchesModulePin`, `TestRecorderAPI` |
 | FR-REPARSE-001.1: повторный разбор сохранённого RAW с immutable revision | `Recorder.Reparse`, `POST /api/v1/observations/{id}/reparse` | `TestRecorderReparseCreatesNewAnalysisRevision`, `TestReparseRequiresRaw`, `TestRecorderReparseAPI` |
@@ -96,7 +98,7 @@ Transport-flow получает ULID сразу после `Accept`, до чте
 
 Sniffer читает до 5 секунд, сохраняет прочитанное и возвращает replay connection. При non-TLS, malformed/oversized или timeout в режиме MITM применяется passthrough и фиксируется причина. Это может задержать server-first протокол на нестандартном SOCKS-порту до timeout. PASSTHROUGH/OBSERVE_ONLY используют пассивные wrappers без предварительного чтения. Для них outbound observation содержит `forwarding`: только полное совпадение SHA-256 handshake bytes и TLS records получает `FORWARDED_UNCHANGED`; неполный захват получает `UNVERIFIED`. `byte_source` различает чтение client socket и успешную запись upstream socket.
 
-При выключенном `--capture-tls` используется прежний путь распознавания TLS. Изменения глобального `--tls-mode` применяются при старте. Upstream TLS store выдаёт новую версию immutable snapshot при каждой конфигурации; исходящий MITM observation сохраняет `upstream_config_version` и evidence выбранного маршрута. Общая двухфазная таблица routing ещё не реализована.
+При выключенном `--capture-tls` используется прежний путь распознавания TLS. Изменения глобального `--tls-mode` применяются при старте. Upstream TLS store выдаёт новую версию immutable snapshot при каждой конфигурации; исходящий MITM observation сохраняет `upstream_config_version` и evidence выбранного маршрута. Двухфазная таблица routing разрешается на immutable snapshot; PRE_TLS `action.upstream` выбирается до отправки успешного ответа CONNECT/SOCKS5.
 
 ### Версии fingerprints
 
@@ -246,10 +248,11 @@ Bearer/Basic значения до передачи записи в backend.
    фильтруемый JSONL/CSV export реализованы; автоматический сбор версии
    приложения ещё остаётся. Сейчас ID объединяет
    только пару TLS observations и создаётся при входе в tunnel handler.
-3. MVP-2: остаётся POST_CLIENTHELLO mode transition, выбор upstream по route
-   action, несколько одновременно активных upstreams и полный runtime snapshot
-   всех route-фаз. Ядро resolver, локальный route tester, PRE_TLS mode/block и
-   POST_CLIENTHELLO block до upstream handshake уже реализованы; для
+3. MVP-2: остаётся POST_CLIENTHELLO mode transition, несколько одновременно
+   активных upstreams и полный runtime snapshot всех route-фаз. Ядро resolver,
+   локальный route tester, PRE_TLS mode/block/upstream и
+   POST_CLIENTHELLO block до upstream handshake и явный `action.tls_profile`
+   уже реализованы; для
    upstream TLS уже реализованы immutable config snapshots на connection и явная priority с
    детерминированным выбором
    `priority → exact host → wildcard → порядок в JSON`; TLS profile library

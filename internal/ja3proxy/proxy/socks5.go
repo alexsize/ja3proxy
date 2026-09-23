@@ -103,7 +103,13 @@ func (p *Proxy) handleSOCKS5(conn net.Conn) {
 		ClientAddr: netutil.RemoteAddr(conn),
 		SNI:        request.host,
 	}
-	destConn, err := p.dial("tcp", destAddr)
+	tunnelRequest := TunnelRequest{
+		Host:       request.host,
+		Port:       int(request.port),
+		Username:   username,
+		ClientAddr: netutil.RemoteAddr(conn),
+	}
+	destConn, err := p.dialRequest(tunnelRequest)
 	if err != nil {
 		_ = writeSOCKS5Reply(conn, socks5GeneralFail)
 		logger.Warn("dial target failed", "err", err)
@@ -281,7 +287,7 @@ func (p *Proxy) handleSOCKS5Tunnel(tunnel socks5Tunnel) {
 	if p.inspectTLS || tunnel.request.port == 443 {
 		tunnelClientConn := flowid.WithProxyUsername(tunnel.bufferedClientConn(), tunnel.username)
 		destConn, wrappedClientConn := traffic.WrapTunnel(session, destConn, tunnelClientConn)
-		p.connectRequest(TunnelRequest{Host: tunnel.request.host, Port: int(tunnel.request.port), Username: tunnel.username}, destConn, wrappedClientConn)
+		p.connectRequest(TunnelRequest{Host: tunnel.request.host, Port: int(tunnel.request.port), Username: tunnel.username, ClientAddr: tunnel.info.ClientAddr}, destConn, wrappedClientConn)
 		return
 	}
 

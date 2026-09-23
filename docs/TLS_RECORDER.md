@@ -214,6 +214,9 @@ device/device tag и username. Для проверки без реального
 `POST /api/v1/routes/test`; ответ содержит версию snapshot, список кандидатов,
 победившее правило, action и причину совпадения. PRE_TLS actions `BLOCK`,
 `MITM_REISSUE`, `PASSTHROUGH` и `OBSERVE_ONLY` применяются к новым соединениям;
+`action.upstream` выбирает HTTP/SOCKS5 upstream для нового туннеля, а
+`action.tls_profile` закрепляет конкретный ID профиля TLS для MITM. При
+отсутствии этих полей используются глобальные upstream и TLS-настройки;
 глобальная конфигурация при этом не изменяется.
 
 Если курсор уже вытеснен из ограниченного окна, API возвращает `409`, и клиент

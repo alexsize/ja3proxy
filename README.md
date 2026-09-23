@@ -296,7 +296,10 @@ HTTP CONNECT с аутентификацией:
 Для загрузки двухфазных правил используйте `--route-config-file routes.json`.
 Маршруты поддерживают фазы `PRE_TLS` и `POST_CLIENTHELLO`, exact/wildcard host,
 CIDR, порт, device/device tag и proxy username. Проверить решение без открытия
-соединения можно через `POST /api/v1/routes/test`.
+соединения можно через `POST /api/v1/routes/test`. В `action` можно указать
+`mode`, `upstream` и `tls_profile`: `upstream` выбирает SOCKS5/HTTP upstream
+для нового HTTP CONNECT или SOCKS5-туннеля, а `tls_profile` закрепляет ID
+профиля TLS для MITM.
 
 ## Аутентификация клиентов
 

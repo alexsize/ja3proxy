@@ -1,9 +1,11 @@
 package ja3proxy
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -15,8 +17,10 @@ import (
 	"time"
 
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/certstore"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/dialer"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/fingerprint"
 	httpproxy "github.com/lylemi/ja3proxy/internal/ja3proxy/proxy"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/routing"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/traffic"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/webpanel"
 )
@@ -422,6 +426,65 @@ func TestBuildProxyAttachesTrafficMonitor(t *testing.T) {
 	}
 	if proxy.TrafficMonitor() != monitor {
 		t.Fatal("proxy monitor was not attached")
+	}
+}
+
+func TestDialRoutedTunnelUsesRouteUpstream(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen route upstream: %v", err)
+	}
+	defer listener.Close()
+
+	requestCh := make(chan *http.Request, 1)
+	errorCh := make(chan error, 1)
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			errorCh <- acceptErr
+			return
+		}
+		defer conn.Close()
+		request, requestErr := http.ReadRequest(bufio.NewReader(conn))
+		if requestErr != nil {
+			errorCh <- requestErr
+			return
+		}
+		requestCh <- request
+		_, writeErr := io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n")
+		errorCh <- writeErr
+	}()
+
+	app := newRuntimeTestApp(t)
+	app.Routes = &routing.Store{}
+	if err := app.Routes.SetValidated(routing.Config{Rules: []routing.Rule{{
+		ID: "mobile-upstream", Enabled: true, Phase: routing.PhasePreTLS,
+		Match:  routing.Match{Host: "example.com"},
+		Action: routing.Action{Upstream: "http://" + listener.Addr().String()},
+	}}}); err != nil {
+		t.Fatalf("configure routes: %v", err)
+	}
+	defaultDialer, err := dialer.NewDynamicUpstreamDialer("", time.Second)
+	if err != nil {
+		t.Fatalf("create default dialer: %v", err)
+	}
+
+	conn, err := app.dialRoutedTunnel(httpproxy.TunnelRequest{Host: "example.com", Port: 443}, defaultDialer)
+	if err != nil {
+		t.Fatalf("dial routed tunnel: %v", err)
+	}
+	conn.Close()
+
+	select {
+	case request := <-requestCh:
+		if request.Method != http.MethodConnect || request.Host != "example.com:443" {
+			t.Fatalf("route upstream request = %s %s", request.Method, request.Host)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for route upstream request")
+	}
+	if err := <-errorCh; err != nil {
+		t.Fatalf("route upstream server: %v", err)
 	}
 }
 

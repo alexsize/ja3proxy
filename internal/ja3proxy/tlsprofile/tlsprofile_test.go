@@ -303,6 +303,9 @@ func TestStoreResolvesMultipleActiveProfilesByHostPriority(t *testing.T) {
 	if resolved, ok := store.Resolve("www.example.com"); !ok || resolved.ID != wildcard.ID {
 		t.Fatalf("wildcard route = %+v, ok=%v", resolved, ok)
 	}
+	if resolved, version, ok := store.ResolveByID(wildcard.ID); !ok || resolved.ID != wildcard.ID || version != library.ConfigVersion {
+		t.Fatalf("explicit profile route = %+v, version=%d, ok=%v", resolved, version, ok)
+	}
 	if _, err := store.Delete(exact.ID, library.ConfigVersion); err == nil {
 		t.Fatal("active profile was deleted")
 	}

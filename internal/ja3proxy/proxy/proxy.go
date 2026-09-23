@@ -36,6 +36,7 @@ type Proxy struct {
 	inspectTLS           bool
 	blockTunnels         bool
 	tunnelDial           func(network, addr string) (net.Conn, error)
+	tunnelDialRequest    func(TunnelRequest) (net.Conn, error)
 	tunnelConnect        func(sni string, destConn net.Conn, clientConn net.Conn)
 	tunnelConnectRequest func(TunnelRequest, net.Conn, net.Conn)
 	httpTransport        http.RoundTripper
@@ -45,9 +46,10 @@ type Proxy struct {
 }
 
 type TunnelRequest struct {
-	Host     string
-	Port     int
-	Username string
+	Host       string
+	Port       int
+	Username   string
+	ClientAddr string
 }
 
 // WithTLSInspection delegates protocol detection to the bounded tunnel recorder.
@@ -86,6 +88,15 @@ func (p *Proxy) WithTunnelConnectRequest(connect func(TunnelRequest, net.Conn, n
 	return p
 }
 
+// WithTunnelDialRequest lets the runtime select a destination dialer from the
+// complete proxy request before the CONNECT/SOCKS5 success response is sent.
+func (p *Proxy) WithTunnelDialRequest(dial func(TunnelRequest) (net.Conn, error)) *Proxy {
+	if p != nil {
+		p.tunnelDialRequest = dial
+	}
+	return p
+}
+
 func (p *Proxy) WithTrafficMonitor(monitor *traffic.TrafficMonitor) *Proxy {
 	if p != nil {
 		p.traffic = monitor
@@ -110,6 +121,13 @@ func (p *Proxy) dial(network, addr string) (net.Conn, error) {
 		return p.tunnelDial(network, addr)
 	}
 	return defaultTunnelDial(network, addr)
+}
+
+func (p *Proxy) dialRequest(request TunnelRequest) (net.Conn, error) {
+	if p != nil && p.tunnelDialRequest != nil {
+		return p.tunnelDialRequest(request)
+	}
+	return p.dial("tcp", net.JoinHostPort(request.Host, strconv.Itoa(request.Port)))
 }
 
 func (p *Proxy) connect(sni string, destConn net.Conn, clientConn net.Conn) {
@@ -168,7 +186,8 @@ func (p *Proxy) handleTunneling(w http.ResponseWriter, r *http.Request, proxyUse
 		return
 	}
 
-	destConn, err := p.dial("tcp", r.Host)
+	tunnelRequest := TunnelRequest{Host: netutil.StripPort(r.Host), Port: targetPort(r.Host), Username: proxyUsername, ClientAddr: r.RemoteAddr}
+	destConn, err := p.dialRequest(tunnelRequest)
 
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
@@ -217,7 +236,7 @@ func (p *Proxy) handleTunneling(w http.ResponseWriter, r *http.Request, proxyUse
 	destConn, tunnelClientConn = traffic.WrapTunnel(session, destConn, tunnelClientConn)
 	go func() {
 		defer session.Finish()
-		p.connectRequest(TunnelRequest{Host: netutil.StripPort(r.Host), Port: targetPort(r.Host), Username: proxyUsername}, destConn, tunnelClientConn)
+		p.connectRequest(tunnelRequest, destConn, tunnelClientConn)
 	}()
 }
 

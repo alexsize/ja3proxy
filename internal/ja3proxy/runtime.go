@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
@@ -47,6 +48,8 @@ type App struct {
 	proxyListener       *rebindableListener
 	protocolListener    *httpproxy.MixedProxyListener
 	configMu            sync.Mutex
+	routeDialersMu      sync.Mutex
+	routeDialers        map[string]*dialer.UpstreamDialer
 
 	watchFingerprintFile func(context.Context, string, time.Duration) error
 }
@@ -320,9 +323,17 @@ func (app *App) buildProxy() (*httpproxy.Proxy, error) {
 		return nil, fmt.Errorf("configure upstream proxy: %w", err)
 	}
 	app.UpstreamDialer = upstreamDialer
+	app.routeDialersMu.Lock()
+	if app.routeDialers == nil {
+		app.routeDialers = make(map[string]*dialer.UpstreamDialer)
+	}
+	app.routeDialersMu.Unlock()
 
 	handler := app.tunnelHandler()
 	proxyServer := httpproxy.NewProxy(upstreamDialer.Dial, handler.Connect, upstreamDialer).
+		WithTunnelDialRequest(func(request httpproxy.TunnelRequest) (net.Conn, error) {
+			return app.dialRoutedTunnel(request, upstreamDialer)
+		}).
 		WithTunnelConnectRequest(func(request httpproxy.TunnelRequest, destConn net.Conn, clientConn net.Conn) {
 			handler.ConnectWithRequest(tunnel.ConnectRequest{Host: request.Host, Port: request.Port, Username: request.Username}, destConn, clientConn)
 		}).
@@ -334,6 +345,54 @@ func (app *App) buildProxy() (*httpproxy.Proxy, error) {
 		proxyServer.WithTrafficMonitor(app.TrafficMonitor)
 	}
 	return proxyServer, nil
+}
+
+// dialRoutedTunnel resolves PRE_TLS routing before the proxy acknowledges a
+// tunnel. A route-specific upstream is cached by URL, while the default
+// DynamicUpstreamDialer remains live for runtime configuration changes.
+func (app *App) dialRoutedTunnel(request httpproxy.TunnelRequest, defaultDialer *dialer.DynamicUpstreamDialer) (net.Conn, error) {
+	if app == nil || defaultDialer == nil {
+		return nil, fmt.Errorf("upstream dialer is unavailable")
+	}
+	upstream := defaultDialer.Upstream()
+	if app.Routes != nil {
+		var clientIP netip.Addr
+		if host, _, splitErr := net.SplitHostPort(request.ClientAddr); splitErr == nil {
+			clientIP, _ = netip.ParseAddr(host)
+		}
+		decision := app.Routes.Resolve(routing.PhasePreTLS, routing.Request{
+			Host: request.Host, Port: request.Port, Username: request.Username, IP: clientIP,
+		})
+		if selected := strings.TrimSpace(decision.Action.Upstream); selected != "" {
+			upstream = selected
+		}
+	}
+	if upstream == defaultDialer.Upstream() {
+		return defaultDialer.Dial("tcp", net.JoinHostPort(request.Host, strconv.Itoa(request.Port)))
+	}
+
+	routeDialer, err := app.routeUpstreamDialer(upstream)
+	if err != nil {
+		return nil, err
+	}
+	return routeDialer.Dial("tcp", net.JoinHostPort(request.Host, strconv.Itoa(request.Port)))
+}
+
+func (app *App) routeUpstreamDialer(upstream string) (*dialer.UpstreamDialer, error) {
+	app.routeDialersMu.Lock()
+	defer app.routeDialersMu.Unlock()
+	if app.routeDialers == nil {
+		app.routeDialers = make(map[string]*dialer.UpstreamDialer)
+	}
+	if existing := app.routeDialers[upstream]; existing != nil {
+		return existing, nil
+	}
+	created, err := dialer.NewUpstreamDialer(upstream, 10*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("configure route upstream: %w", err)
+	}
+	app.routeDialers[upstream] = created
+	return created, nil
 }
 
 func (app *App) updateProxyConfig(update webpanel.ConfigUpdate) (webpanel.RuntimeStatus, error) {
