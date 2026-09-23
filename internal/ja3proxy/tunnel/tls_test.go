@@ -223,6 +223,19 @@ func TestConfiguredUpstreamTLSProfileUsesRouteStore(t *testing.T) {
 	}
 }
 
+func TestConfiguredUpstreamTLSProfileReturnsSnapshotVersion(t *testing.T) {
+	profiles := &upstreamtls.UpstreamTLSProfileStore{}
+	profiles.Set(upstreamtls.UpstreamTLSConfig{
+		Default: upstreamtls.UpstreamTLSProfile{Protocol: "utls", Client: "Chrome", Version: "120"},
+	})
+	handler := &TunnelHandler{UpstreamTLSProfiles: profiles}
+
+	profile, version, fromStore := handler.configuredUpstreamTLSProfileWithVersion("example.com")
+	if !fromStore || version != 1 || profile.Client != "Chrome" {
+		t.Fatalf("profile=%+v, version=%d, fromStore=%v; want Chrome, version 1, true", profile, version, fromStore)
+	}
+}
+
 func TestLimitSpecALPN(t *testing.T) {
 	spec := &utls.ClientHelloSpec{
 		Extensions: []utls.TLSExtension{

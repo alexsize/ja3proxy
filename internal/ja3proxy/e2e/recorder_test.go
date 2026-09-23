@@ -15,6 +15,7 @@ import (
 	httpproxy "github.com/lylemi/ja3proxy/internal/ja3proxy/proxy"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/recorder"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/tlsprofile"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/upstreamtls"
 	utls "github.com/refraction-networking/utls"
 )
 
@@ -257,6 +258,11 @@ func TestCustomTLSProfileProducesExpectedJA4AndVerification(t *testing.T) {
 	handler := newTestTunnelHandler(t, utls.HelloFirefox_63)
 	handler.Recorder = r
 	handler.TLSProfiles = store
+	upstreamProfiles := &upstreamtls.UpstreamTLSProfileStore{}
+	upstreamProfiles.Set(upstreamtls.UpstreamTLSConfig{
+		Default: upstreamtls.UpstreamTLSProfile{Protocol: upstreamtls.ProtocolUTLS, Client: utls.HelloGolang.Client, Version: utls.HelloGolang.Version},
+	})
+	handler.UpstreamTLSProfiles = upstreamProfiles
 	serverAddr, results := newJA3CaptureTLSServer(t)
 	_, port, err := net.SplitHostPort(serverAddr)
 	if err != nil {
@@ -283,6 +289,9 @@ func TestCustomTLSProfileProducesExpectedJA4AndVerification(t *testing.T) {
 	}
 	if outbound.ConfigVersion != library.ConfigVersion+1 || outbound.ByteSource != "upstream_socket_successful_write" {
 		t.Fatalf("config/byte source snapshot missing: %+v", outbound.Meta)
+	}
+	if outbound.UpstreamConfigVersion != 1 {
+		t.Fatalf("upstream config snapshot missing: %+v", outbound.Meta)
 	}
 	if outbound.Verification == nil || outbound.Verification.Status != "MATCH" {
 		t.Fatalf("verification = %+v", outbound.Verification)

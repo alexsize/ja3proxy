@@ -71,6 +71,7 @@ JSONL пока не шифруется. Размещайте экспорт в �
 | FR-PROFILE-003: source replayability/constraints | materializer + verification | `TestObservedSourceMustMatchIsCheckedBeforePublish`, `TestTemplateConstraintsAreValidated` |
 | FR-PROFILE-004: multiple active profiles with host priority | `tlsprofile.Store.ResolveWithVersion`, `ActivateMany` | `TestStoreResolvesMultipleActiveProfilesByHostPriority`, `TestTLSProfileMultiActivationAPI` |
 | FR-UPSTREAM-001: explicit upstream TLS route priority | `upstreamtls.UpstreamTLSProfileStore` | `TestUpstreamTLSRoutesUsePriorityThenHostSpecificity` |
+| FR-RUNTIME-001: immutable upstream TLS config snapshot per connection | `UpstreamTLSProfileStore.GetWithVersion`, recorder metadata | `TestUpstreamTLSStoreVersionsAreImmutableSnapshots`, `TestConfiguredUpstreamTLSProfileReturnsSnapshotVersion` |
 | FR-VERIFY-001: expected ↔ фактический PROXY_OUT | `VerifyExpected` | `TestExpectedProfileVerificationStatuses`, `TestCustomTLSProfileProducesExpectedJA4AndVerification` |
 | FR-ENGINE-001.1: раздельные версии capture/parser/fingerprints/engine | version envelope observation/API | `TestRecorderExportAndPrivacy`, `TestObservationAttributesUTLSEngineOnlyToMITMOutbound`, `TestTLSEngineVersionMatchesModulePin`, `TestRecorderAPI` |
 | FR-REPARSE-001.1: повторный разбор сохранённого RAW с immutable revision | `Recorder.Reparse`, `POST /api/v1/observations/{id}/reparse` | `TestRecorderReparseCreatesNewAnalysisRevision`, `TestReparseRequiresRaw`, `TestRecorderReparseAPI` |
@@ -91,7 +92,7 @@ Transport-flow получает ULID сразу после `Accept`, до чте
 
 Sniffer читает до 5 секунд, сохраняет прочитанное и возвращает replay connection. При non-TLS, malformed/oversized или timeout в режиме MITM применяется passthrough и фиксируется причина. Это может задержать server-first протокол на нестандартном SOCKS-порту до timeout. PASSTHROUGH/OBSERVE_ONLY используют пассивные wrappers без предварительного чтения. Для них outbound observation содержит `forwarding`: только полное совпадение SHA-256 handshake bytes и TLS records получает `FORWARDED_UNCHANGED`; неполный захват получает `UNVERIFIED`. `byte_source` различает чтение client socket и успешную запись upstream socket.
 
-При выключенном `--capture-tls` используется прежний путь распознавания TLS. Изменения глобального `--tls-mode` применяются при старте. Общая двухфазная таблица routing ещё не реализована.
+При выключенном `--capture-tls` используется прежний путь распознавания TLS. Изменения глобального `--tls-mode` применяются при старте. Upstream TLS store выдаёт новую версию immutable snapshot при каждой конфигурации; версия snapshot сохраняется в `upstream_config_version` исходящего MITM observation. Общая двухфазная таблица routing ещё не реализована.
 
 ### Версии fingerprints
 
@@ -242,8 +243,9 @@ Bearer/Basic значения до передачи записи в backend.
    приложения ещё остаётся. Сейчас ID объединяет
    только пару TLS observations и создаётся при входе в tunnel handler.
 3. MVP-2: остаются общий двухфазный route manager, несколько одновременно
-   активных upstreams и полноценные runtime snapshots. Для upstream TLS routes
-   уже реализована явная priority с детерминированным выбором
+   активных upstreams и полный runtime snapshot всех route-фаз. Для upstream TLS
+   уже реализованы immutable config snapshots на connection и явная priority с
+   детерминированным выбором
    `priority → exact host → wildcard → порядок в JSON`; TLS profile library
    также поддерживает несколько активных profiles с exact/wildcard priority.
    Версионируемый TLS template, материализация expected и verification также

@@ -101,6 +101,31 @@ func TestUpstreamTLSRoutesUsePriorityThenHostSpecificity(t *testing.T) {
 	}
 }
 
+func TestUpstreamTLSStoreVersionsAreImmutableSnapshots(t *testing.T) {
+	config := UpstreamTLSConfig{
+		Default: UpstreamTLSProfile{Protocol: "utls", Client: "Chrome", Version: "120"},
+		Routes: []UpstreamTLSRoute{{
+			Host:               "*.example.com",
+			UpstreamTLSProfile: UpstreamTLSProfile{Protocol: "utls", Client: "Firefox", Version: "105"},
+		}},
+	}
+	store := &UpstreamTLSProfileStore{}
+	store.Set(config)
+	config.Routes[0].Client = "Safari"
+
+	got, version, ok := store.GetWithVersion("api.example.com")
+	if !ok || version != 1 || got.Client != "Firefox" {
+		t.Fatalf("snapshot = %+v, version=%d, ok=%v; want Firefox, version 1", got, version, ok)
+	}
+
+	config.Routes[0].Version = "17.0"
+	store.Set(config)
+	got, nextVersion, ok := store.GetWithVersion("api.example.com")
+	if !ok || nextVersion != 2 || got.Client != "Safari" || got.Version != "17.0" {
+		t.Fatalf("updated snapshot = %+v, version=%d, ok=%v; want Safari 17.0, version 2", got, nextVersion, ok)
+	}
+}
+
 func TestValidateUpstreamTLSConfigRejectsInvalidProfiles(t *testing.T) {
 	tests := []struct {
 		name   string

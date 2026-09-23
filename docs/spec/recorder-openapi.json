@@ -1263,6 +1263,9 @@
           "config_version": {
             "type": "integer"
           },
+          "upstream_config_version": {
+            "type": "integer"
+          },
           "runtime_mutations": {
             "type": "array",
             "items": {

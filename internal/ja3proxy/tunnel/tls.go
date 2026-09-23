@@ -58,12 +58,17 @@ func (handler *TunnelHandler) configuredTLSFingerprint() fingerprint.TLSFingerpr
 }
 
 func (handler *TunnelHandler) configuredUpstreamTLSProfile(host string) upstreamtls.UpstreamTLSProfile {
+	profile, _, _ := handler.configuredUpstreamTLSProfileWithVersion(host)
+	return profile
+}
+
+func (handler *TunnelHandler) configuredUpstreamTLSProfileWithVersion(host string) (upstreamtls.UpstreamTLSProfile, uint64, bool) {
 	if handler != nil && handler.UpstreamTLSProfiles != nil {
-		if profile, ok := handler.UpstreamTLSProfiles.Get(host); ok {
-			return profile
+		if profile, version, ok := handler.UpstreamTLSProfiles.GetWithVersion(host); ok {
+			return profile, version, true
 		}
 	}
-	return upstreamtls.ProfileFromFingerprint(handler.configuredTLSFingerprint())
+	return upstreamtls.ProfileFromFingerprint(handler.configuredTLSFingerprint()), 0, false
 }
 
 type upstreamTLSConn struct {
@@ -279,7 +284,7 @@ func (handler *TunnelHandler) Connect(sni string, destConn net.Conn, clientConn 
 	var outMeta recorder.Meta
 	logger := logutil.WithComponent("tls_tunnel", "sni", sni)
 	// Resolve once. A runtime profile change cannot relabel a running handshake.
-	profile := handler.configuredUpstreamTLSProfile(sni)
+	profile, upstreamConfigVersion, _ := handler.configuredUpstreamTLSProfileWithVersion(sni)
 	var selectedTemplate *tlsprofile.Template
 	var selectedConfigVersion uint64
 	if handler.TLSProfiles != nil {
@@ -308,6 +313,7 @@ func (handler *TunnelHandler) Connect(sni string, destConn net.Conn, clientConn 
 		outMeta.Direction = "outbound"
 		outMeta.ByteSource = "upstream_socket_successful_write"
 		if mode == "MITM_REISSUE" {
+			outMeta.UpstreamConfigVersion = upstreamConfigVersion
 			if selectedTemplate != nil {
 				outMeta.Profile = selectedTemplate.Name
 				outMeta.ProfileID = selectedTemplate.ID

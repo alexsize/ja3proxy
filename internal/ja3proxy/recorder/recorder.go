@@ -49,6 +49,7 @@ type Meta struct {
 	ProfileID               string               `json:"profile_id,omitempty"`
 	ProfileVersion          uint64               `json:"profile_version,omitempty"`
 	ConfigVersion           uint64               `json:"config_version,omitempty"`
+	UpstreamConfigVersion   uint64               `json:"upstream_config_version,omitempty"`
 	RuntimeMutations        []RuntimeMutation    `json:"runtime_mutations,omitempty"`
 	Expected                *FingerprintExpected `json:"-"`
 	Forwarded               *ForwardingExpected  `json:"-"`

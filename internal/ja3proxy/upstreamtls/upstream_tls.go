@@ -35,24 +35,34 @@ type UpstreamTLSConfig struct {
 type UpstreamTLSProfileStore struct {
 	mu      sync.RWMutex
 	current *UpstreamTLSConfig
+	version uint64
 }
 
 func (s *UpstreamTLSProfileStore) Get(host string) (UpstreamTLSProfile, bool) {
+	profile, _, ok := s.GetWithVersion(host)
+	return profile, ok
+}
+
+// GetWithVersion resolves a profile from one immutable configuration snapshot.
+// The returned version identifies the snapshot used for the resolution.
+func (s *UpstreamTLSProfileStore) GetWithVersion(host string) (UpstreamTLSProfile, uint64, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	if s.current == nil {
-		return UpstreamTLSProfile{}, false
+		return UpstreamTLSProfile{}, s.version, false
 	}
-	return s.current.profileForHost(host)
+	profile, ok := s.current.profileForHost(host)
+	return profile, s.version, ok
 }
 
 func (s *UpstreamTLSProfileStore) Set(config UpstreamTLSConfig) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	cfg := config
+	cfg := cloneUpstreamTLSConfig(config)
 	s.current = &cfg
+	s.version++
 }
 
 func (s *UpstreamTLSProfileStore) SetValidated(config UpstreamTLSConfig) error {
@@ -253,6 +263,12 @@ func (profile UpstreamTLSProfile) isZero() bool {
 
 func (route UpstreamTLSRoute) normalizedProfile() UpstreamTLSProfile {
 	return route.UpstreamTLSProfile.normalized()
+}
+
+func cloneUpstreamTLSConfig(config UpstreamTLSConfig) UpstreamTLSConfig {
+	clone := config
+	clone.Routes = append([]UpstreamTLSRoute(nil), config.Routes...)
+	return clone
 }
 
 func ProfileFromFingerprint(fp fingerprint.TLSFingerprint) UpstreamTLSProfile {

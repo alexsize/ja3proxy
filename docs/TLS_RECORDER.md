@@ -294,12 +294,13 @@ append-only JSONL с compare-and-swap по `config_version`; путь задаё
 - HTTP export выгружает текущее окно, а не содержимое JSONL;
 - SQLite persistence уже есть, но полноценного SQL-поиска/экспорта по всей базе,
   пользователей, ролей и общего audit-журнала конфигурации ещё нет;
-- общий двухфазный route manager и полноценные runtime snapshots относятся к
-  следующим этапам. Upstream TLS-маршруты уже поддерживают необязательное поле
-  `priority`: сначала выбирается большая priority, затем точный host pattern
-  выигрывает у wildcard, а при полном равенстве сохраняется порядок в JSON.
-  TLS profile library также поддерживает несколько активных шаблонов с
-  детерминированным host-priority.
+- общий двухфазный route manager и полный runtime snapshot всех route-фаз
+  относятся к следующим этапам. Upstream TLS store уже выдаёт immutable
+  `upstream_config_version` для каждого нового MITM-соединения. Маршруты также
+  поддерживают необязательное поле `priority`: сначала выбирается большая
+  priority, затем точный host pattern выигрывает у wildcard, а при полном
+  равенстве сохраняется порядок в JSON. TLS profile library также поддерживает
+  несколько активных шаблонов с детерминированным host-priority.
 
 Нормативные детали и матрица требований находятся в
 [spec/RECORDER_IMPLEMENTATION.md](spec/RECORDER_IMPLEMENTATION.md).
