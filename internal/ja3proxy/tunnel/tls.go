@@ -67,6 +67,7 @@ func (handler *TunnelHandler) configuredUpstreamTLSProfile(host string) upstream
 type upstreamTLSConn struct {
 	net.Conn
 	negotiatedProtocol string
+	runtimeMutations   []recorder.RuntimeMutation
 }
 
 func (conn *upstreamTLSConn) NegotiatedProtocol() string {
@@ -95,7 +96,7 @@ func (handler *TunnelHandler) wrapUpstreamTLSSelection(conn net.Conn, serverName
 	}
 	switch upstreamtls.NormalizeProtocol(profile.Protocol) {
 	case upstreamtls.ProtocolUTLS:
-		uTLSConn, err := handler.utlsWrap(conn, serverName, nextProtos, fingerprint.TLSFingerprint{
+		uTLSConn, mutations, err := handler.utlsWrapAudited(conn, serverName, nextProtos, fingerprint.TLSFingerprint{
 			Client:  profile.Client,
 			Version: profile.Version,
 		})
@@ -105,6 +106,7 @@ func (handler *TunnelHandler) wrapUpstreamTLSSelection(conn net.Conn, serverName
 		return &upstreamTLSConn{
 			Conn:               uTLSConn,
 			negotiatedProtocol: uTLSConn.ConnectionState().NegotiatedProtocol,
+			runtimeMutations:   mutations,
 		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported upstream TLS protocol %q", profile.Protocol)
@@ -138,6 +140,11 @@ func (handler *TunnelHandler) customTLSWrap(conn net.Conn, sni string, nextProto
 }
 
 func (handler *TunnelHandler) utlsWrap(conn net.Conn, sni string, nextProtos []string, fp fingerprint.TLSFingerprint) (*utls.UConn, error) {
+	uTLSConn, _, err := handler.utlsWrapAudited(conn, sni, nextProtos, fp)
+	return uTLSConn, err
+}
+
+func (handler *TunnelHandler) utlsWrapAudited(conn net.Conn, sni string, nextProtos []string, fp fingerprint.TLSFingerprint) (*utls.UConn, []recorder.RuntimeMutation, error) {
 	clientHelloID := utls.ClientHelloID{
 		Client: fp.Client, Version: fp.Version, Seed: nil, Weights: nil,
 	}
@@ -156,14 +163,20 @@ func (handler *TunnelHandler) utlsWrap(conn net.Conn, sni string, nextProtos []s
 	if len(nextProtos) > 0 && clientHelloID.Client != utls.HelloGolang.Client {
 		spec, err := utls.UTLSIdToSpec(clientHelloID)
 		if err == nil {
-			limitSpecALPN(&spec, nextProtos)
+			mutations := limitSpecALPN(&spec, nextProtos)
 			uTLSConn = utls.UClient(conn, tlsConfig, utls.HelloCustom)
 			if err := uTLSConn.ApplyPreset(&spec); err != nil {
-				return nil, err
+				return nil, mutations, err
 			}
+			handshaken, handshakeErr := handler.handshakeUTLS(uTLSConn)
+			return handshaken, mutations, handshakeErr
 		}
 	}
+	handshaken, handshakeErr := handler.handshakeUTLS(uTLSConn)
+	return handshaken, nil, handshakeErr
+}
 
+func (handler *TunnelHandler) handshakeUTLS(uTLSConn *utls.UConn) (*utls.UConn, error) {
 	ctx := context.Background()
 	if handler.Recorder != nil {
 		var cancel context.CancelFunc
@@ -173,19 +186,28 @@ func (handler *TunnelHandler) utlsWrap(conn net.Conn, sni string, nextProtos []s
 	if err := uTLSConn.HandshakeContext(ctx); err != nil {
 		return nil, err
 	}
-
 	return uTLSConn, nil
 }
 
-func limitSpecALPN(spec *utls.ClientHelloSpec, nextProtos []string) {
+func limitSpecALPN(spec *utls.ClientHelloSpec, nextProtos []string) []recorder.RuntimeMutation {
+	mutations := []recorder.RuntimeMutation{}
 	extensions := make([]utls.TLSExtension, 0, len(spec.Extensions)+1)
 	for _, extension := range spec.Extensions {
 		switch ext := extension.(type) {
 		case *utls.ALPNExtension:
+			before := append([]string(nil), ext.AlpnProtocols...)
 			ext.AlpnProtocols = nextProtos
+			if !sameStrings(before, nextProtos) {
+				mutations = append(mutations, recorder.RuntimeMutation{Type: "PROFILE_RUNTIME_MUTATION", Field: "ALPN", Before: before, After: append([]string(nil), nextProtos...), Reason: "downstream protocol compatibility"})
+			}
 			extensions = append(extensions, extension)
 		case *utls.ApplicationSettingsExtension:
-			ext.SupportedProtocols = matchingProtocols(ext.SupportedProtocols, nextProtos)
+			before := append([]string(nil), ext.SupportedProtocols...)
+			after := matchingProtocols(before, nextProtos)
+			ext.SupportedProtocols = after
+			if !sameStrings(before, after) {
+				mutations = append(mutations, recorder.RuntimeMutation{Type: "PROFILE_RUNTIME_MUTATION", Field: "ALPS", Before: before, After: append([]string(nil), after...), Reason: "downstream protocol compatibility"})
+			}
 			if len(ext.SupportedProtocols) > 0 {
 				extensions = append(extensions, extension)
 			}
@@ -195,6 +217,19 @@ func limitSpecALPN(spec *utls.ClientHelloSpec, nextProtos []string) {
 	}
 
 	spec.Extensions = extensions
+	return mutations
+}
+
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func matchingProtocols(supported []string, allowed []string) []string {
@@ -364,6 +399,7 @@ func (handler *TunnelHandler) Connect(sni string, destConn net.Conn, clientConn 
 			if err != nil {
 				return nil, err
 			}
+			outMeta.RuntimeMutations = append([]recorder.RuntimeMutation(nil), destTLSConn.runtimeMutations...)
 
 			return &tls.Config{
 				InsecureSkipVerify: true,

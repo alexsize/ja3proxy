@@ -182,7 +182,16 @@ func TestLimitSpecALPN(t *testing.T) {
 		},
 	}
 
-	limitSpecALPN(spec, []string{"http/1.1"})
+	mutations := limitSpecALPN(spec, []string{"http/1.1"})
+	if len(mutations) != 2 {
+		t.Fatalf("runtime mutations = %d, want 2", len(mutations))
+	}
+	if mutations[0].Type != "PROFILE_RUNTIME_MUTATION" || mutations[0].Field != "ALPN" || !reflect.DeepEqual(mutations[0].Before, []string{"h2", "http/1.1", "h3"}) || !reflect.DeepEqual(mutations[0].After, []string{"http/1.1"}) {
+		t.Fatalf("ALPN mutation = %+v", mutations[0])
+	}
+	if mutations[1].Field != "ALPS" || !reflect.DeepEqual(mutations[1].Before, []string{"h2", "h3"}) || len(mutations[1].After) != 0 {
+		t.Fatalf("ALPS mutation = %+v", mutations[1])
+	}
 
 	if len(spec.Extensions) != 2 {
 		t.Fatalf("extension count after filtering = %d, want 2", len(spec.Extensions))
@@ -282,6 +291,39 @@ func TestCustomTLSWrapWithUTLSPresetLimitsALPN(t *testing.T) {
 	}
 	if !reflect.DeepEqual(result.supportedProtos, nextProtos) {
 		t.Fatalf("server saw client ALPN = %v, want %v", result.supportedProtos, nextProtos)
+	}
+}
+
+func TestUTLSWrapAuditedRecordsRuntimeMutations(t *testing.T) {
+	const serverName = "upstream.test"
+	listener, serverResults := newLocalTLSServer(t, []string{"h2", "http/1.1"})
+	handler := &TunnelHandler{}
+	conn, err := net.DialTimeout("tcp", listener.Addr().String(), 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial local TLS server: %v", err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	wrapped, err := handler.wrapUpstreamTLSSelection(conn, serverName, []string{"http/1.1"}, upstreamtls.UpstreamTLSProfile{
+		Protocol: upstreamtls.ProtocolUTLS,
+		Client:   utls.HelloFirefox_Auto.Client,
+		Version:  utls.HelloFirefox_Auto.Version,
+	}, nil)
+	if err != nil {
+		t.Fatalf("wrap upstream TLS: %v", err)
+	}
+	defer wrapped.Close()
+	if len(wrapped.runtimeMutations) == 0 {
+		t.Fatal("expected runtime mutation audit")
+	}
+	if wrapped.runtimeMutations[0].Field != "ALPN" || wrapped.runtimeMutations[0].Reason != "downstream protocol compatibility" {
+		t.Fatalf("runtime mutations = %+v", wrapped.runtimeMutations)
+	}
+	result := receiveTLSServerResult(t, serverResults)
+	if result.err != nil || result.negotiatedProtocol != "http/1.1" {
+		t.Fatalf("server result = %+v", result)
 	}
 }
 

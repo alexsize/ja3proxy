@@ -53,6 +53,7 @@ JSONL пока не шифруется. Размещайте экспорт в �
 | FR-VERIFY-001: expected ↔ фактический PROXY_OUT | `VerifyExpected` | `TestExpectedProfileVerificationStatuses`, `TestCustomTLSProfileProducesExpectedJA4AndVerification` |
 | FR-ENGINE-001.1: раздельные версии capture/parser/fingerprints/engine | version envelope observation/API | `TestRecorderExportAndPrivacy`, `TestObservationAttributesUTLSEngineOnlyToMITMOutbound`, `TestTLSEngineVersionMatchesModulePin`, `TestRecorderAPI` |
 | FR-REPARSE-001.1: повторный разбор сохранённого RAW с immutable revision | `Recorder.Reparse`, `POST /api/v1/observations/{id}/reparse` | `TestRecorderReparseCreatesNewAnalysisRevision`, `TestReparseRequiresRaw`, `TestRecorderReparseAPI` |
+| FR-DYNAMIC-001.1: runtime ALPN/ALPS mutations фиксируются | `RuntimeMutation`, outbound recorder metadata | `TestLimitSpecALPN` |
 
 ### Границы захвата
 
@@ -89,6 +90,10 @@ Sniffer читает до 5 секунд, сохраняет прочитанн�
 не сохранялся, API возвращает `422`. Это пока bounded memory/JSONL workflow;
 полноценный исторический reparse поверх постоянного SQLite-хранилища остаётся
 частью MVP-1.
+
+При runtime-ограничении preset под downstream-протокол recorder сохраняет
+`runtime_mutations` с типом события, полем, значениями `before`/`after` и
+причиной. Сейчас покрыты ALPN и ALPS-изменения в uTLS preset path.
 
 JA3 учитывает extension 21 (padding). Прежний тестовый helper, восстанавливавший extension IDs через uTLS, терял padding; теперь он считывает IDs непосредственно из record bytes. Это исправление тестового oracle, а не изменение uTLS-пресетов.
 

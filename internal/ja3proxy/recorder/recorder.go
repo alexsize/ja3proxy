@@ -30,19 +30,28 @@ var (
 )
 
 type Meta struct {
-	ConnectionID   string               `json:"connection_id"`
-	CapturePoint   string               `json:"capture_point"`
-	Direction      string               `json:"direction"`
-	ByteSource     string               `json:"byte_source"`
-	Mode           string               `json:"mode"`
-	Destination    string               `json:"destination"`
-	Source         string               `json:"source"`
-	Profile        string               `json:"profile,omitempty"`
-	ProfileID      string               `json:"profile_id,omitempty"`
-	ProfileVersion uint64               `json:"profile_version,omitempty"`
-	ConfigVersion  uint64               `json:"config_version,omitempty"`
-	Expected       *FingerprintExpected `json:"-"`
-	Forwarded      *ForwardingExpected  `json:"-"`
+	ConnectionID     string               `json:"connection_id"`
+	CapturePoint     string               `json:"capture_point"`
+	Direction        string               `json:"direction"`
+	ByteSource       string               `json:"byte_source"`
+	Mode             string               `json:"mode"`
+	Destination      string               `json:"destination"`
+	Source           string               `json:"source"`
+	Profile          string               `json:"profile,omitempty"`
+	ProfileID        string               `json:"profile_id,omitempty"`
+	ProfileVersion   uint64               `json:"profile_version,omitempty"`
+	ConfigVersion    uint64               `json:"config_version,omitempty"`
+	RuntimeMutations []RuntimeMutation    `json:"runtime_mutations,omitempty"`
+	Expected         *FingerprintExpected `json:"-"`
+	Forwarded        *ForwardingExpected  `json:"-"`
+}
+
+type RuntimeMutation struct {
+	Type   string   `json:"type"`
+	Field  string   `json:"field"`
+	Before []string `json:"before"`
+	After  []string `json:"after"`
+	Reason string   `json:"reason"`
 }
 
 type ForwardingExpected struct {

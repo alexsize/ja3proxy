@@ -676,6 +676,12 @@
           "config_version": {
             "type": "integer"
           },
+          "runtime_mutations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RuntimeMutation"
+            }
+          },
           "captured_at": {
             "type": "string",
             "format": "date-time"
@@ -797,6 +803,29 @@
             "additionalProperties": true
           }
         }
+      },
+      "RuntimeMutation": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "const": "PROFILE_RUNTIME_MUTATION"
+          },
+          "field": {
+            "enum": ["ALPN", "ALPS"]
+          },
+          "before": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "after": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": ["type", "field", "before", "after", "reason"]
       },
       "Comparison": {
         "type": "object",
