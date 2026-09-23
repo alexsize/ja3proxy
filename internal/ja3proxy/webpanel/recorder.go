@@ -26,6 +26,10 @@ func (panel Server) registerRecorderRoutes(mux *http.ServeMux) {
 	routes := map[string]http.HandlerFunc{
 		"GET /api/v1/status":                     panel.recorderStatus,
 		"GET /api/v1/devices":                    panel.devices,
+		"GET /api/v1/devices/{id}":               panel.getDevice,
+		"POST /api/v1/devices":                   panel.createDevice,
+		"PUT /api/v1/devices/{id}":               panel.updateDevice,
+		"DELETE /api/v1/devices/{id}":            panel.deleteDevice,
 		"GET /api/v1/observations":               panel.observations,
 		"GET /api/v1/observations/{id}":          panel.observation,
 		"POST /api/v1/observations/{id}/reparse": panel.reparseObservation,
@@ -41,9 +45,9 @@ func (panel Server) registerRecorderRoutes(mux *http.ServeMux) {
 func (panel Server) devices(w http.ResponseWriter, r *http.Request) {
 	if panel.Devices == nil {
 		json.NewEncoder(w).Encode(struct {
-			SchemaVersion string                 `json:"schema_version"`
-			ConfigVersion uint64                 `json:"config_version"`
-			Items         []device.Device        `json:"items"`
+			SchemaVersion string          `json:"schema_version"`
+			ConfigVersion uint64          `json:"config_version"`
+			Items         []device.Device `json:"items"`
 		}{SchemaVersion: device.SchemaVersion, Items: []device.Device{}})
 		return
 	}

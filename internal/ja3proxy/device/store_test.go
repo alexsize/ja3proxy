@@ -1,6 +1,7 @@
 package device
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -36,5 +37,46 @@ func TestAmbiguousUsernameDoesNotFallBackToIP(t *testing.T) {
 	}
 	if got := store.Resolve("shared", "192.0.2.20"); got.DeviceID != "" || !got.Ambiguous {
 		t.Fatalf("ambiguous username resolution = %+v", got)
+	}
+}
+
+func TestMutationsPersistAndRejectStaleVersions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nested", "devices.json")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, registry, err := store.Create(Device{Name: "iPhone 017", ProxyUsername: "iphone017", Enabled: true}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.ID == "" || registry.ConfigVersion != 1 {
+		t.Fatalf("create result = %+v, registry = %+v", created, registry)
+	}
+	if got := store.Resolve("iphone017", ""); got.DeviceID != created.ID {
+		t.Fatalf("resolve after create = %+v", got)
+	}
+	if _, _, err := store.Create(Device{Name: "stale"}, 0); !errors.Is(err, ErrVersionConflict) {
+		t.Fatalf("stale create error = %v", err)
+	}
+	updated, registry, err := store.Update(created.ID, Device{Name: "iPhone 017", ProxyUsername: "iphone017-new", Enabled: true}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.ID != created.ID || updated.CreatedAt != created.CreatedAt || registry.ConfigVersion != 2 {
+		t.Fatalf("update result = %+v, registry = %+v", updated, registry)
+	}
+	if _, err := store.Delete(created.ID, 1); !errors.Is(err, ErrVersionConflict) {
+		t.Fatalf("stale delete error = %v", err)
+	}
+	if _, err := store.Delete(created.ID, 2); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot := reopened.Snapshot(); snapshot.ConfigVersion != 3 || len(snapshot.Devices) != 0 {
+		t.Fatalf("reopened registry = %+v", snapshot)
 	}
 }

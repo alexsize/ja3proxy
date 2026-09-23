@@ -142,6 +142,12 @@ capture point. Retention удаляет самые старые записи п�
 }
 ```
 
+Реестр можно изменять через локальный Device Manager API. Все операции требуют
+`expected_version`, равный текущему `config_version`; при конфликте сервер
+возвращает `409`, поэтому клиент должен перечитать список и повторить изменение.
+`POST` принимает пустой `id` и генерирует его автоматически. Изменение файла
+сохраняется на диск, если реестр был открыт через `--device-map-file`.
+
 ## Локальный API
 
 | Метод и путь | Назначение |
@@ -152,6 +158,11 @@ capture point. Retention удаляет самые старые записи п�
 | `GET /api/v1/fingerprints/diff?a=&b=` | структурное сравнение |
 | `GET /api/v1/export/observations` | экспорт текущего окна в JSONL |
 | `GET /api/v1/tls/presets` | доступные пресеты uTLS |
+| `GET /api/v1/devices` | список устройств и `config_version` |
+| `GET /api/v1/devices/{id}` | одно устройство |
+| `POST /api/v1/devices` | создать устройство с проверкой версии |
+| `PUT /api/v1/devices/{id}` | заменить mapping с проверкой версии |
+| `DELETE /api/v1/devices/{id}` | удалить mapping с проверкой версии |
 | `GET /api/v1/tls/profiles` | библиотека и версия конфигурации TLS-профилей |
 | `POST /api/v1/tls/profiles/from-preset` | черновик из uTLS-пресета |
 | `POST /api/v1/tls/profiles/from-observation` | черновик/профиль из наблюдения |
@@ -249,8 +260,9 @@ append-only JSONL с compare-and-swap по `config_version`; путь задаё
 - анализируется первый ClientHello;
 - второй ClientHello после HelloRetryRequest не сопоставляется;
 - без `--capture-sqlite` хранилище в памяти не является durable spool;
-- device identity пока сохраняет evidence username/IP, но не содержит Device
-  Manager, временных mappings и application catalog;
+- Device Manager поддерживает постоянные mappings по username/IP и CAS-защиту
+  изменений; временные mappings, application catalog и правила по приложениям
+  относятся к следующим этапам ТЗ;
 - HTTP export выгружает текущее окно, а не содержимое JSONL;
 - SQLite persistence уже есть, но полноценного SQL-поиска/экспорта по всей базе,
   пользователей, ролей и общего audit-журнала конфигурации ещё нет;

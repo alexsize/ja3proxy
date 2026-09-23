@@ -43,7 +43,7 @@ JSONL пока не шифруется. Размещайте экспорт в �
 | FR-CAP-002: успешные outbound Write bytes | `tlshello.Conn` | `TestRecordingConnShortWrites`, серверная проверка raw в matrix |
 | FR-CONN-001: ID до protocol detection | `flowid`, `MixedProxyListener` | `TestMixedProxyListenerAssignsConnectionIDBeforeProtocolDetection`, `TestWrapAssignsOneStableIDThroughWrappers` |
 | FR-IDENTITY-001: proxy username → source IP fallback с confidence | `flowid`, proxy auth, recorder metadata | `TestProxyUsernameSurvivesTransparentWrappers`, `TestApplyIdentityEvidenceUsesUsernameThenSourceIP` |
-| FR-DEVICE-001: explicit device mapping с username/IP priority | `device.Store`, tunnel resolver | `TestOpenAndResolveDeviceMappings`, `TestAmbiguousUsernameDoesNotFallBackToIP` |
+| FR-DEVICE-001: explicit device mapping с username/IP priority и CAS CRUD | `device.Store`, tunnel resolver, Device Manager API | `TestOpenAndResolveDeviceMappings`, `TestAmbiguousUsernameDoesNotFallBackToIP`, `TestMutationsPersistAndRejectStaleVersions`, `TestDeviceManagerAPI` |
 | FR-FP-001: JA3/JA4 | `Calculate` | `TestGoldenMinimal`, `TestJA4PublishedVector`, независимый e2e JA3 parser |
 | FR-SESSION-001: варианты FULL/RESUMED/PSK и PSK metadata | `Hello`/`Fingerprints` model | `TestPSKIdentityRedaction`, `TestResumedHandshakeVariantCanBeDeclared` |
 | FR-SESSION-002: PSK presets явно отделены от full-handshake | fingerprint catalog/API/UI | `TestPSKPresetsAreMarkedAsResumptionProfiles` |

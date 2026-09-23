@@ -76,6 +76,73 @@
             }
           }
         }
+      },
+      "post": {
+        "operationId": "createDevice",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/DeviceMutation"}
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Устройство создано",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DeviceMutationResponse"}}}
+          },
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "403": {"$ref": "#/components/responses/Forbidden"}
+        }
+      }
+    },
+    "/api/v1/devices/{id}": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
+      "get": {
+        "operationId": "getDevice",
+        "responses": {
+          "200": {
+            "description": "Устройство",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Device"}}}
+          },
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "403": {"$ref": "#/components/responses/Forbidden"}
+        }
+      },
+      "put": {
+        "operationId": "updateDevice",
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DeviceMutation"}}}
+        },
+        "responses": {
+          "200": {
+            "description": "Устройство изменено",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DeviceMutationResponse"}}}
+          },
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "403": {"$ref": "#/components/responses/Forbidden"}
+        }
+      },
+      "delete": {
+        "operationId": "deleteDevice",
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ExpectedVersion"}}}
+        },
+        "responses": {
+          "200": {
+            "description": "Устройство удалено",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DeviceRegistry"}}}
+          },
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "403": {"$ref": "#/components/responses/Forbidden"}
+        }
       }
     },
     "/api/v1/observations": {
@@ -574,6 +641,24 @@
     }
   },
   "components": {
+    "responses": {
+      "BadRequest": {
+        "description": "Некорректный запрос",
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+      },
+      "Conflict": {
+        "description": "Устаревшая config_version",
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+      },
+      "Forbidden": {
+        "description": "Требуется локальный доступ",
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+      },
+      "NotFound": {
+        "description": "Устройство не найдено",
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+      }
+    },
     "schemas": {
       "Error": {
         "type": "object",
@@ -634,6 +719,18 @@
           }
         }
       },
+      "DeviceRegistry": {
+        "type": "object",
+        "required": ["schema_version", "config_version", "devices"],
+        "properties": {
+          "schema_version": {"const": "device-registry/1"},
+          "config_version": {"type": "integer", "minimum": 0},
+          "devices": {
+            "type": "array",
+            "items": {"$ref": "#/components/schemas/Device"}
+          }
+        }
+      },
       "Device": {
         "type": "object",
         "required": ["id", "name", "enabled"],
@@ -653,6 +750,48 @@
           "created_at": {"type": "string"},
           "last_seen_at": {"type": "string"},
           "enabled": {"type": "boolean"}
+        }
+      },
+      "DeviceMutation": {
+        "type": "object",
+        "required": ["expected_version", "device"],
+        "properties": {
+          "expected_version": {"type": "integer", "minimum": 0},
+          "device": {"$ref": "#/components/schemas/DeviceInput"}
+        }
+      },
+      "DeviceInput": {
+        "type": "object",
+        "required": ["name", "enabled"],
+        "properties": {
+          "id": {"type": "string", "description": "Необязателен при создании"},
+          "name": {"type": "string"},
+          "description": {"type": "string"},
+          "proxy_username": {"type": "string"},
+          "source_ips": {"type": "array", "items": {"type": "string", "format": "ipvanyaddress"}},
+          "tags": {"type": "array", "items": {"type": "string"}},
+          "platform": {"type": "string"},
+          "app_name": {"type": "string"},
+          "app_version": {"type": "string"},
+          "os_name": {"type": "string"},
+          "os_version": {"type": "string"},
+          "hardware": {"type": "string"},
+          "enabled": {"type": "boolean"}
+        }
+      },
+      "DeviceMutationResponse": {
+        "type": "object",
+        "required": ["device", "registry"],
+        "properties": {
+          "device": {"$ref": "#/components/schemas/Device"},
+          "registry": {"$ref": "#/components/schemas/DeviceRegistry"}
+        }
+      },
+      "ExpectedVersion": {
+        "type": "object",
+        "required": ["expected_version"],
+        "properties": {
+          "expected_version": {"type": "integer", "minimum": 0}
         }
       },
       "Observation": {
