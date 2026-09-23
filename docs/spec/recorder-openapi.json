@@ -904,7 +904,19 @@
           "enabled": {"type": "boolean"},
           "host_patterns": {"type": "array", "items": {"type": "string"}},
           "base_preset": {"type": "object", "additionalProperties": true},
-          "fields": {"type": "object", "additionalProperties": true},
+          "fields": {
+            "type": "object",
+            "properties": {
+              "alpn_policy": {
+                "enum": ["PROFILE", "DOWNSTREAM", "INTERSECTION", "CUSTOM"]
+              },
+              "custom_alpn": {
+                "type": "array",
+                "items": {"type": "string"}
+              }
+            },
+            "additionalProperties": true
+          },
           "policy": {"type": "object", "additionalProperties": true},
           "source": {"type": ["object", "null"], "additionalProperties": true},
           "expected": {"type": ["object", "null"], "additionalProperties": true},

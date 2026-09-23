@@ -54,6 +54,7 @@ JSONL пока не шифруется. Размещайте экспорт в �
 | FR-ENGINE-001.1: раздельные версии capture/parser/fingerprints/engine | version envelope observation/API | `TestRecorderExportAndPrivacy`, `TestObservationAttributesUTLSEngineOnlyToMITMOutbound`, `TestTLSEngineVersionMatchesModulePin`, `TestRecorderAPI` |
 | FR-REPARSE-001.1: повторный разбор сохранённого RAW с immutable revision | `Recorder.Reparse`, `POST /api/v1/observations/{id}/reparse` | `TestRecorderReparseCreatesNewAnalysisRevision`, `TestReparseRequiresRaw`, `TestRecorderReparseAPI` |
 | FR-DYNAMIC-001.1: runtime ALPN/ALPS mutations фиксируются | `RuntimeMutation`, outbound recorder metadata | `TestLimitSpecALPN` |
+| FR-DYNAMIC-001.2: явная ALPN policy PROFILE/DOWNSTREAM/INTERSECTION/CUSTOM | `StaticFields.ALPNPolicy`, `ConstrainALPN`, profile UI | `TestALPNPolicies`, `TestCustomALPNPolicyMaterializesConfiguredProtocols` |
 
 ### Границы захвата
 
@@ -94,6 +95,11 @@ Sniffer читает до 5 секунд, сохраняет прочитанн�
 При runtime-ограничении preset под downstream-протокол recorder сохраняет
 `runtime_mutations` с типом события, полем, значениями `before`/`after` и
 причиной. Сейчас покрыты ALPN и ALPS-изменения в uTLS preset path.
+
+TLS-профиль теперь явно задаёт `fields.alpn_policy`: `PROFILE` сохраняет
+ALPN профиля, `DOWNSTREAM` использует ALPN клиента, `INTERSECTION` оставляет
+пересечение, а `CUSTOM` использует `fields.custom_alpn`. Пустая policy у
+старых snapshot нормализуется в `INTERSECTION`.
 
 JA3 учитывает extension 21 (padding). Прежний тестовый helper, восстанавливавший extension IDs через uTLS, терял padding; теперь он считывает IDs непосредственно из record bytes. Это исправление тестового oracle, а не изменение uTLS-пресетов.
 

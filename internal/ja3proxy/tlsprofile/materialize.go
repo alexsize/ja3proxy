@@ -47,6 +47,9 @@ func Preview(template Template) (Template, error) {
 	if template.Policy.MustMatch == nil {
 		template.Policy = DefaultMatchPolicy()
 	}
+	if template.Fields.ALPNPolicy == "" {
+		template.Fields.ALPNPolicy = ALPNPolicyIntersection
+	}
 	if err := validateTemplate(template); err != nil {
 		return Template{}, err
 	}
@@ -69,7 +72,13 @@ func Materialize(template Template, serverName string) (Materialized, error) {
 	if err := validateTemplate(template); err != nil {
 		return Materialized{}, err
 	}
-	base, err := buildTemplateSpec(template, serverName)
+	effective := template
+	alpn, err := effectiveALPN(template, nil)
+	if err != nil {
+		return Materialized{}, err
+	}
+	effective.Fields.ALPN = alpn
+	base, err := buildTemplateSpec(effective, serverName)
 	if err != nil {
 		return Materialized{}, err
 	}
@@ -108,7 +117,7 @@ func Materialize(template Template, serverName string) (Materialized, error) {
 	if err := validatePolicyPaths(expected.Normalized, template.Policy); err != nil {
 		return Materialized{}, err
 	}
-	replaySpec, err := buildTemplateSpec(template, serverName)
+	replaySpec, err := buildTemplateSpec(effective, serverName)
 	if err != nil {
 		return Materialized{}, err
 	}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -109,6 +110,58 @@ func TestConstrainALPNPreservesTemplateOrder(t *testing.T) {
 	}
 	if _, err := ConstrainALPN(template, []string{"acme/1"}); err == nil {
 		t.Fatal("disjoint ALPN was accepted")
+	}
+}
+
+func TestALPNPolicies(t *testing.T) {
+	base := Template{Fields: StaticFields{ALPN: []string{"h2", "http/1.1"}}}
+	tests := []struct {
+		name    string
+		policy  string
+		custom  []string
+		offered []string
+		want    []string
+	}{
+		{name: "profile", policy: ALPNPolicyProfile, offered: []string{"http/1.1"}, want: []string{"h2", "http/1.1"}},
+		{name: "downstream", policy: ALPNPolicyDownstream, offered: []string{"http/1.1"}, want: []string{"http/1.1"}},
+		{name: "intersection", policy: ALPNPolicyIntersection, offered: []string{"http/1.1", "h2"}, want: []string{"h2", "http/1.1"}},
+		{name: "custom", policy: ALPNPolicyCustom, custom: []string{"acme/1"}, offered: []string{"http/1.1"}, want: []string{"acme/1"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			template := base
+			template.Fields.ALPNPolicy = tt.policy
+			template.Fields.CustomALPN = tt.custom
+			got, err := ConstrainALPN(template, tt.offered)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got.Fields.ALPN, tt.want) {
+				t.Fatalf("effective ALPN = %v, want %v", got.Fields.ALPN, tt.want)
+			}
+		})
+	}
+	if _, err := ConstrainALPN(Template{Fields: StaticFields{ALPNPolicy: ALPNPolicyCustom, ALPN: base.Fields.ALPN}}, nil); err == nil {
+		t.Fatal("CUSTOM policy without custom_alpn was accepted")
+	}
+	if _, err := ConstrainALPN(Template{Fields: StaticFields{ALPNPolicy: "INVALID", ALPN: base.Fields.ALPN}}, nil); err == nil {
+		t.Fatal("invalid ALPN policy was accepted")
+	}
+}
+
+func TestCustomALPNPolicyMaterializesConfiguredProtocols(t *testing.T) {
+	template, err := TemplateFromPreset("custom-alpn", "Chrome", "120")
+	if err != nil {
+		t.Fatal(err)
+	}
+	template.Fields.ALPNPolicy = ALPNPolicyCustom
+	template.Fields.CustomALPN = []string{"http/1.1"}
+	preview, err := Preview(template)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.Expected == nil || preview.Fields.ALPNPolicy != ALPNPolicyCustom || !reflect.DeepEqual(preview.Fields.CustomALPN, []string{"http/1.1"}) {
+		t.Fatalf("custom ALPN preview = %+v", preview)
 	}
 }
 

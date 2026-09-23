@@ -21,6 +21,10 @@ const (
 	VerificationVersion    = "tls-profile-verification/1"
 	GREASEPlaceholder      = uint16(0x0a0a)
 	DefaultTemplateLogPath = "profiles/tls-templates.jsonl"
+	ALPNPolicyProfile      = "PROFILE"
+	ALPNPolicyDownstream   = "DOWNSTREAM"
+	ALPNPolicyIntersection = "INTERSECTION"
+	ALPNPolicyCustom       = "CUSTOM"
 )
 
 var ErrVersionConflict = errors.New("tls profile configuration version conflict")
@@ -29,6 +33,8 @@ type StaticFields struct {
 	CipherSuites        []uint16 `json:"cipher_suites"`
 	ExtensionOrder      []uint16 `json:"extension_order"`
 	ALPN                []string `json:"alpn"`
+	ALPNPolicy          string   `json:"alpn_policy,omitempty"`
+	CustomALPN          []string `json:"custom_alpn,omitempty"`
 	SupportedVersions   []uint16 `json:"supported_versions"`
 	SupportedGroups     []uint16 `json:"supported_groups"`
 	SignatureAlgorithms []uint16 `json:"signature_algorithms"`
@@ -143,34 +149,64 @@ func FieldsFromHello(h *tlshello.Hello) (StaticFields, error) {
 		CipherSuites:        ciphers,
 		ExtensionOrder:      extensions,
 		ALPN:                alpn,
+		ALPNPolicy:          ALPNPolicyIntersection,
 		SupportedVersions:   versions,
 		SupportedGroups:     groups,
 		SignatureAlgorithms: append([]uint16(nil), h.SignatureAlgorithms...),
 	}, nil
 }
 
-// ConstrainALPN returns a connection-specific copy of a template whose ALPN
-// list contains only protocols offered by the inbound client. The template
-// order remains authoritative because it is part of the desired fingerprint.
+// ConstrainALPN returns a connection-specific copy of a template according to
+// its explicit ALPN policy. An empty policy keeps the historical intersection
+// behavior for profiles created before policy support was added.
 func ConstrainALPN(template Template, offered []string) (Template, error) {
-	if len(template.Fields.ALPN) == 0 {
-		return template, nil
+	alpn, err := effectiveALPN(template, offered)
+	if err != nil {
+		return Template{}, err
 	}
-	allowed := make(map[string]struct{}, len(offered))
-	for _, protocol := range offered {
-		allowed[protocol] = struct{}{}
-	}
-	matched := make([]string, 0, len(template.Fields.ALPN))
-	for _, protocol := range template.Fields.ALPN {
-		if _, ok := allowed[protocol]; ok {
-			matched = append(matched, protocol)
-		}
-	}
-	if len(matched) == 0 {
-		return Template{}, fmt.Errorf("ALPN профиля %q не пересекается с ALPN входящего клиента", strings.Join(template.Fields.ALPN, ", "))
-	}
-	template.Fields.ALPN = matched
+	template.Fields.ALPN = alpn
 	return template, nil
+}
+
+func effectiveALPN(template Template, offered []string) ([]string, error) {
+	policy := template.Fields.ALPNPolicy
+	if policy == "" {
+		policy = ALPNPolicyIntersection
+	}
+	switch policy {
+	case ALPNPolicyProfile:
+		return append([]string(nil), template.Fields.ALPN...), nil
+	case ALPNPolicyDownstream:
+		if len(offered) == 0 {
+			return append([]string(nil), template.Fields.ALPN...), nil
+		}
+		return append([]string(nil), offered...), nil
+	case ALPNPolicyIntersection:
+		if len(template.Fields.ALPN) == 0 || len(offered) == 0 {
+			return append([]string(nil), template.Fields.ALPN...), nil
+		}
+		allowed := make(map[string]struct{}, len(offered))
+		for _, protocol := range offered {
+			allowed[protocol] = struct{}{}
+		}
+		matched := make([]string, 0, len(template.Fields.ALPN))
+		for _, protocol := range template.Fields.ALPN {
+			if _, ok := allowed[protocol]; ok {
+				matched = append(matched, protocol)
+			}
+		}
+		if len(matched) == 0 {
+			return nil, fmt.Errorf("ALPN профиля %q не пересекается с ALPN входящего клиента", strings.Join(template.Fields.ALPN, ", "))
+		}
+		return matched, nil
+	case ALPNPolicyCustom:
+		if len(template.Fields.CustomALPN) == 0 {
+			return nil, errors.New("custom_alpn обязателен для ALPN policy CUSTOM")
+		}
+		return append([]string(nil), template.Fields.CustomALPN...), nil
+	default:
+		return nil, fmt.Errorf("неподдерживаемая ALPN policy %q", policy)
+	}
 }
 
 func normalizeGREASE(value uint16) uint16 {
@@ -192,6 +228,26 @@ func validateTemplate(template Template) error {
 	}
 	if len(template.Fields.CipherSuites) == 0 || len(template.Fields.CipherSuites) > 256 {
 		return errors.New("cipher_suites должен содержать от 1 до 256 значений")
+	}
+	if template.Fields.ALPNPolicy == "" {
+		template.Fields.ALPNPolicy = ALPNPolicyIntersection
+	}
+	switch template.Fields.ALPNPolicy {
+	case ALPNPolicyProfile, ALPNPolicyDownstream, ALPNPolicyIntersection:
+		if len(template.Fields.CustomALPN) != 0 {
+			return errors.New("custom_alpn разрешён только для ALPN policy CUSTOM")
+		}
+	case ALPNPolicyCustom:
+		if len(template.Fields.CustomALPN) == 0 {
+			return errors.New("custom_alpn обязателен для ALPN policy CUSTOM")
+		}
+	default:
+		return fmt.Errorf("неподдерживаемая ALPN policy %q", template.Fields.ALPNPolicy)
+	}
+	for _, protocol := range template.Fields.CustomALPN {
+		if len(protocol) == 0 || len(protocol) > 255 {
+			return errors.New("каждый custom ALPN должен иметь длину 1..255 байт")
+		}
 	}
 	if len(template.Fields.ExtensionOrder) > 256 || len(template.Fields.ALPN) > 32 || len(template.Fields.SupportedVersions) > 16 || len(template.Fields.SupportedGroups) > 128 || len(template.Fields.SignatureAlgorithms) > 128 {
 		return errors.New("одно из полей профиля превышает допустимый размер")
