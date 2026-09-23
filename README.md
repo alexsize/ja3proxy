@@ -112,6 +112,8 @@ Raw-данные могут содержать идентификаторы се
 [docs/TLS_RECORDER.md](docs/TLS_RECORDER.md). Точное состояние реализации и
 оставшиеся этапы ТЗ — в
 [docs/spec/RECORDER_IMPLEMENTATION.md](docs/spec/RECORDER_IMPLEMENTATION.md).
+Каноническое полное техническое задание —
+[ТЗ версии 3](docs/spec/JA3Proxy_Fingerprint_Recorder_TZ_v3.md).
 
 ## Режимы TLS
 
