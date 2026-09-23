@@ -37,6 +37,7 @@ JSONL пока не шифруется. Размещайте экспорт в �
 | FR-FP-001: JA3/JA4 | `Calculate` | `TestGoldenMinimal`, `TestJA4PublishedVector`, независимый e2e JA3 parser |
 | FR-SESSION-001: варианты FULL/RESUMED/PSK и PSK metadata | `Hello`/`Fingerprints` model | `TestPSKIdentityRedaction`, `TestResumedHandshakeVariantCanBeDeclared` |
 | FR-SESSION-002: PSK presets явно отделены от full-handshake | fingerprint catalog/API/UI | `TestPSKPresetsAreMarkedAsResumptionProfiles` |
+| FR-PQ-001: PQ/unknown groups сохраняют numeric ID и имя | parser decoded metadata | `TestPostQuantumAndUnknownGroupsKeepNumericNames` |
 | FR-FP-002: TLS-NORM-1 | `Normalize` | `TestGoldenMinimal`, `TestNormalizationDynamicAndUnknown`, `TestPSKIdentityRedaction` |
 | FR-MODE-001: passthrough/observe | `TunnelHandler.Connect` | matrix: 2 клиентских × 3 upstream × 3 режима |
 | FR-MODE-002: доказательство forwarded unchanged | forwarding verification | `TestForwardingVerification`, matrix passthrough/observe |
@@ -126,6 +127,12 @@ Fingerprint Family намеренно не включено без утверж�
 `PSK` в идентификаторе отображаются в UI отдельной группой `PSK / resumption
 profile`, а обычные версии — как `full-handshake profile`. Старые JSON-файлы
 без этого поля нормализуются по версии пресета.
+
+`supported_groups` и `key_share` сохраняют numeric ID без ограничения
+классическими группами. Для известных значений добавляется
+`resolved_name` (включая `x25519_mlkem768`), а для будущих/неизвестных —
+`resolved_name: "unknown"`; это decoded metadata и не меняет стабильный
+numeric TLS-NORM-1.
 
 Источники golden/runtime-векторов, их лицензии и тесты перечислены в
 `internal/ja3proxy/capture/tlshello/testdata/clienthello-corpus/manifest.json`.

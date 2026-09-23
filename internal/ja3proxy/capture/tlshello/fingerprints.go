@@ -112,6 +112,10 @@ func Normalize(h *Hello) ([]byte, error) {
 		for k, v := range e.Fields {
 			fields[k] = v
 		}
+		// Descriptive names are retained in decoded observations but are not
+		// part of TLS-NORM-1, whose numeric wire values remain stable.
+		delete(fields, "values_named")
+		delete(fields, "shares_named")
 		switch e.ID {
 		case 0:
 			fields = map[string]any{"present": true} // exclude destination
@@ -146,6 +150,30 @@ func Normalize(h *Hello) ([]byte, error) {
 		extensions = append(extensions, map[string]any{"id": idValue(e.ID), "fields": fields})
 	}
 	return json.Marshal(map[string]any{"legacy_version": h.LegacyVersion, "session_id_length": h.SessionIDLength, "ciphers": normalizedIDs(h.CipherSuites), "compression_methods": integers(h.CompressionMethods), "extensions": extensions})
+}
+
+func namedNumericIDs(values []uint16) []NumericIDName {
+	result := make([]NumericIDName, 0, len(values))
+	for _, value := range values {
+		result = append(result, NumericIDName{NumericID: value, ResolvedName: resolveNumericGroup(value)})
+	}
+	return result
+}
+
+func resolveNumericGroup(value uint16) string {
+	names := map[uint16]string{
+		23: "secp256r1", 24: "secp384r1", 25: "secp521r1",
+		29: "x25519", 30: "x448",
+		256: "ffdhe2048", 257: "ffdhe3072", 258: "ffdhe4096", 259: "ffdhe6144", 260: "ffdhe8192",
+		4587: "secp256r1_mlkem768", 4588: "x25519_mlkem768",
+	}
+	if IsGREASE(value) {
+		return "GREASE"
+	}
+	if name, ok := names[value]; ok {
+		return name
+	}
+	return "unknown"
 }
 
 // Calculate derives fingerprints from a successfully parsed wire message.

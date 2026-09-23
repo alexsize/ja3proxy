@@ -23,26 +23,35 @@ type Extension struct {
 	Data     []byte         `json:"-"`
 }
 
+// NumericIDName keeps the wire numeric identifier authoritative while adding
+// a best-effort name for known groups. Unknown and future values are retained
+// with an explicit "unknown" name and never cause parse failure.
+type NumericIDName struct {
+	NumericID    uint16 `json:"numeric_id"`
+	ResolvedName string `json:"resolved_name"`
+}
+
 type Hello struct {
-	LegacyVersion       uint16      `json:"legacy_version"`
-	SessionIDLength     int         `json:"session_id_length"`
-	CipherSuites        []uint16    `json:"cipher_suites"`
-	CompressionMethods  []int       `json:"compression_methods"`
-	Extensions          []Extension `json:"extensions"`
-	ServerName          string      `json:"sni"`
-	ALPN                []string    `json:"alpn_hex"`
-	ALPS                []string    `json:"alps_hex"`
-	SupportedVersions   []uint16    `json:"supported_versions"`
-	SupportedGroups     []uint16    `json:"supported_groups"`
-	SignatureAlgorithms []uint16    `json:"signature_algorithms"`
-	PointFormats        []int       `json:"point_formats"`
-	ECH                 bool        `json:"ech_detected"`
-	HandshakeType       string      `json:"handshake_type"`
-	SessionResumption   bool        `json:"session_resumption"`
-	PSKPresent          bool        `json:"psk_present"`
-	PSKIdentityCount    int         `json:"psk_identity_count"`
-	EarlyData           bool        `json:"early_data"`
-	Length              int         `json:"length"`
+	LegacyVersion       uint16          `json:"legacy_version"`
+	SessionIDLength     int             `json:"session_id_length"`
+	CipherSuites        []uint16        `json:"cipher_suites"`
+	CompressionMethods  []int           `json:"compression_methods"`
+	Extensions          []Extension     `json:"extensions"`
+	ServerName          string          `json:"sni"`
+	ALPN                []string        `json:"alpn_hex"`
+	ALPS                []string        `json:"alps_hex"`
+	SupportedVersions   []uint16        `json:"supported_versions"`
+	SupportedGroups     []uint16        `json:"supported_groups"`
+	SupportedGroupNames []NumericIDName `json:"supported_group_names"`
+	SignatureAlgorithms []uint16        `json:"signature_algorithms"`
+	PointFormats        []int           `json:"point_formats"`
+	ECH                 bool            `json:"ech_detected"`
+	HandshakeType       string          `json:"handshake_type"`
+	SessionResumption   bool            `json:"session_resumption"`
+	PSKPresent          bool            `json:"psk_present"`
+	PSKIdentityCount    int             `json:"psk_identity_count"`
+	EarlyData           bool            `json:"early_data"`
+	Length              int             `json:"length"`
 }
 
 // cursor never reads beyond an untrusted length and carries errors to callers.
@@ -104,7 +113,7 @@ func Parse(raw []byte) (*Hello, error) {
 		return nil, ErrMalformed
 	}
 	c := cursor{b: raw[4:]}
-	h := &Hello{LegacyVersion: uint16(c.u16()), Length: len(raw), Extensions: []Extension{}, ALPN: []string{}, ALPS: []string{}, SupportedVersions: []uint16{}, SupportedGroups: []uint16{}, SignatureAlgorithms: []uint16{}, PointFormats: []int{}}
+	h := &Hello{LegacyVersion: uint16(c.u16()), Length: len(raw), Extensions: []Extension{}, ALPN: []string{}, ALPS: []string{}, SupportedVersions: []uint16{}, SupportedGroups: []uint16{}, SupportedGroupNames: []NumericIDName{}, SignatureAlgorithms: []uint16{}, PointFormats: []int{}}
 	c.take(32)
 	h.SessionIDLength = len(c.vector8())
 	var ok bool
@@ -173,6 +182,9 @@ func decodeExtension(h *Hello, e *Extension) error {
 		e.Fields["values"] = v
 		if e.ID == 10 {
 			h.SupportedGroups = append(h.SupportedGroups, v...)
+			named := namedNumericIDs(v)
+			e.Fields["values_named"] = named
+			h.SupportedGroupNames = append(h.SupportedGroupNames, named...)
 		}
 		if e.ID == 13 {
 			h.SignatureAlgorithms = append(h.SignatureAlgorithms, v...)
@@ -222,6 +234,12 @@ func decodeExtension(h *Hello, e *Extension) error {
 			return ErrMalformed
 		}
 		e.Fields["shares"] = shares
+		named := make([]NumericIDName, 0, len(shares))
+		for _, share := range shares {
+			m := share.(map[string]any)
+			named = append(named, NumericIDName{NumericID: uint16(m["group"].(int)), ResolvedName: resolveNumericGroup(uint16(m["group"].(int)))})
+		}
+		e.Fields["shares_named"] = named
 	case 41:
 		list := cursor{b: c.vector16()}
 		identities := []any{}

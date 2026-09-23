@@ -371,3 +371,27 @@ func TestResumedHandshakeVariantCanBeDeclared(t *testing.T) {
 		t.Fatalf("resumed metadata = %+v", fp)
 	}
 }
+
+func TestPostQuantumAndUnknownGroupsKeepNumericNames(t *testing.T) {
+	supportedGroups := extension(10, vector16([]byte{0x11, 0xec, 0x12, 0x34}))
+	keyShare := extension(51, vector16(append([]byte{0x11, 0xec}, vector16([]byte{1, 2, 3})...)))
+	raw := fixture(append(supportedGroups, keyShare...))
+	h, err := Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(h.SupportedGroupNames) != 2 || h.SupportedGroupNames[0].NumericID != 4588 || h.SupportedGroupNames[0].ResolvedName != "x25519_mlkem768" || h.SupportedGroupNames[1].ResolvedName != "unknown" {
+		t.Fatalf("supported group names = %+v", h.SupportedGroupNames)
+	}
+	for _, extension := range h.Extensions {
+		if extension.ID != 51 {
+			continue
+		}
+		shares, ok := extension.Fields["shares_named"].([]NumericIDName)
+		if !ok || len(shares) != 1 || shares[0].NumericID != 4588 || shares[0].ResolvedName != "x25519_mlkem768" {
+			t.Fatalf("key share names = %#v", extension.Fields["shares_named"])
+		}
+		return
+	}
+	t.Fatal("key_share extension not found")
+}
