@@ -284,6 +284,21 @@ func TestConnectWithRequestAppliesRouteBlock(t *testing.T) {
 	}
 }
 
+func TestResolvePostTLSRouteUsesClientSNI(t *testing.T) {
+	profiles := &routing.Store{}
+	if err := profiles.SetValidated(routing.Config{Rules: []routing.Rule{{
+		ID: "blocked-sni", Priority: 1, Enabled: true, Phase: routing.PhasePostClientHello,
+		Match: routing.Match{Host: "secure.example.com"}, Action: routing.Action{Mode: "BLOCK"},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	handler := &TunnelHandler{Routes: profiles}
+	decision := handler.resolvePostTLSRoute(ConnectRequest{Host: "connect.example.com", Port: 443}, "secure.example.com", nil)
+	if decision.MatchedRuleID != "blocked-sni" || decision.Action.Mode != "BLOCK" {
+		t.Fatalf("POST_CLIENTHELLO decision = %+v", decision)
+	}
+}
+
 func TestLimitSpecALPN(t *testing.T) {
 	spec := &utls.ClientHelloSpec{
 		Extensions: []utls.TLSExtension{

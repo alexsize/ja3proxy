@@ -425,6 +425,10 @@ func (handler *TunnelHandler) ConnectWithRequest(request ConnectRequest, destCon
 			if hello.ServerName != "" {
 				serverName = hello.ServerName
 			}
+			postRoute := handler.resolvePostTLSRoute(request, serverName, clientConn)
+			if postRoute.MatchedRuleID != "" && strings.EqualFold(postRoute.Action.Mode, "BLOCK") {
+				return nil, fmt.Errorf("route %q blocked POST_CLIENTHELLO", postRoute.MatchedRuleID)
+			}
 			connectionTemplate := selectedTemplate
 			if selectedTemplate != nil {
 				effective, constrainErr := tlsprofile.ConstrainALPN(*selectedTemplate, upstreamALPN(hello.SupportedProtos))
@@ -487,6 +491,14 @@ func (handler *TunnelHandler) ConnectWithRequest(request ConnectRequest, destCon
 }
 
 func (handler *TunnelHandler) resolvePreTLSRoute(request ConnectRequest, clientConn net.Conn) routing.Decision {
+	return handler.resolveRoute(routing.PhasePreTLS, request, "", clientConn)
+}
+
+func (handler *TunnelHandler) resolvePostTLSRoute(request ConnectRequest, sni string, clientConn net.Conn) routing.Decision {
+	return handler.resolveRoute(routing.PhasePostClientHello, request, sni, clientConn)
+}
+
+func (handler *TunnelHandler) resolveRoute(phase routing.Phase, request ConnectRequest, sni string, clientConn net.Conn) routing.Decision {
 	if handler == nil || handler.Routes == nil {
 		return routing.Decision{}
 	}
@@ -496,8 +508,8 @@ func (handler *TunnelHandler) resolvePreTLSRoute(request ConnectRequest, clientC
 			ip, _ = netip.ParseAddr(parsed)
 		}
 	}
-	return handler.Routes.Resolve(routing.PhasePreTLS, routing.Request{
-		Host: request.Host, IP: ip, Port: request.Port, Username: request.Username,
+	return handler.Routes.Resolve(phase, routing.Request{
+		Host: request.Host, SNI: sni, IP: ip, Port: request.Port, Username: request.Username,
 	})
 }
 
