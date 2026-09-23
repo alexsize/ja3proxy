@@ -350,8 +350,7 @@
                 "schema": {
                   "type": "array",
                   "items": {
-                    "type": "object",
-                    "additionalProperties": true
+                    "$ref": "#/components/schemas/TLSFingerprintPreset"
                   }
                 }
               }
@@ -823,6 +822,15 @@
             "additionalProperties": true
           }
         }
+      },
+      "TLSFingerprintPreset": {
+        "type": "object",
+        "properties": {
+          "client": {"type": "string"},
+          "version": {"type": "string"},
+          "handshake_type": {"enum": ["FULL", "PSK"]}
+        },
+        "required": ["client", "version", "handshake_type"]
       },
       "RuntimeMutation": {
         "type": "object",

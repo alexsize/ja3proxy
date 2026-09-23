@@ -149,3 +149,28 @@ func TestPresetsCanBeParsed(t *testing.T) {
 		}
 	}
 }
+
+func TestPSKPresetsAreMarkedAsResumptionProfiles(t *testing.T) {
+	var psk, full TLSFingerprint
+	for _, preset := range Presets() {
+		if IsPSK(preset) {
+			psk = preset
+		}
+		if preset.Client == "Chrome" && preset.Version == "120" {
+			full = preset
+		}
+	}
+	if psk.Version == "" || psk.HandshakeType != "PSK" {
+		t.Fatalf("catalog has no marked PSK preset: %+v", psk)
+	}
+	if full.HandshakeType != "FULL" {
+		t.Fatalf("regular Chrome preset marked incorrectly: %+v", full)
+	}
+	parsed, err := ParseSpec(psk.Client + "@" + psk.Version)
+	if err != nil || parsed != psk {
+		t.Fatalf("ParseSpec(%+v) = %+v, %v", psk, parsed, err)
+	}
+	if got := formatTLSFingerprintCatalog(); !strings.Contains(got, psk.Version+" — PSK / resumption profile") {
+		t.Fatalf("catalog output does not mark PSK preset: %s", got)
+	}
+}

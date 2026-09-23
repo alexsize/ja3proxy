@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,8 +14,9 @@ import (
 )
 
 type TLSFingerprint struct {
-	Client  string `json:"client"`
-	Version string `json:"version"`
+	Client        string `json:"client"`
+	Version       string `json:"version"`
+	HandshakeType string `json:"handshake_type,omitempty"`
 }
 
 type TLSFingerprintStore struct {
@@ -36,8 +38,26 @@ func (s *TLSFingerprintStore) Set(fingerprint TLSFingerprint) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	f := fingerprint
+	f := normalizeTLSFingerprint(fingerprint)
 	s.current = &f
+}
+
+func normalizeTLSFingerprint(fingerprint TLSFingerprint) TLSFingerprint {
+	if fingerprint.HandshakeType == "" {
+		fingerprint.HandshakeType = handshakeTypeForVersion(fingerprint.Version)
+	}
+	return fingerprint
+}
+
+func handshakeTypeForVersion(version string) string {
+	if strings.Contains(strings.ToUpper(version), "PSK") {
+		return "PSK"
+	}
+	return "FULL"
+}
+
+func IsPSK(fingerprint TLSFingerprint) bool {
+	return normalizeTLSFingerprint(fingerprint).HandshakeType == "PSK"
 }
 
 func (s *TLSFingerprintStore) SetValidated(fingerprint TLSFingerprint) error {

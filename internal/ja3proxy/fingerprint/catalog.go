@@ -146,8 +146,9 @@ func parseTLSFingerprintSpec(spec string) (TLSFingerprint, error) {
 	}
 
 	return TLSFingerprint{
-		Client:  preset.Client,
-		Version: version,
+		Client:        preset.Client,
+		Version:       version,
+		HandshakeType: handshakeTypeForVersion(version),
 	}, nil
 }
 
@@ -215,6 +216,13 @@ func formatTLSFingerprintCatalog() string {
 		builder.WriteString(" (default ")
 		builder.WriteString(preset.DefaultVersion)
 		builder.WriteString(")\n")
+		for _, version := range preset.Versions {
+			if handshakeTypeForVersion(version) == "PSK" {
+				builder.WriteString("    ")
+				builder.WriteString(version)
+				builder.WriteString(" — PSK / resumption profile\n")
+			}
+		}
 	}
 	builder.WriteString("\nUse --tls-fingerprint client@version, for example:\n")
 	builder.WriteString("  ja3proxy --tls-fingerprint chrome@120\n")
@@ -234,8 +242,9 @@ func Presets() []TLSFingerprint {
 	for _, preset := range tlsFingerprintPresets {
 		for _, version := range preset.Versions {
 			presets = append(presets, TLSFingerprint{
-				Client:  preset.Client,
-				Version: version,
+				Client:        preset.Client,
+				Version:       version,
+				HandshakeType: handshakeTypeForVersion(version),
 			})
 		}
 	}
