@@ -52,6 +52,14 @@ func TestRecorderExportAndPrivacy(t *testing.T) {
 			if stored.ConnectionID != id {
 				t.Fatal("wrong file")
 			}
+			if stored.SchemaVersion != ObservationSchemaVersion || stored.CaptureVersion != CaptureVersion ||
+				stored.ParserVersion != tlshello.ParserVersion || stored.JA3Version != tlshello.JA3Version ||
+				stored.JA4Version != tlshello.JA4Version || stored.TLSNormVersion != tlshello.NormalizationVersion {
+				t.Fatalf("missing or incorrect version envelope: %+v", stored)
+			}
+			if stored.TLSEngine != "external" || stored.TLSEngineVersion != "unknown" {
+				t.Fatalf("incorrect inbound engine attribution: %s@%s", stored.TLSEngine, stored.TLSEngineVersion)
+			}
 			items[0].Fingerprints.JA3 = "mutated"
 			if r.Snapshot()[0].Fingerprints.JA3 == "mutated" {
 				t.Fatal("snapshot shares mutable data")
@@ -60,6 +68,49 @@ func TestRecorderExportAndPrivacy(t *testing.T) {
 				t.Fatal("overwrote evidence")
 			}
 		})
+	}
+}
+
+func TestObservationAttributesUTLSEngineOnlyToMITMOutbound(t *testing.T) {
+	r, err := New(Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.TryCapture(Meta{CapturePoint: "PROXY_OUT", Direction: "outbound", Mode: "MITM_REISSUE"}, sample()) {
+		t.Fatal("enqueue MITM outbound")
+	}
+	if !r.TryCapture(Meta{CapturePoint: "PROXY_OUT", Direction: "outbound", Mode: "PASSTHROUGH"}, sample()) {
+		t.Fatal("enqueue passthrough outbound")
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	items := r.Snapshot()
+	if len(items) != 2 {
+		t.Fatalf("observations = %d, want 2", len(items))
+	}
+	byMode := map[string]Observation{}
+	for _, item := range items {
+		byMode[item.Mode] = item
+	}
+	mitm := byMode["MITM_REISSUE"]
+	if mitm.TLSEngine != "utls" || mitm.TLSEngineVersion != TLSEngineUTLSVersion {
+		t.Fatalf("MITM engine = %s@%s", mitm.TLSEngine, mitm.TLSEngineVersion)
+	}
+	passthrough := byMode["PASSTHROUGH"]
+	if passthrough.TLSEngine != "external" || passthrough.TLSEngineVersion != "unknown" {
+		t.Fatalf("passthrough engine = %s@%s", passthrough.TLSEngine, passthrough.TLSEngineVersion)
+	}
+}
+
+func TestTLSEngineVersionMatchesModulePin(t *testing.T) {
+	module, err := os.ReadFile(filepath.Join("..", "..", "..", "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "github.com/refraction-networking/utls " + TLSEngineUTLSVersion
+	if !strings.Contains(string(module), want) {
+		t.Fatalf("TLS engine metadata %q does not match go.mod", want)
 	}
 }
 

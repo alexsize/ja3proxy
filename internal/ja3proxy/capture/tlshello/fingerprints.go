@@ -13,6 +13,8 @@ import (
 
 const NormalizationVersion = "TLS-NORM-1"
 const ImplementationVersion = "ja3proxy-recorder/1"
+const ParserVersion = "1.0.0"
+const JA3Version = "JA3/1"
 const JA4Version = "FoxIO-JA4-TCP/2026-09-22"
 
 type Fingerprints struct {
@@ -200,7 +202,7 @@ func Calculate(h *Hello, raw, records []byte) (Fingerprints, error) {
 		}
 		c = shortHash(extString)
 	}
-	return Fingerprints{JA3: ja3, JA3Hash: hex.EncodeToString(md[:]), JA3Version: "JA3/1", JA4: a + "_" + b + "_" + c, JA4A: a, JA4B: b, JA4C: c, JA4Version: JA4Version, NormalizationVersion: NormalizationVersion, ImplementationVersion: ImplementationVersion, RawSHA256: SHA256(raw), RecordsSHA256: SHA256(records), NormalizedSHA256: SHA256(append([]byte(NormalizationVersion+"\n"), norm...)), Normalized: norm}, nil
+	return Fingerprints{JA3: ja3, JA3Hash: hex.EncodeToString(md[:]), JA3Version: JA3Version, JA4: a + "_" + b + "_" + c, JA4A: a, JA4B: b, JA4C: c, JA4Version: JA4Version, NormalizationVersion: NormalizationVersion, ImplementationVersion: ImplementationVersion, RawSHA256: SHA256(raw), RecordsSHA256: SHA256(records), NormalizedSHA256: SHA256(append([]byte(NormalizationVersion+"\n"), norm...)), Normalized: norm}, nil
 }
 
 func alphaNum(b byte) bool {

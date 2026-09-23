@@ -40,6 +40,10 @@ func TestRecorderAPI(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &page); err != nil || len(page.Items) != 2 || page.Next == "" {
 		t.Fatal(w.Body.String())
 	}
+	if page.Items[0].SchemaVersion != recorder.ObservationSchemaVersion ||
+		page.Items[0].ParserVersion != tlshello.ParserVersion || page.Items[0].TLSEngine == "" {
+		t.Fatalf("API omitted observation version envelope: %+v", page.Items[0])
+	}
 	w = requestRecorder(h, "/api/v1/observations?limit=2&cursor="+page.Next)
 	if w.Code != 200 {
 		t.Fatal(w.Body.String())

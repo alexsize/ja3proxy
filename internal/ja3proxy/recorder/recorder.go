@@ -14,6 +14,12 @@ import (
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/capture/tlshello"
 )
 
+const (
+	ObservationSchemaVersion = "tls-observation/2"
+	CaptureVersion           = 1
+	TLSEngineUTLSVersion     = "v1.8.2"
+)
+
 type Meta struct {
 	ConnectionID   string               `json:"connection_id"`
 	CapturePoint   string               `json:"capture_point"`
@@ -81,8 +87,15 @@ type Verification struct {
 }
 
 type Observation struct {
-	SchemaVersion string `json:"schema_version"`
-	ID            string `json:"id"`
+	SchemaVersion    string `json:"schema_version"`
+	CaptureVersion   int    `json:"capture_version"`
+	ParserVersion    string `json:"parser_version"`
+	JA3Version       string `json:"ja3_version"`
+	JA4Version       string `json:"ja4_version"`
+	TLSNormVersion   string `json:"tls_norm_version"`
+	TLSEngine        string `json:"tls_engine"`
+	TLSEngineVersion string `json:"tls_engine_version"`
+	ID               string `json:"id"`
 	Meta
 	CapturedAt          time.Time               `json:"captured_at"`
 	PersistedAt         time.Time               `json:"processed_at"`
@@ -231,7 +244,16 @@ func (r *Recorder) run() {
 	}()
 	for q := range r.queue {
 		c := q.capture
-		o := Observation{SchemaVersion: "tls-observation/1", ID: NewID(), Meta: q.meta, CapturedAt: q.at, PersistedAt: time.Now().UTC(), Completeness: c.Status, ErrorCode: c.ErrorCode, RecordVersion: c.RecordVersion, RecordCount: c.RecordCount, DeclaredHelloLength: c.DeclaredHelloLength}
+		engine, engineVersion := observationTLSEngine(q.meta)
+		o := Observation{
+			SchemaVersion: ObservationSchemaVersion, CaptureVersion: CaptureVersion,
+			ParserVersion: tlshello.ParserVersion, JA3Version: tlshello.JA3Version,
+			JA4Version: tlshello.JA4Version, TLSNormVersion: tlshello.NormalizationVersion,
+			TLSEngine: engine, TLSEngineVersion: engineVersion,
+			ID: NewID(), Meta: q.meta, CapturedAt: q.at, PersistedAt: time.Now().UTC(),
+			Completeness: c.Status, ErrorCode: c.ErrorCode, RecordVersion: c.RecordVersion,
+			RecordCount: c.RecordCount, DeclaredHelloLength: c.DeclaredHelloLength,
+		}
 		if c.Status == "complete" {
 			h, err := tlshello.Parse(c.Raw)
 			if err != nil {
@@ -289,6 +311,13 @@ func (r *Recorder) run() {
 		r.mu.Unlock()
 		r.processed.Add(1)
 	}
+}
+
+func observationTLSEngine(meta Meta) (string, string) {
+	if meta.CapturePoint == "PROXY_OUT" && meta.Mode == "MITM_REISSUE" {
+		return "utls", TLSEngineUTLSVersion
+	}
+	return "external", "unknown"
 }
 
 func ForwardingFromCapture(c tlshello.Capture) *ForwardingExpected {

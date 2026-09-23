@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Локальный API регистратора JA3Proxy",
-    "version": "0.3.0",
+    "version": "0.4.0",
     "description": "Наблюдения в ограниченной памяти. Доступ только через loopback с проверкой Host, адреса клиента и Origin; аутентификация пользователей пока отсутствует. Это не полный API центра управления."
   },
   "servers": [
@@ -532,7 +532,28 @@
         "type": "object",
         "properties": {
           "schema_version": {
-            "const": "tls-observation/1"
+            "const": "tls-observation/2"
+          },
+          "capture_version": {
+            "const": 1
+          },
+          "parser_version": {
+            "const": "1.0.0"
+          },
+          "ja3_version": {
+            "const": "JA3/1"
+          },
+          "ja4_version": {
+            "const": "FoxIO-JA4-TCP/2026-09-22"
+          },
+          "tls_norm_version": {
+            "const": "TLS-NORM-1"
+          },
+          "tls_engine": {
+            "enum": ["utls", "external"]
+          },
+          "tls_engine_version": {
+            "type": "string"
           },
           "id": {
             "type": "string"
@@ -633,6 +654,13 @@
         },
         "required": [
           "schema_version",
+          "capture_version",
+          "parser_version",
+          "ja3_version",
+          "ja4_version",
+          "tls_norm_version",
+          "tls_engine",
+          "tls_engine_version",
           "id",
           "connection_id",
           "capture_point",

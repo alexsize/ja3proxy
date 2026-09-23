@@ -51,6 +51,7 @@ JSONL пока не шифруется. Размещайте экспорт в �
 | FR-PROFILE-002: immutable versions/CAS/rollback | append-only profile store | `TestStoreVersioningPersistenceAndRouting`, `TestTLSProfileHistoryAndRollbackAPI` |
 | FR-PROFILE-003: source replayability/constraints | materializer + verification | `TestObservedSourceMustMatchIsCheckedBeforePublish`, `TestTemplateConstraintsAreValidated` |
 | FR-VERIFY-001: expected ↔ фактический PROXY_OUT | `VerifyExpected` | `TestExpectedProfileVerificationStatuses`, `TestCustomTLSProfileProducesExpectedJA4AndVerification` |
+| FR-ENGINE-001.1: раздельные версии capture/parser/fingerprints/engine | version envelope observation/API | `TestRecorderExportAndPrivacy`, `TestObservationAttributesUTLSEngineOnlyToMITMOutbound`, `TestTLSEngineVersionMatchesModulePin`, `TestRecorderAPI` |
 
 ### Границы захвата
 
@@ -72,7 +73,14 @@ Sniffer читает до 5 секунд, сохраняет прочитанн�
 - JA3: `JA3/1`; MD5 используется только как требуемый формат fingerprint, не как средство защиты.
 - JA4: `FoxIO-JA4-TCP/2026-09-22`; только TLS/TCP. Реализация написана для этого проекта по [публичному описанию JA4](https://github.com/FoxIO-LLC/ja4/blob/main/technical_details/JA4.md); исходный код внешней реализации не импортируется. Опубликованный пример используется как внешний test vector.
 - Реализация: `ja3proxy-recorder/1`.
+- Формат capture: `1`; parser: `1.0.0`; schema observation: `tls-observation/2`.
 - Нормализация: `TLS-NORM-1`.
+
+Каждая observation содержит отдельные `capture_version`, `parser_version`,
+`ja3_version`, `ja4_version`, `tls_norm_version`, `tls_engine` и
+`tls_engine_version`. Только исходящий `MITM_REISSUE` помечается как
+`utls@v1.8.2`; входящие и транзитные ClientHello честно отмечаются как
+`external@unknown`.
 
 JA3 учитывает extension 21 (padding). Прежний тестовый helper, восстанавливавший extension IDs через uTLS, терял padding; теперь он считывает IDs непосредственно из record bytes. Это исправление тестового oracle, а не изменение uTLS-пресетов.
 
