@@ -3,11 +3,13 @@ package recorder
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/capture/tlshello"
 )
@@ -100,6 +102,62 @@ func TestObservationAttributesUTLSEngineOnlyToMITMOutbound(t *testing.T) {
 	passthrough := byMode["PASSTHROUGH"]
 	if passthrough.TLSEngine != "external" || passthrough.TLSEngineVersion != "unknown" {
 		t.Fatalf("passthrough engine = %s@%s", passthrough.TLSEngine, passthrough.TLSEngineVersion)
+	}
+}
+
+func TestRecorderReparseCreatesNewAnalysisRevision(t *testing.T) {
+	r, err := New(Options{Raw: true, RecentLimit: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.TryCapture(Meta{ConnectionID: "reparse", CapturePoint: "CLIENT_IN", Direction: "inbound"}, sample()) {
+		t.Fatal("enqueue")
+	}
+	var original Observation
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		items := r.Snapshot()
+		if len(items) == 1 {
+			original = items[0]
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if original.ID == "" {
+		t.Fatal("original observation was not processed")
+	}
+	derived, err := r.Reparse(original.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if derived.ID == original.ID || derived.AnalysisParentID != original.ID || derived.AnalysisRevision != 2 {
+		t.Fatalf("invalid revision lineage: original=%+v derived=%+v", original, derived)
+	}
+	if derived.Fingerprints == nil || derived.Hello == nil || derived.Completeness != "complete" {
+		t.Fatalf("reparse did not decode source: %+v", derived)
+	}
+	items := r.Snapshot()
+	if len(items) != 2 {
+		t.Fatalf("retained observations = %d, want 2", len(items))
+	}
+	var retainedOriginal *Observation
+	for i := range items {
+		if items[i].ID == original.ID {
+			retainedOriginal = &items[i]
+		}
+	}
+	if retainedOriginal == nil || retainedOriginal.AnalysisRevision != 1 {
+		t.Fatalf("source observation was overwritten: %+v", items)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReparseRequiresRaw(t *testing.T) {
+	_, err := ReparseObservation(Observation{ID: "without-raw"})
+	if !errors.Is(err, ErrRawUnavailable) {
+		t.Fatalf("error = %v, want ErrRawUnavailable", err)
 	}
 }
 

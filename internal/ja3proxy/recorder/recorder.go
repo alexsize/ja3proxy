@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"sync"
@@ -18,6 +19,14 @@ const (
 	ObservationSchemaVersion = "tls-observation/2"
 	CaptureVersion           = 1
 	TLSEngineUTLSVersion     = "v1.8.2"
+	InitialAnalysisRevision  = 1
+)
+
+var (
+	ErrObservationNotFound = errors.New("observation not retained")
+	ErrRawUnavailable      = errors.New("raw ClientHello is not retained")
+	ErrReparseMalformed    = errors.New("stored raw ClientHello is malformed")
+	ErrRecorderClosed      = errors.New("recorder is closed")
 )
 
 type Meta struct {
@@ -95,6 +104,8 @@ type Observation struct {
 	TLSNormVersion   string `json:"tls_norm_version"`
 	TLSEngine        string `json:"tls_engine"`
 	TLSEngineVersion string `json:"tls_engine_version"`
+	AnalysisRevision int    `json:"analysis_revision"`
+	AnalysisParentID string `json:"analysis_parent_id,omitempty"`
 	ID               string `json:"id"`
 	Meta
 	CapturedAt          time.Time               `json:"captured_at"`
@@ -148,6 +159,7 @@ type Recorder struct {
 	recent       [][]byte
 	memory       int
 	file         *os.File
+	fileMu       sync.Mutex
 	fileBytes    int64
 	exportFailed bool
 	accepted     atomic.Uint64
@@ -237,9 +249,11 @@ func (r *Recorder) run() {
 	defer close(r.done)
 	defer func() {
 		if r.file != nil {
+			r.fileMu.Lock()
 			if err := r.file.Close(); err != nil {
 				r.writeErrors.Add(1)
 			}
+			r.fileMu.Unlock()
 		}
 	}()
 	for q := range r.queue {
@@ -250,7 +264,8 @@ func (r *Recorder) run() {
 			ParserVersion: tlshello.ParserVersion, JA3Version: tlshello.JA3Version,
 			JA4Version: tlshello.JA4Version, TLSNormVersion: tlshello.NormalizationVersion,
 			TLSEngine: engine, TLSEngineVersion: engineVersion,
-			ID: NewID(), Meta: q.meta, CapturedAt: q.at, PersistedAt: time.Now().UTC(),
+			AnalysisRevision: InitialAnalysisRevision,
+			ID:               NewID(), Meta: q.meta, CapturedAt: q.at, PersistedAt: time.Now().UTC(),
 			Completeness: c.Status, ErrorCode: c.ErrorCode, RecordVersion: c.RecordVersion,
 			RecordCount: c.RecordCount, DeclaredHelloLength: c.DeclaredHelloLength,
 		}
@@ -284,31 +299,8 @@ func (r *Recorder) run() {
 			r.dropped.Add(1)
 			continue
 		}
-		if r.file != nil {
-			if !r.exportFailed && r.fileBytes+int64(len(data)+1) > r.opts.MaxFileBytes {
-				r.exportFailed = true
-				r.writeErrors.Add(1)
-			} else if !r.exportFailed {
-				line := append(append([]byte(nil), data...), '\n')
-				n, err := r.file.Write(line)
-				r.fileBytes += int64(n)
-				if err != nil || n != len(line) {
-					r.exportFailed = true
-					r.writeErrors.Add(1)
-				}
-			}
-		}
-		r.mu.Lock()
-		for len(r.recent) > 0 && (len(r.recent) >= r.opts.RecentLimit || r.memory+len(data) > r.opts.MemoryBytes) {
-			r.memory -= len(r.recent[0])
-			r.recent[0] = nil
-			r.recent = r.recent[1:]
-		}
-		if len(data) <= r.opts.MemoryBytes {
-			r.recent = append(r.recent, data)
-			r.memory += len(data)
-		}
-		r.mu.Unlock()
+		r.writeJSONL(data)
+		r.remember(data)
 		r.processed.Add(1)
 	}
 }
@@ -318,6 +310,110 @@ func observationTLSEngine(meta Meta) (string, string) {
 		return "utls", TLSEngineUTLSVersion
 	}
 	return "external", "unknown"
+}
+
+func (r *Recorder) writeJSONL(data []byte) {
+	r.fileMu.Lock()
+	defer r.fileMu.Unlock()
+	if r.file == nil || r.exportFailed {
+		return
+	}
+	if r.fileBytes+int64(len(data)+1) > r.opts.MaxFileBytes {
+		r.exportFailed = true
+		r.writeErrors.Add(1)
+		return
+	}
+	line := append(append([]byte(nil), data...), '\n')
+	n, err := r.file.Write(line)
+	r.fileBytes += int64(n)
+	if err != nil || n != len(line) {
+		r.exportFailed = true
+		r.writeErrors.Add(1)
+	}
+}
+
+func (r *Recorder) remember(data []byte) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for len(r.recent) > 0 && (len(r.recent) >= r.opts.RecentLimit || r.memory+len(data) > r.opts.MemoryBytes) {
+		r.memory -= len(r.recent[0])
+		r.recent[0] = nil
+		r.recent = r.recent[1:]
+	}
+	if len(data) <= r.opts.MemoryBytes {
+		r.recent = append(r.recent, data)
+		r.memory += len(data)
+	}
+}
+
+// ReparseObservation creates a new analysis revision without changing the source.
+// The source must contain the raw ClientHello explicitly retained by the recorder.
+func ReparseObservation(source Observation) (Observation, error) {
+	if len(source.Raw) == 0 {
+		return Observation{}, ErrRawUnavailable
+	}
+	h, err := tlshello.Parse(source.Raw)
+	if err != nil {
+		return Observation{}, fmt.Errorf("%w: %v", ErrReparseMalformed, err)
+	}
+	fp, err := tlshello.Calculate(h, source.Raw, source.Records)
+	if err != nil {
+		return Observation{}, fmt.Errorf("%w: fingerprint calculation: %v", ErrReparseMalformed, err)
+	}
+	revision := source.AnalysisRevision
+	if revision < InitialAnalysisRevision {
+		revision = InitialAnalysisRevision
+	}
+	derived := source
+	derived.ID = NewID()
+	derived.AnalysisParentID = source.ID
+	derived.AnalysisRevision = revision + 1
+	derived.ParserVersion = tlshello.ParserVersion
+	derived.JA3Version = tlshello.JA3Version
+	derived.JA4Version = tlshello.JA4Version
+	derived.TLSNormVersion = tlshello.NormalizationVersion
+	derived.PersistedAt = time.Now().UTC()
+	derived.Completeness = "complete"
+	derived.ErrorCode = ""
+	derived.Hello = h
+	derived.Fingerprints = &fp
+	derived.Verification = nil
+	return derived, nil
+}
+
+// Reparse retains the original observation and appends the derived revision.
+func (r *Recorder) Reparse(id string) (Observation, error) {
+	if r == nil {
+		return Observation{}, ErrRecorderClosed
+	}
+	r.sendMu.RLock()
+	defer r.sendMu.RUnlock()
+	if r.closed {
+		return Observation{}, ErrRecorderClosed
+	}
+	var source *Observation
+	for _, candidate := range r.Snapshot() {
+		if candidate.ID == id {
+			copy := candidate
+			source = &copy
+			break
+		}
+	}
+	if source == nil {
+		return Observation{}, ErrObservationNotFound
+	}
+	derived, err := ReparseObservation(*source)
+	if err != nil {
+		return Observation{}, err
+	}
+	data, err := json.Marshal(derived)
+	if err != nil {
+		return Observation{}, err
+	}
+	r.writeJSONL(data)
+	r.remember(data)
+	r.processed.Add(1)
+	return derived, nil
 }
 
 func ForwardingFromCapture(c tlshello.Capture) *ForwardingExpected {

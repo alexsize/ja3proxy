@@ -52,6 +52,7 @@ JSONL пока не шифруется. Размещайте экспорт в �
 | FR-PROFILE-003: source replayability/constraints | materializer + verification | `TestObservedSourceMustMatchIsCheckedBeforePublish`, `TestTemplateConstraintsAreValidated` |
 | FR-VERIFY-001: expected ↔ фактический PROXY_OUT | `VerifyExpected` | `TestExpectedProfileVerificationStatuses`, `TestCustomTLSProfileProducesExpectedJA4AndVerification` |
 | FR-ENGINE-001.1: раздельные версии capture/parser/fingerprints/engine | version envelope observation/API | `TestRecorderExportAndPrivacy`, `TestObservationAttributesUTLSEngineOnlyToMITMOutbound`, `TestTLSEngineVersionMatchesModulePin`, `TestRecorderAPI` |
+| FR-REPARSE-001.1: повторный разбор сохранённого RAW с immutable revision | `Recorder.Reparse`, `POST /api/v1/observations/{id}/reparse` | `TestRecorderReparseCreatesNewAnalysisRevision`, `TestReparseRequiresRaw`, `TestRecorderReparseAPI` |
 
 ### Границы захвата
 
@@ -81,6 +82,13 @@ Sniffer читает до 5 секунд, сохраняет прочитанн�
 `tls_engine_version`. Только исходящий `MITM_REISSUE` помечается как
 `utls@v1.8.2`; входящие и транзитные ClientHello честно отмечаются как
 `external@unknown`.
+
+При включённом raw capture сохранённую observation можно повторно разобрать
+через `POST /api/v1/observations/{id}/reparse`. Исходная запись не меняется;
+создаётся новая запись с `analysis_revision` и `analysis_parent_id`. Если RAW
+не сохранялся, API возвращает `422`. Это пока bounded memory/JSONL workflow;
+полноценный исторический reparse поверх постоянного SQLite-хранилища остаётся
+частью MVP-1.
 
 JA3 учитывает extension 21 (padding). Прежний тестовый helper, восстанавливавший extension IDs через uTLS, терял padding; теперь он считывает IDs непосредственно из record bytes. Это исправление тестового oracle, а не изменение uTLS-пресетов.
 

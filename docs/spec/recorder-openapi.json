@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Локальный API регистратора JA3Proxy",
-    "version": "0.4.0",
+    "version": "0.5.0",
     "description": "Наблюдения в ограниченной памяти. Доступ только через loopback с проверкой Host, адреса клиента и Origin; аутентификация пользователей пока отсутствует. Это не полный API центра управления."
   },
   "servers": [
@@ -184,6 +184,74 @@
             }
           }
         }
+      }
+    },
+    "/api/v1/observations/{id}/reparse": {
+      "post": {
+        "operationId": "reparseObservation",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Создана новая analysis revision; исходное наблюдение сохранено",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Observation"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Требуется локальный доступ",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Наблюдение уже не хранится",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "RAW ClientHello не сохранён или не разбирается текущим parser",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Recorder отключён или уже закрыт",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "description": "Повторно разбирает сохранённый RAW ClientHello, добавляя новую analysis revision и не изменяя исходную запись. Доступно только для запуска с включённым raw capture."
       }
     },
     "/api/v1/fingerprints/diff": {
@@ -555,6 +623,13 @@
           "tls_engine_version": {
             "type": "string"
           },
+          "analysis_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "analysis_parent_id": {
+            "type": "string"
+          },
           "id": {
             "type": "string"
           },
@@ -661,6 +736,7 @@
           "tls_norm_version",
           "tls_engine",
           "tls_engine_version",
+          "analysis_revision",
           "id",
           "connection_id",
           "capture_point",

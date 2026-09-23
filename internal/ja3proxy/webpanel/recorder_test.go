@@ -6,17 +6,29 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/capture/tlshello"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/recorder"
 )
 
 func requestRecorder(h http.Handler, path string) *httptest.ResponseRecorder {
-	r := httptest.NewRequest("GET", "http://127.0.0.1"+path, nil)
+	return requestRecorderMethod(h, "GET", path)
+}
+
+func requestRecorderMethod(h http.Handler, method, path string) *httptest.ResponseRecorder {
+	r := httptest.NewRequest(method, "http://127.0.0.1"+path, nil)
 	r.RemoteAddr = "127.0.0.1:10000"
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	return w
+}
+
+func reparseCapture() tlshello.Capture {
+	raw := []byte{1, 0, 0, 43, 3, 3}
+	raw = append(raw, make([]byte, 32)...)
+	raw = append(raw, 0, 0, 2, 0x13, 1, 1, 0, 0, 0)
+	return tlshello.Capture{Status: "complete", Raw: raw, Records: append([]byte{22, 3, 1, 0, 47}, raw...), RecordVersion: 0x0301, RecordCount: 1}
 }
 
 func TestRecorderAPI(t *testing.T) {
@@ -72,6 +84,73 @@ func TestRecorderAPI(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "UNKNOWN") {
 		t.Fatal("timeout considered match")
 	}
+}
+
+func TestRecorderReparseAPI(t *testing.T) {
+	r, err := recorder.New(recorder.Options{Raw: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.TryCapture(recorder.Meta{ConnectionID: "reparse", CapturePoint: "CLIENT_IN", Direction: "inbound"}, reparseCapture()) {
+		t.Fatal("enqueue")
+	}
+	var source recorder.Observation
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		items := r.Snapshot()
+		if len(items) == 1 {
+			source = items[0]
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if source.ID == "" {
+		t.Fatal("source observation was not processed")
+	}
+	w := requestRecorderMethod(recorderServer(r), "POST", "/api/v1/observations/"+source.ID+"/reparse")
+	if w.Code != http.StatusCreated {
+		t.Fatal(w.Body.String())
+	}
+	var derived recorder.Observation
+	if err := json.Unmarshal(w.Body.Bytes(), &derived); err != nil {
+		t.Fatal(err)
+	}
+	if derived.AnalysisParentID != source.ID || derived.AnalysisRevision != 2 {
+		t.Fatalf("invalid revision: %+v", derived)
+	}
+	if len(r.Snapshot()) != 2 {
+		t.Fatal("source and derived observations were not both retained")
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	withoutRaw, err := recorder.New(recorder.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	withoutRaw.TryCapture(recorder.Meta{ConnectionID: "no-raw"}, reparseCapture())
+	deadline = time.Now().Add(time.Second)
+	var noRawID string
+	for time.Now().Before(deadline) {
+		items := withoutRaw.Snapshot()
+		if len(items) == 1 {
+			noRawID = items[0].ID
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	w = requestRecorderMethod(recorderServer(withoutRaw), "POST", "/api/v1/observations/"+noRawID+"/reparse")
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if err := withoutRaw.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func recorderServer(r *recorder.Recorder) http.Handler {
+	return Server{Recorder: r}.Handler()
 }
 
 func TestRecorderRejectsRemoteAndRebinding(t *testing.T) {

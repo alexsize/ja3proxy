@@ -2,6 +2,7 @@ package webpanel
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -22,12 +23,13 @@ func (panel Server) registerRecorderRoutes(mux *http.ServeMux) {
 		json.NewEncoder(w).Encode(map[string]any{"status": "ready", "recording_degraded": panel.Recorder.Stats().RecordingDegraded})
 	})))
 	routes := map[string]http.HandlerFunc{
-		"GET /api/v1/status":              panel.recorderStatus,
-		"GET /api/v1/observations":        panel.observations,
-		"GET /api/v1/observations/{id}":   panel.observation,
-		"GET /api/v1/fingerprints/diff":   panel.fingerprintDiff,
-		"GET /api/v1/export/observations": panel.exportObservations,
-		"GET /api/v1/tls/presets":         func(w http.ResponseWriter, r *http.Request) { json.NewEncoder(w).Encode(fingerprint.Presets()) },
+		"GET /api/v1/status":                     panel.recorderStatus,
+		"GET /api/v1/observations":               panel.observations,
+		"GET /api/v1/observations/{id}":          panel.observation,
+		"POST /api/v1/observations/{id}/reparse": panel.reparseObservation,
+		"GET /api/v1/fingerprints/diff":          panel.fingerprintDiff,
+		"GET /api/v1/export/observations":        panel.exportObservations,
+		"GET /api/v1/tls/presets":                func(w http.ResponseWriter, r *http.Request) { json.NewEncoder(w).Encode(fingerprint.Presets()) },
 	}
 	for pattern, h := range routes {
 		mux.Handle(pattern, recorderLocalOnly(h))
@@ -131,6 +133,28 @@ func (panel Server) observation(w http.ResponseWriter, r *http.Request) {
 	}
 	writeAPIError(w, 404, "observation not retained")
 }
+
+func (panel Server) reparseObservation(w http.ResponseWriter, r *http.Request) {
+	if panel.Recorder == nil {
+		writeAPIError(w, 503, "recorder is disabled")
+		return
+	}
+	o, err := panel.Recorder.Reparse(r.PathValue("id"))
+	if err != nil {
+		switch {
+		case errors.Is(err, recorder.ErrObservationNotFound):
+			writeAPIError(w, 404, err.Error())
+		case errors.Is(err, recorder.ErrRawUnavailable), errors.Is(err, recorder.ErrReparseMalformed):
+			writeAPIError(w, 422, err.Error())
+		default:
+			writeAPIError(w, 503, err.Error())
+		}
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(o)
+}
+
 func (panel Server) fingerprintDiff(w http.ResponseWriter, r *http.Request) {
 	a, b := r.URL.Query().Get("a"), r.URL.Query().Get("b")
 	var left, right *recorder.Observation
