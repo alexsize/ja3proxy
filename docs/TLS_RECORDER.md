@@ -222,6 +222,9 @@ destination после определения SNI. `action.tls_profile` закр
 ID профиля TLS для MITM. При
 отсутствии этих полей используются глобальные upstream и TLS-настройки;
 глобальная конфигурация при этом не изменяется.
+При старте route-конфигурация проходит cross-reference validation: upstream URL
+и `tls_profile` должны быть корректными, активными и воспроизводимыми. Ошибка
+обнаруживается до открытия proxy listener.
 
 В observation поле `routing` сохраняет immutable `config_version`, выбранное
 правило, priority и причину совпадения для PRE_TLS и POST_CLIENTHELLO. Значения

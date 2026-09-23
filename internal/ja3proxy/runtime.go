@@ -136,11 +136,52 @@ func (app *App) configureRuntime(ctx context.Context) error {
 			return fmt.Errorf("configure TLS profile library: %w", err)
 		}
 	}
+	if err := app.validateRouteReferences(); err != nil {
+		return err
+	}
 	if app.Config.CaptureTLS && app.Recorder == nil {
 		var err error
 		app.Recorder, err = recorder.New(recorder.Options{Raw: app.Config.CaptureRaw, JSONLPath: app.Config.CaptureJSONL, SQLitePath: app.Config.CaptureSQLite, SQLiteRetention: app.Config.CaptureSQLiteRetention})
 		if err != nil {
 			return fmt.Errorf("configure recorder: %w", err)
+		}
+	}
+	return nil
+}
+
+func (app *App) validateRouteReferences() error {
+	if app == nil || app.Routes == nil {
+		return nil
+	}
+	config, _, ok := app.Routes.Snapshot()
+	if !ok {
+		return nil
+	}
+	validateAction := func(scope string, action routing.Action) error {
+		if upstream := strings.TrimSpace(action.Upstream); upstream != "" {
+			if _, err := dialer.NewUpstreamDialer(upstream, 10*time.Second); err != nil {
+				return fmt.Errorf("invalid %s upstream: %w", scope, err)
+			}
+		}
+		if profileID := strings.TrimSpace(action.TLSProfile); profileID != "" {
+			if app.TLSProfiles == nil {
+				return fmt.Errorf("invalid %s tls_profile %q: TLS profile library is unavailable", scope, profileID)
+			}
+			if _, _, found := app.TLSProfiles.ResolveByID(profileID); !found {
+				return fmt.Errorf("invalid %s tls_profile %q: profile is not active or replayable", scope, profileID)
+			}
+		}
+		return nil
+	}
+	if err := validateAction("default route", config.Default); err != nil {
+		return err
+	}
+	for _, rule := range config.Rules {
+		if !rule.Enabled {
+			continue
+		}
+		if err := validateAction(fmt.Sprintf("route %q", rule.ID), rule.Action); err != nil {
+			return err
 		}
 	}
 	return nil

@@ -21,6 +21,7 @@ import (
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/fingerprint"
 	httpproxy "github.com/lylemi/ja3proxy/internal/ja3proxy/proxy"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/routing"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/tlsprofile"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/traffic"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/webpanel"
 )
@@ -412,6 +413,37 @@ func TestBuildProxyReturnsUpstreamValidationError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "configure upstream proxy") {
 		t.Fatalf("error = %q, want upstream context", err)
+	}
+}
+
+func TestValidateRouteReferencesRejectsInvalidUpstream(t *testing.T) {
+	app := newRuntimeTestApp(t)
+	app.Routes = &routing.Store{}
+	if err := app.Routes.SetValidated(routing.Config{Rules: []routing.Rule{{
+		ID: "broken-upstream", Enabled: true, Phase: routing.PhasePreTLS,
+		Match:  routing.Match{Host: "example.com"},
+		Action: routing.Action{Upstream: "https://127.0.0.1:1080"},
+	}}}); err != nil {
+		t.Fatalf("configure route: %v", err)
+	}
+	if err := app.validateRouteReferences(); err == nil || !strings.Contains(err.Error(), `route "broken-upstream" upstream`) {
+		t.Fatalf("validation error = %v", err)
+	}
+}
+
+func TestValidateRouteReferencesRejectsUnavailableTLSProfile(t *testing.T) {
+	app := newRuntimeTestApp(t)
+	app.Routes = &routing.Store{}
+	app.TLSProfiles = &tlsprofile.Store{}
+	if err := app.Routes.SetValidated(routing.Config{Rules: []routing.Rule{{
+		ID: "missing-profile", Enabled: true, Phase: routing.PhasePreTLS,
+		Match:  routing.Match{Host: "example.com"},
+		Action: routing.Action{TLSProfile: "does-not-exist"},
+	}}}); err != nil {
+		t.Fatalf("configure route: %v", err)
+	}
+	if err := app.validateRouteReferences(); err == nil || !strings.Contains(err.Error(), `tls_profile "does-not-exist"`) {
+		t.Fatalf("validation error = %v", err)
 	}
 }
 
