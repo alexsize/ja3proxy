@@ -144,6 +144,7 @@ TLS-профиль:
   --tls-fingerprint string        глобальный пресет uTLS, например chrome@120
   --tls-fingerprint-file string   JSON-файл глобального профиля с автообновлением
   --tls-profile-file string       JSON-файл маршрутизации TLS-профилей по хостам
+  --route-config-file string      JSON-таблица двухфазных маршрутов
   --tls-template-file string      журнал редактируемых TLS-профилей
   --list-tls-fingerprints         вывести поддерживаемые пресеты и завершить работу
 
@@ -291,6 +292,11 @@ HTTP CONNECT с аутентификацией:
 
 Значение без схемы трактуется как SOCKS5. TLS-профиль применяется внутри
 созданного туннеля.
+
+Для загрузки двухфазных правил используйте `--route-config-file routes.json`.
+Маршруты поддерживают фазы `PRE_TLS` и `POST_CLIENTHELLO`, exact/wildcard host,
+CIDR, порт, device/device tag и proxy username. Проверить решение без открытия
+соединения можно через `POST /api/v1/routes/test`.
 
 ## Аутентификация клиентов
 

@@ -19,6 +19,7 @@ type RunningConfig struct {
 	ListFingerprints       bool
 	FingerprintConfig      string
 	UpstreamTLSConfig      string
+	RouteConfigFile        string
 	Cert                   string
 	Key                    string
 	Upstream               string

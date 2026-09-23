@@ -73,6 +73,7 @@ JSONL пока не шифруется. Размещайте экспорт в �
 | FR-UPSTREAM-001: explicit upstream TLS route priority | `upstreamtls.UpstreamTLSProfileStore` | `TestUpstreamTLSRoutesUsePriorityThenHostSpecificity` |
 | FR-RUNTIME-001: immutable upstream TLS config snapshot per connection | `UpstreamTLSProfileStore.GetWithVersion`, recorder metadata | `TestUpstreamTLSStoreVersionsAreImmutableSnapshots`, `TestConfiguredUpstreamTLSProfileReturnsSnapshotVersion` |
 | FR-ROUTE-OBS-001: matched upstream route evidence | `UpstreamTLSProfileStore.Resolve`, recorder metadata | `TestUpstreamTLSResolveReturnsRouteEvidence`, `TestConfiguredUpstreamTLSResolutionReturnsRouteEvidence`, e2e verification |
+| FR-ROUTING-001: two-phase route resolver and route tester | `routing.Store`, `POST /api/v1/routes/test` | `TestStoreResolvesTwoPhaseRulesByPriorityAndSpecificity`, `TestStoreMatchesCIDRPortDeviceTagAndUsername`, `TestRouteTestAPIResolvesConfiguredRule` |
 | FR-VERIFY-001: expected ↔ фактический PROXY_OUT | `VerifyExpected` | `TestExpectedProfileVerificationStatuses`, `TestCustomTLSProfileProducesExpectedJA4AndVerification` |
 | FR-ENGINE-001.1: раздельные версии capture/parser/fingerprints/engine | version envelope observation/API | `TestRecorderExportAndPrivacy`, `TestObservationAttributesUTLSEngineOnlyToMITMOutbound`, `TestTLSEngineVersionMatchesModulePin`, `TestRecorderAPI` |
 | FR-REPARSE-001.1: повторный разбор сохранённого RAW с immutable revision | `Recorder.Reparse`, `POST /api/v1/observations/{id}/reparse` | `TestRecorderReparseCreatesNewAnalysisRevision`, `TestReparseRequiresRaw`, `TestRecorderReparseAPI` |
@@ -243,9 +244,10 @@ Bearer/Basic значения до передачи записи в backend.
    фильтруемый JSONL/CSV export реализованы; автоматический сбор версии
    приложения ещё остаётся. Сейчас ID объединяет
    только пару TLS observations и создаётся при входе в tunnel handler.
-3. MVP-2: остаются общий двухфазный route manager, несколько одновременно
-   активных upstreams и полный runtime snapshot всех route-фаз. Для upstream TLS
-   уже реализованы immutable config snapshots на connection и явная priority с
+3. MVP-2: остаётся применение route actions к реальному двухфазному tunnel
+   flow, несколько одновременно активных upstreams и полный runtime snapshot
+   всех route-фаз. Ядро resolver и локальный route tester уже реализованы; для
+   upstream TLS уже реализованы immutable config snapshots на connection и явная priority с
    детерминированным выбором
    `priority → exact host → wildcard → порядок в JSON`; TLS profile library
    также поддерживает несколько активных profiles с exact/wildcard priority.

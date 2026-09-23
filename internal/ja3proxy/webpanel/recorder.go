@@ -46,6 +46,7 @@ func (panel Server) registerRecorderRoutes(mux *http.ServeMux) {
 		"GET /api/v1/fingerprints/diff":          panel.fingerprintDiff,
 		"GET /api/v1/fingerprints/timeline":      panel.fingerprintTimeline,
 		"GET /api/v1/export/observations":        panel.exportObservations,
+		"POST /api/v1/routes/test":               panel.routeTest,
 		"GET /api/v1/tls/presets":                func(w http.ResponseWriter, r *http.Request) { json.NewEncoder(w).Encode(fingerprint.Presets()) },
 	}
 	for pattern, h := range routes {

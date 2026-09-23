@@ -22,6 +22,7 @@ import (
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/logutil"
 	httpproxy "github.com/lylemi/ja3proxy/internal/ja3proxy/proxy"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/recorder"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/routing"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/tlsprofile"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/traffic"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/tui"
@@ -39,6 +40,7 @@ type App struct {
 	SessionKey          *certstore.SessionKeyHelper
 	TLSFingerprints     *fingerprint.TLSFingerprintStore
 	UpstreamTLSProfiles *upstreamtls.UpstreamTLSProfileStore
+	Routes              *routing.Store
 	TrafficMonitor      *traffic.TrafficMonitor
 	UpstreamDialer      *dialer.DynamicUpstreamDialer
 	ProxyServer         *httpproxy.Proxy
@@ -61,6 +63,7 @@ func newDefaultApp() *App {
 		SessionKey:          &certstore.SessionKeyHelper{},
 		TLSFingerprints:     &fingerprint.TLSFingerprintStore{},
 		UpstreamTLSProfiles: &upstreamtls.UpstreamTLSProfileStore{},
+		Routes:              &routing.Store{},
 	}
 }
 
@@ -110,6 +113,9 @@ func (app *App) configureRuntime(ctx context.Context) error {
 		return err
 	}
 	if err := app.configureUpstreamTLSProfiles(); err != nil {
+		return err
+	}
+	if err := app.configureRoutes(); err != nil {
 		return err
 	}
 	if app.Devices == nil {
@@ -169,6 +175,7 @@ func (app *App) serveProxyServices(ctx context.Context, proxyServer *httpproxy.P
 		Recorder: app.Recorder,
 		Devices:  app.Devices,
 		Profiles: app.TLSProfiles,
+		Routes:   app.Routes,
 		Address:  app.Config.WebPanel,
 		Monitor:  app.TrafficMonitor,
 		Runtime:  app.webPanelRuntimeStatus,
@@ -290,6 +297,19 @@ func (app *App) configureUpstreamTLSProfiles() error {
 	}
 	if err := app.UpstreamTLSProfiles.ApplyFile(app.Config.UpstreamTLSConfig); err != nil {
 		return fmt.Errorf("failed loading upstream TLS config: %w", err)
+	}
+	return nil
+}
+
+func (app *App) configureRoutes() error {
+	if app.Config.RouteConfigFile == "" {
+		return nil
+	}
+	if app.Routes == nil {
+		app.Routes = &routing.Store{}
+	}
+	if err := app.Routes.ApplyFile(app.Config.RouteConfigFile); err != nil {
+		return fmt.Errorf("failed loading route config: %w", err)
 	}
 	return nil
 }

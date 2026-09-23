@@ -37,6 +37,7 @@ type cliOptions struct {
 	tlsFingerprint         string
 	tlsFingerprintFile     string
 	tlsProfileFile         string
+	routeConfigFile        string
 	upstreamProxy          string
 	proxyUsername          string
 	proxyPassword          string
@@ -93,6 +94,7 @@ func registerCLIFlags(flags *flag.FlagSet, options *cliOptions) {
 	flags.StringVar(&options.tlsFingerprint, "tls-fingerprint", "", "глобальный fingerprint uTLS, например chrome@120")
 	flags.StringVar(&options.tlsFingerprintFile, "tls-fingerprint-file", "", "JSON-файл глобального fingerprint с автообновлением")
 	flags.StringVar(&options.tlsProfileFile, "tls-profile-file", "", "JSON-файл исходящих TLS-профилей по хостам")
+	flags.StringVar(&options.routeConfigFile, "route-config-file", "", "JSON-таблица двухфазных маршрутов")
 	flags.BoolVar(&options.listTLSFingerprints, "list-tls-fingerprints", false, "вывести поддерживаемые fingerprints uTLS и завершить работу")
 
 	flags.StringVar(&options.proxyUsername, "proxy-username", "", "имя пользователя для входящих HTTP- и SOCKS5-клиентов")
@@ -120,6 +122,7 @@ TLS fingerprint:
   --tls-fingerprint string        глобальный fingerprint uTLS, например chrome@120
   --tls-fingerprint-file string   JSON-файл глобального fingerprint с автообновлением
   --tls-profile-file string       JSON-файл исходящих TLS-профилей по хостам
+  --route-config-file string      JSON-таблица двухфазных маршрутов
   --list-tls-fingerprints         вывести поддерживаемые fingerprints uTLS и завершить работу
 
 Прокси:
@@ -192,6 +195,7 @@ func applyCLIOptions(config *RunningConfig, options cliOptions, specified map[st
 	config.Key = options.caKey
 	config.FingerprintConfig = options.tlsFingerprintFile
 	config.UpstreamTLSConfig = options.tlsProfileFile
+	config.RouteConfigFile = options.routeConfigFile
 	config.Upstream = options.upstreamProxy
 	if err := validateProxyCredentials(options.proxyUsername, options.proxyPassword); err != nil {
 		return err

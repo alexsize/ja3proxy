@@ -11,6 +11,24 @@
     }
   ],
   "paths": {
+    "/api/v1/routes/test": {
+      "post": {
+        "operationId": "testRoute",
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RouteTestRequest"}}}
+        },
+        "responses": {
+          "200": {
+            "description": "Решение route manager без открытия соединения",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RouteDecision"}}}
+          },
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "503": {"description": "Route manager не загружен"}
+        }
+      }
+    },
     "/api/v1/status": {
       "get": {
         "operationId": "recorderStatus",
@@ -891,6 +909,33 @@
         "required": [
           "error"
         ]
+      },
+      "RouteTestRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "phase": {"enum": ["PRE_TLS", "POST_CLIENTHELLO"]},
+          "host": {"type": "string"},
+          "sni": {"type": "string"},
+          "ip": {"type": "string"},
+          "port": {"type": "integer", "minimum": 0, "maximum": 65535},
+          "device_id": {"type": "string"},
+          "device_tags": {"type": "array", "items": {"type": "string"}},
+          "username": {"type": "string"}
+        }
+      },
+      "RouteDecision": {
+        "type": "object",
+        "properties": {
+          "config_version": {"type": "integer", "minimum": 0},
+          "phase": {"enum": ["PRE_TLS", "POST_CLIENTHELLO"]},
+          "matched_rule_id": {"type": "string"},
+          "matched_rule_priority": {"type": "integer"},
+          "match_reason": {"type": "string"},
+          "candidate_rule_ids": {"type": "array", "items": {"type": "string"}},
+          "action": {"type": "object", "additionalProperties": true}
+        },
+        "required": ["config_version", "phase", "match_reason", "action"]
       },
       "Stats": {
         "type": "object",
