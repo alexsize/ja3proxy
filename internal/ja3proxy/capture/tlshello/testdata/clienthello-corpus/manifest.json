@@ -1,0 +1,66 @@
+{
+  "schema_version": "ja3proxy-clienthello-corpus/1",
+  "description": "Воспроизводимые источники ClientHello, используемые тестами MVP-0. Манифест явно отделяет реальные wire bytes от синтетических и опубликованных векторов.",
+  "entries": [
+    {
+      "id": "synthetic-minimal",
+      "kind": "synthetic",
+      "client": "JA3Proxy test fixture",
+      "tls_versions": ["TLS 1.2"],
+      "source": "hello_test.go:fixture",
+      "license": "MIT (JA3Proxy)",
+      "covered_by": ["TestGoldenMinimal", "TestReassemblyEveryBoundary", "FuzzParse", "FuzzStream"]
+    },
+    {
+      "id": "foxio-ja4-published-vector",
+      "kind": "published_vector",
+      "client": "JA4 reference ClientHello fields",
+      "tls_versions": ["TLS 1.3"],
+      "source": "https://github.com/FoxIO-LLC/ja4/blob/main/technical_details/JA4.md",
+      "license": "BSD-3-Clause (JA4 TLS Client Fingerprinting; FoxIO)",
+      "covered_by": ["TestJA4PublishedVector"]
+    },
+    {
+      "id": "go-tls-wire",
+      "kind": "runtime_wire_capture",
+      "client": "Go crypto/tls",
+      "tls_versions": ["TLS 1.2", "TLS 1.3"],
+      "source": "Go standard library client connected through a local JA3Proxy test server",
+      "license": "BSD-3-Clause (Go)",
+      "covered_by": ["TestRecorderTLS12And13", "TestRecorderOutboundWireThroughProxyMatrix"]
+    },
+    {
+      "id": "utls-firefox63-outbound-wire",
+      "kind": "runtime_wire_capture",
+      "client": "uTLS HelloFirefox_63",
+      "tls_versions": ["TLS 1.2", "TLS 1.3"],
+      "source": "uTLS materialization captured independently by the local test server",
+      "license": "BSD-3-Clause (uTLS)",
+      "covered_by": ["TestRecorderOutboundWireThroughProxyMatrix"]
+    },
+    {
+      "id": "utls-chrome120-custom-profile-wire",
+      "kind": "runtime_wire_capture",
+      "client": "uTLS HelloChrome_120",
+      "tls_versions": ["TLS 1.3"],
+      "source": "editable Chrome 120 template captured independently by the local test server",
+      "license": "BSD-3-Clause (uTLS)",
+      "covered_by": ["TestCustomTLSProfileProducesExpectedJA4AndVerification"]
+    },
+    {
+      "id": "openssl-3.5.5-tls13-wire",
+      "kind": "immutable_wire_capture",
+      "client": "OpenSSL 3.5.5 27 Jan 2026",
+      "tls_versions": ["TLS 1.3"],
+      "source": "local loopback capture: openssl s_client -servername openssl.test -tls1_3",
+      "license": "Apache-2.0 (OpenSSL)",
+      "fixture": "openssl-3.5.5-tls13.hex",
+      "covered_by": ["TestOpenSSLCorpusGolden"]
+    }
+  ],
+  "acceptance_gaps": [
+    "independent real-device Safari/iOS capture",
+    "independent real-device Android/OkHttp capture",
+    "licensed real-browser corpus files retained as immutable fixtures"
+  ]
+}

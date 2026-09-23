@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/flowid"
 )
 
 const defaultHTTPConnBack = 64
@@ -105,6 +107,9 @@ func (listener *MixedProxyListener) acceptLoop() {
 			_ = listener.Close()
 			return
 		}
+		// The transport-flow ID exists before the first byte is inspected and is
+		// preserved through HTTP, SOCKS5 and traffic-monitor wrappers.
+		conn = flowid.Wrap(conn)
 		go listener.route(conn)
 	}
 }

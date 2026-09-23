@@ -12,6 +12,7 @@ import (
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/capture/tlshello"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/certstore"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/fingerprint"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/flowid"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/logutil"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/netutil"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/pipe"
@@ -258,7 +259,11 @@ func (handler *TunnelHandler) Connect(sni string, destConn net.Conn, clientConn 
 		if mode == "" {
 			mode = "MITM_REISSUE"
 		}
-		id := recorder.NewID()
+		id := flowid.From(clientConn)
+		if id == "" {
+			// Direct TunnelHandler users do not pass through MixedProxyListener.
+			id = recorder.NewID()
+		}
 		meta := recorder.Meta{ConnectionID: id, CapturePoint: "CLIENT_IN", Direction: "inbound", ByteSource: "client_socket_read", Mode: mode, Destination: sni, Source: netutil.RemoteAddr(clientConn)}
 		outMeta = meta
 		outMeta.CapturePoint = "PROXY_OUT"

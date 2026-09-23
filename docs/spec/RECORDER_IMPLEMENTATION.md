@@ -1,6 +1,6 @@
 # Регистратор TLS: состояние реализации
 
-Обновлено: 2026-09-22. Основа: `JA3Proxy_Fingerprint_Recorder_TZ_v2.md`.
+Обновлено: 2026-09-23. Основа: `JA3Proxy_Fingerprint_Recorder_TZ_v2.md`.
 
 Реализовано ядро первого этапа и локальный интерфейс для его проверки. Это не завершённый Control Center и не заявление о выполнении всех релизов ТЗ.
 
@@ -30,6 +30,7 @@ JSONL пока не шифруется. Размещайте экспорт в �
 | PR-TLS-002: bounded parsing и replay | `Stream`, `Sniff`, `Parse` | `TestMalformedAndLimits`, `TestSniffReplayAndTimeout`, `FuzzParse` |
 | FR-CAP-001: входящий ClientHello | tunnel sniffer | `TestRecorderOutboundWireThroughProxyMatrix` |
 | FR-CAP-002: успешные outbound Write bytes | `tlshello.Conn` | `TestRecordingConnShortWrites`, серверная проверка raw в matrix |
+| FR-CONN-001: ID до protocol detection | `flowid`, `MixedProxyListener` | `TestMixedProxyListenerAssignsConnectionIDBeforeProtocolDetection`, `TestWrapAssignsOneStableIDThroughWrappers` |
 | FR-FP-001: JA3/JA4 | `Calculate` | `TestGoldenMinimal`, `TestJA4PublishedVector`, независимый e2e JA3 parser |
 | FR-FP-002: TLS-NORM-1 | `Normalize` | `TestGoldenMinimal`, `TestNormalizationDynamicAndUnknown`, `TestPSKIdentityRedaction` |
 | FR-MODE-001: passthrough/observe | `TunnelHandler.Connect` | matrix: 2 клиентских × 3 upstream × 3 режима |
@@ -41,6 +42,7 @@ JSONL пока не шифруется. Размещайте экспорт в �
 | FR-EXPORT-001: JSONL и quota | recorder worker | `TestRecorderExportAndPrivacy`, `TestOutputQuotaAndMalformedCapture` |
 | FR-API-001: поиск/detail/export/diff | `webpanel/recorder.go` | `TestRecorderAPI` |
 | SEC-API-001: локальный доступ | bind/Host/peer/Origin checks | `TestRecorderRejectsRemoteAndRebinding` |
+| SEC-CANARY-001: секреты не отражаются в API/error | config API, HTTP upstream dialer | `TestConfigAPIUpdatesRuntimeConfiguration`, `TestHTTPUpstreamCONNECTErrorDoesNotExposeResponseBodyCanary` |
 | FR-CLI-001: feature flag | runtime/CLI | `TestRecorderCLI` |
 | FR-PROFILE-001: шаблон из пресета/наблюдения | `tlsprofile`, profile API/UI | `TestPresetPreviewAndJA4Editing`, `TestTLSProfileAPIWorkflow` |
 | FR-PROFILE-002: immutable versions/CAS/rollback | append-only profile store | `TestStoreVersioningPersistenceAndRouting`, `TestTLSProfileHistoryAndRollbackAPI` |
@@ -52,6 +54,11 @@ JSONL пока не шифруется. Размещайте экспорт в �
 `CLIENT_IN` наблюдает TLS после CONNECT/SOCKS, `PROXY_OUT` — после согласования upstream-протокола. Захватывается первый ClientHello; полный record, содержащий его конец, сохраняется целиком. Второй ClientHello после HelloRetryRequest/renegotiation пока не анализируется.
 
 Успех `Write` означает приём байтов нижележащим `net.Conn`; он не доказывает получение удалённым сервером. В e2e-тестах есть независимое подтверждение с сервера.
+
+Transport-flow получает ULID сразу после `Accept`, до чтения первого байта и
+определения HTTP/SOCKS5. ID проходит через buffered/traffic wrappers и
+используется обеими TLS-observation; прямой вызов tunnel handler сохраняет
+совместимый fallback.
 
 Sniffer читает до 5 секунд, сохраняет прочитанное и возвращает replay connection. При non-TLS, malformed/oversized или timeout в режиме MITM применяется passthrough и фиксируется причина. Это может задержать server-first протокол на нестандартном SOCKS-порту до timeout. PASSTHROUGH/OBSERVE_ONLY используют пассивные wrappers без предварительного чтения. Для них outbound observation содержит `forwarding`: только полное совпадение SHA-256 handshake bytes и TLS records получает `FORWARDED_UNCHANGED`; неполный захват получает `UNVERIFIED`. `byte_source` различает чтение client socket и успешную запись upstream socket.
 
@@ -65,6 +72,11 @@ Sniffer читает до 5 секунд, сохраняет прочитанн�
 - Нормализация: `TLS-NORM-1`.
 
 JA3 учитывает extension 21 (padding). Прежний тестовый helper, восстанавливавший extension IDs через uTLS, терял padding; теперь он считывает IDs непосредственно из record bytes. Это исправление тестового oracle, а не изменение uTLS-пресетов.
+
+Источники golden/runtime-векторов, их лицензии и тесты перечислены в
+`internal/ja3proxy/capture/tlshello/testdata/clienthello-corpus/manifest.json`.
+Манифест является проверяемым тестом и не называет uTLS materialization
+реальным браузерным capture.
 
 ### Точная схема TLS-NORM-1
 
@@ -126,7 +138,11 @@ Outbound observation содержит одновременно `profile_version`
 
 ## Оставшиеся этапы ТЗ
 
-1. Для полной приёмки MVP-0: реальный лицензированный corpus Safari/iOS/Android/OkHttp/OpenSSL, полная performance-матрица recorder-on/off (p95/throughput), lifecycle ID до protocol detection и дополнительные handshake-сценарии.
+1. Для полной приёмки MVP-0: реальные лицензированные captures Safari/iOS и
+   Android/OkHttp, полная performance-матрица
+   recorder-on/off (p95/throughput) и дополнительные handshake-сценарии.
+   Текущий versioned corpus manifest честно отделяет runtime wire captures,
+   published vector и synthetic fixtures и перечисляет оставшиеся пробелы.
 2. MVP-1: SQLite, миграции/retention, Device identity и привязка приложений; сейчас ID объединяет только пару TLS observations и создаётся при входе в tunnel handler.
 3. MVP-2: остаются общий двухфазный route manager, приоритеты/несколько
    активных profiles/upstreams и полноценные runtime snapshots. Версионируемый
@@ -150,6 +166,7 @@ go test -race ./... -count=1
 go test ./internal/ja3proxy/capture/tlshello -run ^$ -fuzz ^FuzzParse$ -fuzztime=15s -parallel=2
 go test ./internal/ja3proxy/capture/tlshello -run ^$ -fuzz ^FuzzStream$ -fuzztime=15s -parallel=2
 go test ./internal/ja3proxy/capture/tlshello -run ^$ -bench ^BenchmarkReassembly$ -benchmem
+go test ./internal/ja3proxy/capture/tlshello -run ^$ -bench ^BenchmarkRecordingConnOnOff$ -benchmem -count=5
 ```
 
 Для Windows race проверок требуется C compiler. В локальной проверке используется portable LLVM-MinGW с Go 1.26.6. SDK/кэши находятся в игнорируемых `.tools`, `.gocache`, `.gomodcache`.

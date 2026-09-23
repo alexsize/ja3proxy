@@ -200,11 +200,8 @@ func (dialer *httpConnectDialer) Dial(network, addr string) (net.Conn, error) {
 		return nil, fmt.Errorf("read HTTP proxy CONNECT response: %w", err)
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(response.Body, 4<<10))
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4<<10))
 		_ = response.Body.Close()
-		if message := strings.TrimSpace(string(body)); message != "" {
-			return nil, fmt.Errorf("HTTP proxy CONNECT failed: %s: %s", response.Status, message)
-		}
 		return nil, fmt.Errorf("HTTP proxy CONNECT failed: %s", response.Status)
 	}
 	if err := conn.SetDeadline(time.Time{}); err != nil {

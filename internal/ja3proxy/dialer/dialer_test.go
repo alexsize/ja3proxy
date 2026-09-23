@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -212,6 +213,27 @@ func TestHTTPUpstreamCONNECTWithAuthentication(t *testing.T) {
 	}
 	if err := <-serverErr; err != nil {
 		t.Fatalf("HTTP proxy: %v", err)
+	}
+}
+
+func TestHTTPUpstreamCONNECTErrorDoesNotExposeResponseBodyCanary(t *testing.T) {
+	const canary = "CANARY_UPSTREAM_SECRET_4f69a3"
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.WriteHeader(http.StatusProxyAuthRequired)
+		_, _ = io.WriteString(response, canary)
+	}))
+	defer server.Close()
+
+	upstream, err := NewUpstreamDialer(server.URL, time.Second)
+	if err != nil {
+		t.Fatalf("NewUpstreamDialer: %v", err)
+	}
+	_, err = upstream.Dial("tcp", "example.com:443")
+	if err == nil {
+		t.Fatal("Dial error = nil")
+	}
+	if strings.Contains(err.Error(), canary) {
+		t.Fatalf("upstream response body leaked through error: %q", err)
 	}
 }
 

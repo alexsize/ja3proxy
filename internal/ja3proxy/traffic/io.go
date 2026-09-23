@@ -23,6 +23,8 @@ func (conn *trafficReadConn) Read(p []byte) (int, error) {
 	return n, err
 }
 
+func (conn *trafficReadConn) UnwrapConn() net.Conn { return conn.Conn }
+
 func wrapTrafficTunnel(session *TrafficSessionHandle, destConn net.Conn, clientConn net.Conn) (net.Conn, net.Conn) {
 	if session == nil {
 		return destConn, clientConn

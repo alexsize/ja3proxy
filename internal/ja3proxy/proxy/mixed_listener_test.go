@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/flowid"
 )
 
 func TestMixedProxyListenerRoutesHTTPToServer(t *testing.T) {
@@ -68,6 +70,32 @@ func TestMixedProxyListenerRoutesHTTPToServer(t *testing.T) {
 	}
 	if string(body) != "mixed http" {
 		t.Fatalf("body = %q, want mixed http", string(body))
+	}
+}
+
+func TestMixedProxyListenerAssignsConnectionIDBeforeProtocolDetection(t *testing.T) {
+	baseListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	listener := newMixedProxyListener(baseListener, NewProxy(nil, nil, nil))
+	defer listener.Close()
+
+	client, err := net.DialTimeout("tcp", baseListener.Addr().String(), time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+	if _, err := client.Write([]byte("G")); err != nil {
+		t.Fatalf("write protocol byte: %v", err)
+	}
+	accepted, err := listener.Accept()
+	if err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	defer accepted.Close()
+	if id := flowid.From(accepted); len(id) != 26 {
+		t.Fatalf("accepted connection ID = %q, want ULID before HTTP parsing", id)
 	}
 }
 

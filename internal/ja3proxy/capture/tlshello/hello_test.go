@@ -302,6 +302,35 @@ func BenchmarkReassembly(b *testing.B) {
 	}
 }
 
+type benchmarkConn struct{}
+
+func (benchmarkConn) Read([]byte) (int, error)         { return 0, io.EOF }
+func (benchmarkConn) Write(value []byte) (int, error)  { return len(value), nil }
+func (benchmarkConn) Close() error                     { return nil }
+func (benchmarkConn) LocalAddr() net.Addr              { return nil }
+func (benchmarkConn) RemoteAddr() net.Addr             { return nil }
+func (benchmarkConn) SetDeadline(time.Time) error      { return nil }
+func (benchmarkConn) SetReadDeadline(time.Time) error  { return nil }
+func (benchmarkConn) SetWriteDeadline(time.Time) error { return nil }
+
+func BenchmarkRecordingConnOnOff(b *testing.B) {
+	wire := record(fixture(nil))
+	b.ReportAllocs()
+	b.Run("recorder_off", func(b *testing.B) {
+		conn := benchmarkConn{}
+		for b.Loop() {
+			_, _ = conn.Write(wire)
+		}
+	})
+	b.Run("recorder_on", func(b *testing.B) {
+		conn := benchmarkConn{}
+		for b.Loop() {
+			wrapped := Wrap(conn, false, DefaultLimits(), func(Capture) {})
+			_, _ = wrapped.Write(wire)
+		}
+	})
+}
+
 func TestPSKIdentityRedaction(t *testing.T) {
 	ident := append(vector16([]byte("SECRET_TICKET")), 0, 0, 0, 42)
 	psk := append(vector16(ident), vector16(append([]byte{32}, bytes.Repeat([]byte{0xab}, 32)...))...)

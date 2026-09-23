@@ -21,6 +21,8 @@ type bufferedReadConn struct {
 	reader *bufio.Reader
 }
 
+func (conn *bufferedReadConn) UnwrapConn() net.Conn { return conn.Conn }
+
 func (conn *bufferedReadConn) Read(p []byte) (int, error) {
 	if conn.reader.Buffered() > 0 {
 		return conn.reader.Read(p)

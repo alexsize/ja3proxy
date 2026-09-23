@@ -67,6 +67,9 @@ func TestConfigAPIUpdatesRuntimeConfiguration(t *testing.T) {
 	if received.ProxyPassword == nil || *received.ProxyPassword != "secret" {
 		t.Fatalf("proxy password update = %#v", received.ProxyPassword)
 	}
+	if strings.Contains(response.Body.String(), "secret") {
+		t.Fatalf("configuration response exposed proxy password: %s", response.Body.String())
+	}
 }
 
 func TestConfigAPIRejectsUnknownFields(t *testing.T) {
