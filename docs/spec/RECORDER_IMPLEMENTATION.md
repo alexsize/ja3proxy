@@ -38,6 +38,7 @@ JSONL пока не шифруется. Размещайте экспорт в �
 | FR-CAP-001: входящий ClientHello | tunnel sniffer | `TestRecorderOutboundWireThroughProxyMatrix` |
 | FR-CAP-002: успешные outbound Write bytes | `tlshello.Conn` | `TestRecordingConnShortWrites`, серверная проверка raw в matrix |
 | FR-CONN-001: ID до protocol detection | `flowid`, `MixedProxyListener` | `TestMixedProxyListenerAssignsConnectionIDBeforeProtocolDetection`, `TestWrapAssignsOneStableIDThroughWrappers` |
+| FR-IDENTITY-001: proxy username → source IP fallback с confidence | `flowid`, proxy auth, recorder metadata | `TestProxyUsernameSurvivesTransparentWrappers`, `TestApplyIdentityEvidenceUsesUsernameThenSourceIP` |
 | FR-FP-001: JA3/JA4 | `Calculate` | `TestGoldenMinimal`, `TestJA4PublishedVector`, независимый e2e JA3 parser |
 | FR-SESSION-001: варианты FULL/RESUMED/PSK и PSK metadata | `Hello`/`Fingerprints` model | `TestPSKIdentityRedaction`, `TestResumedHandshakeVariantCanBeDeclared` |
 | FR-SESSION-002: PSK presets явно отделены от full-handshake | fingerprint catalog/API/UI | `TestPSKPresetsAreMarkedAsResumptionProfiles` |
@@ -224,8 +225,9 @@ Bearer/Basic значения до передачи записи в backend.
    Текущий versioned corpus manifest честно отделяет runtime wire captures,
    published vector и synthetic fixtures и перечисляет оставшиеся пробелы.
 2. MVP-1: SQLite, миграции и retention реализованы через `--capture-sqlite`;
-   остаются Device identity и привязка приложений. Сейчас ID объединяет только
-   пару TLS observations и создаётся при входе в tunnel handler.
+   identity evidence username/IP уже сохраняется с confidence, но Device
+   Manager, временные mappings и привязка приложений ещё остаются. Сейчас ID
+   объединяет только пару TLS observations и создаётся при входе в tunnel handler.
 3. MVP-2: остаются общий двухфазный route manager, приоритеты/несколько
    активных profiles/upstreams и полноценные runtime snapshots. Версионируемый
    TLS template, материализация expected и verification уже реализованы для

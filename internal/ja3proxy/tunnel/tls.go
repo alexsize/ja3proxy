@@ -300,6 +300,7 @@ func (handler *TunnelHandler) Connect(sni string, destConn net.Conn, clientConn 
 			id = recorder.NewID()
 		}
 		meta := recorder.Meta{ConnectionID: id, CapturePoint: "CLIENT_IN", Direction: "inbound", ByteSource: "client_socket_read", Mode: mode, Destination: sni, Source: netutil.RemoteAddr(clientConn)}
+		meta = applyIdentityEvidence(meta, clientConn)
 		outMeta = meta
 		outMeta.CapturePoint = "PROXY_OUT"
 		outMeta.Direction = "outbound"
@@ -435,6 +436,23 @@ func (handler *TunnelHandler) Connect(sni string, destConn net.Conn, clientConn 
 	} else {
 		pipe.Junction(destTLSConn, clientTLSConn)
 	}
+}
+
+func applyIdentityEvidence(meta recorder.Meta, clientConn net.Conn) recorder.Meta {
+	if username := flowid.ProxyUsernameFrom(clientConn); username != "" {
+		meta.IdentitySource = "proxy_username"
+		meta.IdentityValue = username
+		meta.Confidence = "exact"
+		return meta
+	}
+	ip := netutil.StripPort(meta.Source)
+	if net.ParseIP(ip) == nil {
+		return meta
+	}
+	meta.IdentitySource = "source_ip"
+	meta.IdentityValue = ip
+	meta.Confidence = "inferred"
+	return meta
 }
 
 func expectedForRecorder(expected tlsprofile.Expected, policy tlsprofile.MatchPolicy) *recorder.FingerprintExpected {

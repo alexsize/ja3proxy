@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/flowid"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/logutil"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/netutil"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/pipe"
@@ -76,11 +77,12 @@ func (p *Proxy) WithTrafficMonitor(monitor *traffic.TrafficMonitor) *Proxy {
 }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if !p.authenticateHTTP(w, r) {
+	proxyUsername, ok := p.authenticateHTTPIdentity(w, r)
+	if !ok {
 		return
 	}
 	if r.Method == http.MethodConnect {
-		p.handleTunneling(w, r)
+		p.handleTunneling(w, r, proxyUsername)
 		return
 	}
 	p.handleHTTP(w, r)
@@ -119,7 +121,7 @@ func (p *Proxy) TrafficMonitor() *traffic.TrafficMonitor {
 	return p.monitor()
 }
 
-func (p *Proxy) handleTunneling(w http.ResponseWriter, r *http.Request) {
+func (p *Proxy) handleTunneling(w http.ResponseWriter, r *http.Request, proxyUsername string) {
 	if p.blockTunnels {
 		http.Error(w, "tunnel blocked by policy", http.StatusForbidden)
 		return
@@ -169,6 +171,7 @@ func (p *Proxy) handleTunneling(w http.ResponseWriter, r *http.Request) {
 			reader: clientRW.Reader,
 		}
 	}
+	tunnelClientConn = flowid.WithProxyUsername(tunnelClientConn, proxyUsername)
 
 	if _, err := io.WriteString(clientRW, connectEstablishedResponse); err != nil {
 		destConn.Close()

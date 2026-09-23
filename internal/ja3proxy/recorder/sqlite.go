@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS recorder_schema_migrations (
 );`); err != nil {
 		return fmt.Errorf("create recorder migration table: %w", err)
 	}
-	const version = 1
+	const version = 2
 	var applied int
 	if err := s.db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM recorder_schema_migrations`).Scan(&applied); err != nil {
 		return fmt.Errorf("read recorder schema version: %w", err)
@@ -60,15 +60,8 @@ CREATE TABLE IF NOT EXISTS recorder_schema_migrations (
 	if applied > version {
 		return fmt.Errorf("unsupported recorder schema version %d", applied)
 	}
-	if applied >= version {
-		return nil
-	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("begin recorder migration: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.Exec(`
+	if applied < 1 {
+		if err := s.applyMigration(1, `
 CREATE TABLE IF NOT EXISTS observations (
     id TEXT PRIMARY KEY,
     captured_at TEXT NOT NULL,
@@ -91,14 +84,40 @@ CREATE INDEX IF NOT EXISTS idx_observations_connection_id
     ON observations(connection_id);
 CREATE INDEX IF NOT EXISTS idx_observations_capture_point
     ON observations(capture_point);
+	`); err != nil {
+			return err
+		}
+		applied = 1
+	}
+	if applied < 2 {
+		if err := s.applyMigration(2, `
+ALTER TABLE observations ADD COLUMN identity_source TEXT;
+ALTER TABLE observations ADD COLUMN identity_value TEXT;
+ALTER TABLE observations ADD COLUMN confidence TEXT;
+ALTER TABLE observations ADD COLUMN resolved_device_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_observations_identity
+    ON observations(identity_source, identity_value);
 `); err != nil {
-		return fmt.Errorf("create recorder observation schema: %w", err)
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *sqliteStore) applyMigration(version int, statements string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin recorder migration %d: %w", version, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(statements); err != nil {
+		return fmt.Errorf("apply recorder migration %d: %w", version, err)
 	}
 	if _, err := tx.Exec(`INSERT OR IGNORE INTO recorder_schema_migrations(version, applied_at) VALUES (?, ?)`, version, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-		return fmt.Errorf("record recorder migration: %w", err)
+		return fmt.Errorf("record recorder migration %d: %w", version, err)
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit recorder migration: %w", err)
+		return fmt.Errorf("commit recorder migration %d: %w", version, err)
 	}
 	return nil
 }
@@ -113,11 +132,13 @@ func (s *sqliteStore) insert(o Observation, payload []byte) error {
 INSERT INTO observations(
     id, captured_at, processed_at, connection_id, capture_point, direction,
     byte_source, mode, destination, source, completeness, analysis_revision,
-    analysis_parent_id, payload
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    analysis_parent_id, identity_source, identity_value, confidence,
+    resolved_device_id, payload
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		o.ID, o.CapturedAt.UTC().Format(time.RFC3339Nano), o.PersistedAt.UTC().Format(time.RFC3339Nano),
 		o.ConnectionID, o.CapturePoint, o.Direction, o.ByteSource, o.Mode,
-		o.Destination, o.Source, o.Completeness, o.AnalysisRevision, o.AnalysisParentID, payload)
+		o.Destination, o.Source, o.Completeness, o.AnalysisRevision, o.AnalysisParentID,
+		o.IdentitySource, o.IdentityValue, o.Confidence, o.ResolvedDeviceID, payload)
 	if err != nil {
 		return fmt.Errorf("insert recorder observation: %w", err)
 	}

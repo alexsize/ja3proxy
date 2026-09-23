@@ -37,6 +37,10 @@ type Meta struct {
 	Mode             string               `json:"mode"`
 	Destination      string               `json:"destination"`
 	Source           string               `json:"source"`
+	IdentitySource   string               `json:"identity_source,omitempty"`
+	IdentityValue    string               `json:"identity_value,omitempty"`
+	Confidence       string               `json:"confidence,omitempty"`
+	ResolvedDeviceID string               `json:"resolved_device_id,omitempty"`
 	Profile          string               `json:"profile,omitempty"`
 	ProfileID        string               `json:"profile_id,omitempty"`
 	ProfileVersion   uint64               `json:"profile_version,omitempty"`

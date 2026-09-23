@@ -11,6 +11,10 @@ type carrier interface {
 	ConnectionID() string
 }
 
+type proxyUsernameCarrier interface {
+	ProxyUsername() string
+}
+
 type unwrapper interface {
 	UnwrapConn() net.Conn
 }
@@ -20,8 +24,49 @@ type identifiedConn struct {
 	id string
 }
 
-func (conn *identifiedConn) ConnectionID() string { return conn.id }
-func (conn *identifiedConn) UnwrapConn() net.Conn { return conn.Conn }
+type proxyUsernameConn struct {
+	net.Conn
+	username string
+}
+
+func (conn *identifiedConn) ConnectionID() string     { return conn.id }
+func (conn *identifiedConn) UnwrapConn() net.Conn     { return conn.Conn }
+func (conn *proxyUsernameConn) ProxyUsername() string { return conn.username }
+func (conn *proxyUsernameConn) UnwrapConn() net.Conn  { return conn.Conn }
+
+// WithProxyUsername attaches only the authenticated proxy username to a
+// connection. Passwords and authorization headers are deliberately excluded.
+func WithProxyUsername(conn net.Conn, username string) net.Conn {
+	if conn == nil || username == "" {
+		return conn
+	}
+	if ProxyUsernameFrom(conn) != "" {
+		return conn
+	}
+	return &proxyUsernameConn{Conn: conn, username: username}
+}
+
+// ProxyUsernameFrom follows transparent connection wrappers and returns the
+// authenticated proxy username, if the proxy protocol supplied one.
+func ProxyUsernameFrom(conn net.Conn) string {
+	for depth := 0; conn != nil && depth < 16; depth++ {
+		if value, ok := conn.(proxyUsernameCarrier); ok {
+			if username := value.ProxyUsername(); username != "" {
+				return username
+			}
+		}
+		value, ok := conn.(unwrapper)
+		if !ok {
+			return ""
+		}
+		next := value.UnwrapConn()
+		if next == conn {
+			return ""
+		}
+		conn = next
+	}
+	return ""
+}
 
 // New returns a Crockford-base32 ULID with random entropy and a millisecond UTC
 // timestamp. IDs need not be strictly monotonic within one millisecond.

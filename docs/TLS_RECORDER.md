@@ -41,6 +41,18 @@ GREASE нормализуется в распознанных списках. SN
 сообщениями и может быть передан внешним state. Поля не раскрывают ticket,
 identity или binder bytes.
 
+## Идентичность клиента
+
+Observation сохраняет identity evidence отдельно от fingerprint:
+
+- `proxy_username` с confidence `exact`, если клиент прошёл HTTP/SOCKS5-аутентификацию;
+- `source_ip` с confidence `inferred`, если username отсутствует и source —
+  валидный IP-адрес.
+
+Пароль, `Proxy-Authorization` и другие секреты не попадают в observation.
+Fingerprint сам по себе не назначает устройство; `resolved_device_id` остаётся
+пустым до появления явного mapping/Device Manager.
+
 ## Лимиты по умолчанию
 
 | Ресурс | Лимит |
@@ -203,6 +215,8 @@ append-only JSONL с compare-and-swap по `config_version`; путь задаё
 - анализируется первый ClientHello;
 - второй ClientHello после HelloRetryRequest не сопоставляется;
 - без `--capture-sqlite` хранилище в памяти не является durable spool;
+- device identity пока сохраняет evidence username/IP, но не содержит Device
+  Manager, временных mappings и application catalog;
 - HTTP export выгружает текущее окно, а не содержимое JSONL;
 - SQLite persistence уже есть, но полноценного SQL-поиска/экспорта по всей базе,
   пользователей, ролей и общего audit-журнала конфигурации ещё нет;

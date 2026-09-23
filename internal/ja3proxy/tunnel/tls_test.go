@@ -13,9 +13,32 @@ import (
 
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/certstore"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/fingerprint"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/flowid"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/recorder"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/upstreamtls"
 	utls "github.com/refraction-networking/utls"
 )
+
+func TestApplyIdentityEvidenceUsesUsernameThenSourceIP(t *testing.T) {
+	left, right := net.Pipe()
+	defer left.Close()
+	defer right.Close()
+
+	meta := applyIdentityEvidence(recorder.Meta{Source: "192.0.2.10:53122"}, flowid.WithProxyUsername(left, "iphone017"))
+	if meta.IdentitySource != "proxy_username" || meta.IdentityValue != "iphone017" || meta.Confidence != "exact" {
+		t.Fatalf("username identity = %+v", meta)
+	}
+
+	meta = applyIdentityEvidence(recorder.Meta{Source: "192.0.2.10:53122"}, left)
+	if meta.IdentitySource != "source_ip" || meta.IdentityValue != "192.0.2.10" || meta.Confidence != "inferred" {
+		t.Fatalf("source IP identity = %+v", meta)
+	}
+
+	meta = applyIdentityEvidence(recorder.Meta{Source: "not-an-ip:1234"}, left)
+	if meta.IdentitySource != "" || meta.IdentityValue != "" || meta.Confidence != "" {
+		t.Fatalf("invalid source produced identity = %+v", meta)
+	}
+}
 
 func TestMatchingProtocols(t *testing.T) {
 	tests := []struct {

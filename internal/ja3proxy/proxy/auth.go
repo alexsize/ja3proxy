@@ -50,9 +50,14 @@ func (p *Proxy) authentication() proxyCredentials {
 }
 
 func (p *Proxy) authenticateHTTP(response http.ResponseWriter, request *http.Request) bool {
+	_, ok := p.authenticateHTTPIdentity(response, request)
+	return ok
+}
+
+func (p *Proxy) authenticateHTTPIdentity(response http.ResponseWriter, request *http.Request) (string, bool) {
 	credentials := p.authentication()
 	if !credentials.enabled() {
-		return true
+		return "", true
 	}
 
 	authorization := request.Header.Get("Proxy-Authorization")
@@ -63,12 +68,12 @@ func (p *Proxy) authenticateHTTP(response http.ResponseWriter, request *http.Req
 			username, password, found := strings.Cut(string(decoded), ":")
 			if found && credentials.matches(username, password) {
 				request.Header.Del("Proxy-Authorization")
-				return true
+				return username, true
 			}
 		}
 	}
 
 	response.Header().Set("Proxy-Authenticate", proxyAuthRealm)
 	http.Error(response, "Proxy Authentication Required", http.StatusProxyAuthRequired)
-	return false
+	return "", false
 }

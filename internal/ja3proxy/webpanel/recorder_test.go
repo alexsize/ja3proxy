@@ -37,7 +37,13 @@ func TestRecorderAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 3; i++ {
-		r.TryCapture(recorder.Meta{Destination: "test.example", ConnectionID: recorder.NewID()}, tlshello.Capture{Status: "timeout", ErrorCode: "capture_timeout"})
+		meta := recorder.Meta{Destination: "test.example", ConnectionID: recorder.NewID()}
+		if i == 0 {
+			meta.IdentitySource = "proxy_username"
+			meta.IdentityValue = "iphone017"
+			meta.Confidence = "exact"
+		}
+		r.TryCapture(meta, tlshello.Capture{Status: "timeout", ErrorCode: "capture_timeout"})
 	}
 	r.Close()
 	h := Server{Recorder: r}.Handler()
@@ -63,6 +69,13 @@ func TestRecorderAPI(t *testing.T) {
 	json.Unmarshal(w.Body.Bytes(), &page)
 	if len(page.Items) != 1 {
 		t.Fatal("pagination")
+	}
+	filtered := requestRecorder(h, "/api/v1/observations?q=iphone017")
+	var filteredPage struct {
+		Items []recorder.Observation `json:"items"`
+	}
+	if filtered.Code != 200 || json.Unmarshal(filtered.Body.Bytes(), &filteredPage) != nil || len(filteredPage.Items) != 1 || filteredPage.Items[0].IdentityValue != "iphone017" {
+		t.Fatalf("identity search = %s", filtered.Body.String())
 	}
 	for _, path := range []string{"/api/v1/status", "/api/v1/tls/presets", "/api/v1/observations/" + page.Items[0].ID, "/api/v1/export/observations", "/recorder.html", "/recorder.js", "/profiles.html", "/profiles.js", "/profiles.css"} {
 		if w := requestRecorder(h, path); w.Code != 200 {

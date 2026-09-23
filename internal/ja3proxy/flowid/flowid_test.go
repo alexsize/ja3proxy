@@ -26,3 +26,21 @@ func TestWrapAssignsOneStableIDThroughWrappers(t *testing.T) {
 		t.Fatal("Wrap replaced an already identified connection")
 	}
 }
+
+func TestProxyUsernameSurvivesTransparentWrappers(t *testing.T) {
+	left, right := net.Pipe()
+	defer left.Close()
+	defer right.Close()
+
+	identified := Wrap(left)
+	withUsername := WithProxyUsername(identified, "device-user")
+	if got := ProxyUsernameFrom(withUsername); got != "device-user" {
+		t.Fatalf("proxy username = %q, want device-user", got)
+	}
+	if got := ProxyUsernameFrom(&testWrapper{Conn: withUsername}); got != "device-user" {
+		t.Fatalf("wrapped proxy username = %q, want device-user", got)
+	}
+	if got := WithProxyUsername(withUsername, "other"); got != withUsername {
+		t.Fatal("replaced existing proxy username")
+	}
+}

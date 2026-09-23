@@ -95,7 +95,7 @@ func (panel Server) observations(w http.ResponseWriter, r *http.Request) {
 			}
 			continue
 		}
-		search := o.Destination + " " + o.Source + " " + o.ConnectionID
+		search := o.Destination + " " + o.Source + " " + o.ConnectionID + " " + o.IdentitySource + " " + o.IdentityValue + " " + o.Confidence + " " + o.ResolvedDeviceID
 		if o.Fingerprints != nil {
 			search += " " + o.Fingerprints.JA3 + " " + o.Fingerprints.JA3Hash + " " + o.Fingerprints.JA4
 		}
