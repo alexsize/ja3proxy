@@ -3,6 +3,7 @@ package tunnel
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"io"
 	"net"
 	"path/filepath"
@@ -296,6 +297,29 @@ func TestResolvePostTLSRouteUsesClientSNI(t *testing.T) {
 	decision := handler.resolvePostTLSRoute(ConnectRequest{Host: "connect.example.com", Port: 443}, "secure.example.com", nil)
 	if decision.MatchedRuleID != "blocked-sni" || decision.Action.Mode != "BLOCK" {
 		t.Fatalf("POST_CLIENTHELLO decision = %+v", decision)
+	}
+}
+
+func TestRoutingSnapshotKeepsTwoPhaseEvidenceWithoutActionSecrets(t *testing.T) {
+	pre := routing.Decision{
+		ConfigVersion: 4, Phase: routing.PhasePreTLS, MatchedRuleID: "pre-route",
+		MatchedRulePriority: 3, MatchReason: "exact",
+	}
+	snapshot := routingSnapshot(pre)
+	if snapshot == nil || snapshot.PreTLS == nil || snapshot.PreTLS.ConfigVersion != 4 || snapshot.PreTLS.MatchedRuleID != "pre-route" {
+		t.Fatalf("pre-TLS routing snapshot = %+v", snapshot)
+	}
+	post := routeDecisionEvidence(routing.Decision{
+		ConfigVersion: 4, Phase: routing.PhasePostClientHello, MatchedRuleID: "post-route",
+		MatchedRulePriority: 8, MatchReason: "wildcard",
+	})
+	snapshot.PostClientHello = post
+	encoded, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("marshal routing snapshot: %v", err)
+	}
+	if strings.Contains(string(encoded), "proxy-password") || !strings.Contains(string(encoded), "post-route") {
+		t.Fatalf("routing snapshot JSON = %s", encoded)
 	}
 }
 

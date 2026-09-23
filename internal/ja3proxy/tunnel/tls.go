@@ -354,7 +354,11 @@ func (handler *TunnelHandler) ConnectWithRequest(request ConnectRequest, destCon
 		}
 		meta := recorder.Meta{ConnectionID: id, CapturePoint: "CLIENT_IN", Direction: "inbound", ByteSource: "client_socket_read", Mode: recordMode, Destination: sni, Source: netutil.RemoteAddr(clientConn)}
 		meta = applyIdentityEvidenceWithRegistry(meta, clientConn, handler.Devices)
+		meta.Routing = routingSnapshot(routeDecision)
 		outMeta = meta
+		// Keep inbound and outbound snapshots independent: the post-ClientHello
+		// decision is attached only to the outbound observation later.
+		outMeta.Routing = routingSnapshot(routeDecision)
 		outMeta.CapturePoint = "PROXY_OUT"
 		outMeta.Direction = "outbound"
 		outMeta.ByteSource = "upstream_socket_successful_write"
@@ -438,6 +442,12 @@ func (handler *TunnelHandler) ConnectWithRequest(request ConnectRequest, destCon
 				serverName = hello.ServerName
 			}
 			postRoute := handler.resolvePostTLSRoute(request, serverName, clientConn)
+			if postEvidence := routeDecisionEvidence(postRoute); postEvidence != nil {
+				if outMeta.Routing == nil {
+					outMeta.Routing = &recorder.RoutingSnapshot{}
+				}
+				outMeta.Routing.PostClientHello = postEvidence
+			}
 			if postRoute.MatchedRuleID != "" && strings.EqualFold(postRoute.Action.Mode, "BLOCK") {
 				return nil, fmt.Errorf("route %q blocked POST_CLIENTHELLO", postRoute.MatchedRuleID)
 			}
@@ -523,6 +533,30 @@ func (handler *TunnelHandler) resolveRoute(phase routing.Phase, request ConnectR
 	return handler.Routes.Resolve(phase, routing.Request{
 		Host: request.Host, SNI: sni, IP: ip, Port: request.Port, Username: request.Username,
 	})
+}
+
+func routingSnapshot(decision routing.Decision) *recorder.RoutingSnapshot {
+	evidence := routeDecisionEvidence(decision)
+	if evidence == nil {
+		return nil
+	}
+	return &recorder.RoutingSnapshot{PreTLS: evidence}
+}
+
+func routeDecisionEvidence(decision routing.Decision) *recorder.RouteDecision {
+	if decision.ConfigVersion == 0 && decision.MatchedRuleID == "" && decision.MatchReason == "" {
+		return nil
+	}
+	evidence := &recorder.RouteDecision{
+		ConfigVersion: decision.ConfigVersion,
+		MatchedRuleID: decision.MatchedRuleID,
+		MatchReason:   decision.MatchReason,
+	}
+	if decision.MatchedRuleID != "" {
+		priority := decision.MatchedRulePriority
+		evidence.MatchedRulePriority = &priority
+	}
+	return evidence
 }
 
 func applyIdentityEvidence(meta recorder.Meta, clientConn net.Conn) recorder.Meta {

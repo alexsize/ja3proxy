@@ -937,6 +937,22 @@
         },
         "required": ["config_version", "phase", "match_reason", "action"]
       },
+      "RouteDecisionEvidence": {
+        "type": "object",
+        "properties": {
+          "config_version": {"type": "integer", "minimum": 0},
+          "matched_rule_id": {"type": "string"},
+          "matched_rule_priority": {"type": "integer"},
+          "match_reason": {"type": "string"}
+        }
+      },
+      "RoutingSnapshot": {
+        "type": "object",
+        "properties": {
+          "pre_tls": {"$ref": "#/components/schemas/RouteDecisionEvidence"},
+          "post_clienthello": {"$ref": "#/components/schemas/RouteDecisionEvidence"}
+        }
+      },
       "Stats": {
         "type": "object",
         "properties": {
@@ -1319,6 +1335,9 @@
           },
           "route_match_reason": {
             "type": "string"
+          },
+          "routing": {
+            "$ref": "#/components/schemas/RoutingSnapshot"
           },
           "runtime_mutations": {
             "type": "array",

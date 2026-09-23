@@ -53,9 +53,25 @@ type Meta struct {
 	MatchedRouteID          string               `json:"matched_route_id,omitempty"`
 	MatchedRoutePriority    *int                 `json:"matched_route_priority,omitempty"`
 	RouteMatchReason        string               `json:"route_match_reason,omitempty"`
+	Routing                 *RoutingSnapshot     `json:"routing,omitempty"`
 	RuntimeMutations        []RuntimeMutation    `json:"runtime_mutations,omitempty"`
 	Expected                *FingerprintExpected `json:"-"`
 	Forwarded               *ForwardingExpected  `json:"-"`
+}
+
+// RoutingSnapshot records the immutable two-phase routing decisions used for
+// one connection. It deliberately stores match evidence, not action payloads:
+// route actions may contain proxy credentials and must never enter telemetry.
+type RoutingSnapshot struct {
+	PreTLS          *RouteDecision `json:"pre_tls,omitempty"`
+	PostClientHello *RouteDecision `json:"post_clienthello,omitempty"`
+}
+
+type RouteDecision struct {
+	ConfigVersion       uint64 `json:"config_version,omitempty"`
+	MatchedRuleID       string `json:"matched_rule_id,omitempty"`
+	MatchedRulePriority *int   `json:"matched_rule_priority,omitempty"`
+	MatchReason         string `json:"match_reason,omitempty"`
 }
 
 type RuntimeMutation struct {
