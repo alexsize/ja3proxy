@@ -6,6 +6,7 @@ type RunningConfig struct {
 	CaptureJSONL           string
 	CaptureSQLite          string
 	CaptureSQLiteRetention int
+	DeviceMapFile          string
 	TLSMode                string
 	TLSTemplateFile        string
 	DumpTraffic            bool

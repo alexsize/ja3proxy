@@ -3,7 +3,7 @@
   "info": {
     "title": "Локальный API регистратора JA3Proxy",
     "version": "0.5.0",
-    "description": "Наблюдения в ограниченной памяти. Доступ только через loopback с проверкой Host, адреса клиента и Origin; аутентификация пользователей пока отсутствует. Это не полный API центра управления."
+    "description": "Наблюдения в ограниченной памяти и явные device mappings. Доступ только через loopback с проверкой Host, адреса клиента и Origin; аутентификация пользователей пока отсутствует. Это не полный API центра управления."
   },
   "servers": [
     {
@@ -34,6 +34,33 @@
                     "enabled",
                     "stats"
                   ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Отклонён нелокальный клиент, Host или Origin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/devices": {
+      "get": {
+        "operationId": "listDevices",
+        "responses": {
+          "200": {
+            "description": "Загруженный явный реестр устройств",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceList"
                 }
               }
             }
@@ -595,6 +622,39 @@
           }
         }
       },
+      "DeviceList": {
+        "type": "object",
+        "required": ["schema_version", "config_version", "items"],
+        "properties": {
+          "schema_version": {"const": "device-registry/1"},
+          "config_version": {"type": "integer", "minimum": 0},
+          "items": {
+            "type": "array",
+            "items": {"$ref": "#/components/schemas/Device"}
+          }
+        }
+      },
+      "Device": {
+        "type": "object",
+        "required": ["id", "name", "enabled"],
+        "properties": {
+          "id": {"type": "string"},
+          "name": {"type": "string"},
+          "description": {"type": "string"},
+          "proxy_username": {"type": "string"},
+          "source_ips": {"type": "array", "items": {"type": "string", "format": "ipvanyaddress"}},
+          "tags": {"type": "array", "items": {"type": "string"}},
+          "platform": {"type": "string"},
+          "app_name": {"type": "string"},
+          "app_version": {"type": "string"},
+          "os_name": {"type": "string"},
+          "os_version": {"type": "string"},
+          "hardware": {"type": "string"},
+          "created_at": {"type": "string"},
+          "last_seen_at": {"type": "string"},
+          "enabled": {"type": "boolean"}
+        }
+      },
       "Observation": {
         "type": "object",
         "properties": {
@@ -661,6 +721,18 @@
             "type": "string"
           },
           "source": {
+            "type": "string"
+          },
+          "identity_source": {
+            "enum": ["proxy_username", "source_ip", "packet_sensor", "api_mapping"]
+          },
+          "identity_value": {
+            "type": "string"
+          },
+          "confidence": {
+            "enum": ["exact", "inferred", "ambiguous"]
+          },
+          "resolved_device_id": {
             "type": "string"
           },
           "profile": {

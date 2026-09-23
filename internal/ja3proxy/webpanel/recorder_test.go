@@ -77,7 +77,7 @@ func TestRecorderAPI(t *testing.T) {
 	if filtered.Code != 200 || json.Unmarshal(filtered.Body.Bytes(), &filteredPage) != nil || len(filteredPage.Items) != 1 || filteredPage.Items[0].IdentityValue != "iphone017" {
 		t.Fatalf("identity search = %s", filtered.Body.String())
 	}
-	for _, path := range []string{"/api/v1/status", "/api/v1/tls/presets", "/api/v1/observations/" + page.Items[0].ID, "/api/v1/export/observations", "/recorder.html", "/recorder.js", "/profiles.html", "/profiles.js", "/profiles.css"} {
+	for _, path := range []string{"/api/v1/status", "/api/v1/devices", "/api/v1/tls/presets", "/api/v1/observations/" + page.Items[0].ID, "/api/v1/export/observations", "/recorder.html", "/recorder.js", "/profiles.html", "/profiles.js", "/profiles.css"} {
 		if w := requestRecorder(h, path); w.Code != 200 {
 			t.Fatalf("%s: %d", path, w.Code)
 		}

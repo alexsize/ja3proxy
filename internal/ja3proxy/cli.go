@@ -28,6 +28,7 @@ type cliOptions struct {
 	captureJSONL           string
 	captureSQLite          string
 	captureSQLiteRetention int
+	deviceMapFile          string
 	tlsMode                string
 	tlsTemplateFile        string
 	listen                 string
@@ -81,6 +82,7 @@ func registerCLIFlags(flags *flag.FlagSet, options *cliOptions) {
 	flags.StringVar(&options.captureJSONL, "capture-jsonl", "", "создать новый JSONL-файл наблюдений; требуется --capture-tls")
 	flags.StringVar(&options.captureSQLite, "capture-sqlite", "", "сохранять наблюдения в SQLite; требуется --capture-tls")
 	flags.IntVar(&options.captureSQLiteRetention, "capture-sqlite-retention", 100000, "максимальное число наблюдений в SQLite (1..1000000)")
+	flags.StringVar(&options.deviceMapFile, "device-map-file", "", "JSON-реестр явных device mappings")
 	flags.StringVar(&options.tlsMode, "tls-mode", "MITM_REISSUE", "режим туннеля: MITM_REISSUE, PASSTHROUGH, OBSERVE_ONLY, BLOCK")
 	flags.StringVar(&options.tlsTemplateFile, "tls-template-file", "profiles/tls-templates.jsonl", "журнал версий редактируемых TLS-профилей")
 	flags.StringVar(&options.listen, "listen", defaultListen, "адрес прослушивания, например :8080 или 127.0.0.1:8080")
@@ -131,6 +133,7 @@ Recorder и диагностика:
   --capture-jsonl string          создать новый JSONL-файл, лимит 256 МиБ
   --capture-sqlite string         durable SQLite-хранилище наблюдений; retention по умолчанию 100000
   --capture-sqlite-retention int  максимальное число наблюдений в SQLite (1..1000000)
+  --device-map-file string        JSON-реестр device mappings по username/IP
   --tls-mode string               MITM_REISSUE, PASSTHROUGH, OBSERVE_ONLY, BLOCK
   --tls-template-file string      журнал редактируемых TLS-профилей (по умолчанию "profiles/tls-templates.jsonl")
   --log-level string              debug, info, warn или error (по умолчанию "info")
@@ -173,6 +176,7 @@ func applyCLIOptions(config *RunningConfig, options cliOptions, specified map[st
 	config.CaptureJSONL = options.captureJSONL
 	config.CaptureSQLite = options.captureSQLite
 	config.CaptureSQLiteRetention = options.captureSQLiteRetention
+	config.DeviceMapFile = options.deviceMapFile
 	config.TLSMode = mode
 	config.TLSTemplateFile = options.tlsTemplateFile
 

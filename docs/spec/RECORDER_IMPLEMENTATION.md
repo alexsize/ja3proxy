@@ -25,6 +25,10 @@
 SQLite открывается повторно после перезапуска, применяет versioned migration и
 удерживает по умолчанию 100 000 последних observations.
 
+Для явного device mapping добавьте `--device-map-file devices.json`. Реестр
+имеет схему `device-registry/1`; username имеет приоритет над source IP,
+неоднозначный mapping оставляет `resolved_device_id` пустым.
+
 `--capture-raw` дополнительно сохраняет raw handshake и TLS records (base64 в JSON). Без него raw хранится только временно для вычисления fingerprint. JSONL ограничен 256 MiB; существующий файл не перезаписывается. При достижении лимита экспорт прекращается, счётчик ошибок растёт, proxy продолжает работу. Окно памяти и файл экспорта — разные источники: HTTP export выгружает только текущее окно памяти.
 
 JSONL пока не шифруется. Размещайте экспорт в контролируемом каталоге; raw содержит session identifiers/tickets. Шифрованный spool и secret provider относятся к незавершённому Release 1.
@@ -39,6 +43,7 @@ JSONL пока не шифруется. Размещайте экспорт в �
 | FR-CAP-002: успешные outbound Write bytes | `tlshello.Conn` | `TestRecordingConnShortWrites`, серверная проверка raw в matrix |
 | FR-CONN-001: ID до protocol detection | `flowid`, `MixedProxyListener` | `TestMixedProxyListenerAssignsConnectionIDBeforeProtocolDetection`, `TestWrapAssignsOneStableIDThroughWrappers` |
 | FR-IDENTITY-001: proxy username → source IP fallback с confidence | `flowid`, proxy auth, recorder metadata | `TestProxyUsernameSurvivesTransparentWrappers`, `TestApplyIdentityEvidenceUsesUsernameThenSourceIP` |
+| FR-DEVICE-001: explicit device mapping с username/IP priority | `device.Store`, tunnel resolver | `TestOpenAndResolveDeviceMappings`, `TestAmbiguousUsernameDoesNotFallBackToIP` |
 | FR-FP-001: JA3/JA4 | `Calculate` | `TestGoldenMinimal`, `TestJA4PublishedVector`, независимый e2e JA3 parser |
 | FR-SESSION-001: варианты FULL/RESUMED/PSK и PSK metadata | `Hello`/`Fingerprints` model | `TestPSKIdentityRedaction`, `TestResumedHandshakeVariantCanBeDeclared` |
 | FR-SESSION-002: PSK presets явно отделены от full-handshake | fingerprint catalog/API/UI | `TestPSKPresetsAreMarkedAsResumptionProfiles` |
@@ -225,8 +230,8 @@ Bearer/Basic значения до передачи записи в backend.
    Текущий versioned corpus manifest честно отделяет runtime wire captures,
    published vector и synthetic fixtures и перечисляет оставшиеся пробелы.
 2. MVP-1: SQLite, миграции и retention реализованы через `--capture-sqlite`;
-   identity evidence username/IP уже сохраняется с confidence, но Device
-   Manager, временные mappings и привязка приложений ещё остаются. Сейчас ID
+   identity evidence username/IP и явный mapping уже сохраняются с confidence,
+   но временные назначения и полноценная привязка приложений ещё остаются. Сейчас ID
    объединяет только пару TLS observations и создаётся при входе в tunnel handler.
 3. MVP-2: остаются общий двухфазный route manager, приоритеты/несколько
    активных profiles/upstreams и полноценные runtime snapshots. Версионируемый

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/device"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/logutil"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/recorder"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/tlsprofile"
@@ -57,6 +58,7 @@ type ConfigUpdater func(ConfigUpdate) (RuntimeStatus, error)
 
 type Server struct {
 	Recorder *recorder.Recorder
+	Devices  *device.Store
 	Profiles *tlsprofile.Store
 	Address  string
 	Monitor  *traffic.TrafficMonitor

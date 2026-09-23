@@ -31,6 +31,13 @@ func TestRecorderCLI(t *testing.T) {
 		t.Fatalf("sqlite retention = %d", app.Config.CaptureSQLiteRetention)
 	}
 	app = newDefaultApp()
+	if err := app.parseFlags([]string{"--device-map-file", "devices.json"}); err != nil {
+		t.Fatal(err)
+	}
+	if app.Config.DeviceMapFile != "devices.json" {
+		t.Fatalf("device map path = %q", app.Config.DeviceMapFile)
+	}
+	app = newDefaultApp()
 	if err := app.parseFlags(nil); err != nil {
 		t.Fatal(err)
 	}

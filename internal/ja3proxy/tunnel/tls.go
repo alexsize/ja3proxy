@@ -11,6 +11,7 @@ import (
 
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/capture/tlshello"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/certstore"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/device"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/fingerprint"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/flowid"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/logutil"
@@ -24,6 +25,7 @@ import (
 
 type TunnelHandler struct {
 	Recorder            *recorder.Recorder
+	Devices             *device.Store
 	TLSProfiles         *tlsprofile.Store
 	Mode                string
 	CaptureTimeout      time.Duration
@@ -300,7 +302,7 @@ func (handler *TunnelHandler) Connect(sni string, destConn net.Conn, clientConn 
 			id = recorder.NewID()
 		}
 		meta := recorder.Meta{ConnectionID: id, CapturePoint: "CLIENT_IN", Direction: "inbound", ByteSource: "client_socket_read", Mode: mode, Destination: sni, Source: netutil.RemoteAddr(clientConn)}
-		meta = applyIdentityEvidence(meta, clientConn)
+		meta = applyIdentityEvidenceWithRegistry(meta, clientConn, handler.Devices)
 		outMeta = meta
 		outMeta.CapturePoint = "PROXY_OUT"
 		outMeta.Direction = "outbound"
@@ -439,11 +441,15 @@ func (handler *TunnelHandler) Connect(sni string, destConn net.Conn, clientConn 
 }
 
 func applyIdentityEvidence(meta recorder.Meta, clientConn net.Conn) recorder.Meta {
+	return applyIdentityEvidenceWithRegistry(meta, clientConn, nil)
+}
+
+func applyIdentityEvidenceWithRegistry(meta recorder.Meta, clientConn net.Conn, devices *device.Store) recorder.Meta {
 	if username := flowid.ProxyUsernameFrom(clientConn); username != "" {
 		meta.IdentitySource = "proxy_username"
 		meta.IdentityValue = username
 		meta.Confidence = "exact"
-		return meta
+		return resolveDevice(meta, username, "", devices)
 	}
 	ip := netutil.StripPort(meta.Source)
 	if net.ParseIP(ip) == nil {
@@ -452,6 +458,20 @@ func applyIdentityEvidence(meta recorder.Meta, clientConn net.Conn) recorder.Met
 	meta.IdentitySource = "source_ip"
 	meta.IdentityValue = ip
 	meta.Confidence = "inferred"
+	return resolveDevice(meta, "", ip, devices)
+}
+
+func resolveDevice(meta recorder.Meta, username, sourceIP string, devices *device.Store) recorder.Meta {
+	if devices == nil {
+		return meta
+	}
+	resolution := devices.Resolve(username, sourceIP)
+	if resolution.Ambiguous {
+		meta.Confidence = "ambiguous"
+		meta.ResolvedDeviceID = ""
+		return meta
+	}
+	meta.ResolvedDeviceID = resolution.DeviceID
 	return meta
 }
 

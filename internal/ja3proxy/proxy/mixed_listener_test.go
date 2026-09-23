@@ -146,6 +146,9 @@ func TestMixedProxyListenerProtocolModesRejectOtherHandshake(t *testing.T) {
 				t.Fatalf("write handshake: %v", err)
 			}
 			if err := clientConn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+				if errors.Is(err, io.ErrClosedPipe) {
+					return
+				}
 				t.Fatalf("set read deadline: %v", err)
 			}
 			if _, err := clientConn.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {

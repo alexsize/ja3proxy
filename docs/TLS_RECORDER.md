@@ -108,6 +108,40 @@ capture point. Retention удаляет самые старые записи п�
 Существующая база открывается и мигрируется, поэтому накопление продолжается
 после штатного перезапуска. Каталог для файла должен существовать.
 
+### Явный реестр устройств
+
+Для разрешения evidence в device ID укажите реестр:
+
+```bash
+./ja3proxy --capture-tls --device-map-file devices.json
+```
+
+Формат файла — `schema_version: "device-registry/1"` и массив `devices` с
+полями `id`, `name`, `proxy_username`, `source_ips`, `tags`, сведениями о
+платформе/приложении и `enabled`. Сначала проверяется уникальный username,
+затем source IP. Если mapping неоднозначен, `resolved_device_id` не
+назначается, а `confidence` становится `ambiguous`. Fingerprint никогда не
+используется для автоматического назначения устройства.
+
+Минимальный пример:
+
+```json
+{
+  "schema_version": "device-registry/1",
+  "config_version": 1,
+  "devices": [
+    {
+      "id": "iphone-017",
+      "name": "iPhone 017",
+      "proxy_username": "iphone017",
+      "source_ips": ["192.0.2.10"],
+      "platform": "iOS",
+      "enabled": true
+    }
+  ]
+}
+```
+
 ## Локальный API
 
 | Метод и путь | Назначение |

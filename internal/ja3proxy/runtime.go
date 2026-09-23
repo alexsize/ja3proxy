@@ -16,6 +16,7 @@ import (
 
 	cflog "github.com/cloudflare/cfssl/log"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/certstore"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/device"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/dialer"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/fingerprint"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/logutil"
@@ -31,6 +32,7 @@ import (
 
 type App struct {
 	Recorder            *recorder.Recorder
+	Devices             *device.Store
 	TLSProfiles         *tlsprofile.Store
 	Config              *RunningConfig
 	CA                  *certstore.CertificateAuthority
@@ -110,6 +112,13 @@ func (app *App) configureRuntime(ctx context.Context) error {
 	if err := app.configureUpstreamTLSProfiles(); err != nil {
 		return err
 	}
+	if app.Devices == nil {
+		var err error
+		app.Devices, err = device.Open(app.Config.DeviceMapFile)
+		if err != nil {
+			return fmt.Errorf("configure device registry: %w", err)
+		}
+	}
 	app.ensureTrafficMonitor()
 	if app.TLSProfiles == nil {
 		var err error
@@ -158,6 +167,7 @@ func (app *App) serveProxyServices(ctx context.Context, proxyServer *httpproxy.P
 
 	panel := webpanel.Server{
 		Recorder: app.Recorder,
+		Devices:  app.Devices,
 		Profiles: app.TLSProfiles,
 		Address:  app.Config.WebPanel,
 		Monitor:  app.TrafficMonitor,
@@ -600,6 +610,7 @@ func (app *App) configuredTLSFingerprint() fingerprint.TLSFingerprint {
 func (app *App) tunnelHandler() *tunnel.TunnelHandler {
 	return &tunnel.TunnelHandler{
 		Recorder:            app.Recorder,
+		Devices:             app.Devices,
 		TLSProfiles:         app.TLSProfiles,
 		Mode:                app.Config.TLSMode,
 		Debug:               app.Config.dumpTrafficEnabled(),
