@@ -74,6 +74,24 @@ func (u *DynamicUpstreamDialer) Upstream() string {
 	return u.upstream
 }
 
+// HasFileCredentials reports whether the configured upstream references
+// username or password files instead of embedding credentials in the URL.
+func (u *DynamicUpstreamDialer) HasFileCredentials() bool {
+	if u == nil {
+		return false
+	}
+	u.mu.RLock()
+	upstream := u.upstream
+	u.mu.RUnlock()
+	parsed, err := parseProxyURL(upstream)
+	if err != nil || parsed.User == nil {
+		return false
+	}
+	username := parsed.User.Username()
+	password, hasPassword := parsed.User.Password()
+	return strings.HasPrefix(username, "file:") || hasPassword && strings.HasPrefix(password, "file:")
+}
+
 func (u *DynamicUpstreamDialer) Dial(network, addr string) (net.Conn, error) {
 	u.mu.RLock()
 	current := u.current

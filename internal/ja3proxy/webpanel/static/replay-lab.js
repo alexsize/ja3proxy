@@ -32,7 +32,7 @@ function fillPresets(items) {
   const full = items.filter(item => item.handshake_type !== "PSK");
   const psk = items.filter(item => item.handshake_type === "PSK");
   const option = item => `<option value="${item.client}|${item.version}">${item.client}@${item.version}${item.handshake_type === "PSK" ? " — PSK" : ""}</option>`;
-  el("preset").innerHTML = `<optgroup label="Full handshake">${full.map(option).join("")}</optgroup>${psk.length ? `<optgroup label="PSK / resumption">${psk.map(option).join("")}</optgroup>` : ""}`;
+  el("preset").innerHTML = `<optgroup label="Полное TLS-соединение">${full.map(option).join("")}</optgroup>${psk.length ? `<optgroup label="PSK / возобновление сеанса">${psk.map(option).join("")}</optgroup>` : ""}`;
 }
 function fillProfiles(items) {
   el("profile-id").replaceChildren();
@@ -40,7 +40,7 @@ function fillProfiles(items) {
   for (const profile of items) {
     const option = document.createElement("option");
     option.value = profile.id;
-    option.textContent = `${profile.name} · ${profile.profile_type || "CUSTOM"}${profile.replayability?.status === "UNSUPPORTED" ? " · UNSUPPORTED" : ""}`;
+    option.textContent = `${profile.name} · ${profile.profile_type || "CUSTOM"}${profile.replayability?.status === "UNSUPPORTED" ? " · не поддерживается (UNSUPPORTED)" : ""}`;
     el("profile-id").append(option);
     const matrixOption = document.createElement("option");
     matrixOption.value = profile.id;
@@ -56,7 +56,7 @@ function fillProfiles(items) {
 function targetBody() {
   const host = el("target-host").value.trim();
   const port = Number(el("target-port").value);
-  if (!host || !Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Укажите корректные хост и порт тестового endpoint.");
+  if (!host || !Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Укажите корректные имя или адрес тестового сервера и порт.");
   const timeout = Number(el("timeout").value || 10000);
   if (!Number.isInteger(timeout) || timeout < 100 || timeout > 60000) throw new Error("Таймаут должен быть от 100 до 60000 мс.");
   return {
@@ -97,7 +97,7 @@ async function run() {
     body.profile_type = "RANDOMIZED"; body.randomized_alpn = el("randomized-alpn").value;
   }
   el("run").disabled = true;
-  show("Выполняется TLS handshake с тестовым endpoint…");
+  show("Устанавливается TLS-соединение с тестовым сервером…");
   try { renderResult(await api("/api/v1/replay-lab/run", request(body))); }
   finally { el("run").disabled = false; }
 }
@@ -126,7 +126,7 @@ async function runMatrix() {
       const {id, row, cells} = rows[index];
       cells[3].textContent = "Выполняется…";
       attempted++;
-      show(`${rollerMode ? "Roller" : "Compatibility Matrix"}: ${attempted}/${ids.length} — ${cells[0].textContent}`);
+      show(`${rollerMode ? "Быстрый перебор" : "Матрица совместимости"}: ${attempted}/${ids.length} — ${cells[0].textContent}`);
       try {
         const result = await api("/api/v1/replay-lab/run", request({...target, profile_id: id}));
         cells[1].textContent = tlsVersionLabel(result.server_response?.tls_version);
@@ -153,7 +153,7 @@ async function runMatrix() {
       }
     }
     if (rollerMode) {
-      show(winner ? `Roller остановлен: первый успешный профиль — ${winner}; проверено ${attempted} из ${ids.length}.` : `Roller завершил все ${attempted} попыток, успешного профиля нет.`, !winner);
+      show(winner ? `Перебор остановлен: первый успешный профиль — ${winner}; проверено ${attempted} из ${ids.length}.` : `Перебор завершил все ${attempted} попыток, успешного профиля нет.`, !winner);
     } else {
       show(`Матрица завершена: ${attempted} профилей.`);
     }

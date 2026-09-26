@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/fingerprint"
 )
@@ -36,6 +37,7 @@ type cliOptions struct {
 	captureSpool           string
 	captureSpoolKey        string
 	captureSpoolMaxBytes   int64
+	captureSpoolKeyMaxAge  time.Duration
 	auditLog               string
 	auditSQLite            string
 	deviceMapFile          string
@@ -105,6 +107,7 @@ func registerCLIFlags(flags *flag.FlagSet, options *cliOptions) {
 	flags.StringVar(&options.captureSpool, "capture-spool", "", "зашифрованный bounded spool каталога recorder при сбое SQLite")
 	flags.StringVar(&options.captureSpoolKey, "capture-spool-key", "", "файл 32-байтного ключа зашифрованного recorder spool")
 	flags.Int64Var(&options.captureSpoolMaxBytes, "capture-spool-max-bytes", 512<<20, "максимальный размер recorder spool (1..4294967296)")
+	flags.DurationVar(&options.captureSpoolKeyMaxAge, "capture-spool-key-max-age", 0, "срок действия ключа spool; 0 отключает контроль срока (например, 8760h)")
 	flags.StringVar(&options.auditLog, "audit-log", "", "однократный импорт прежнего JSONL-аудита в общую SQLite-базу")
 	flags.StringVar(&options.auditSQLite, "audit-sqlite", "", "путь общей SQLite-базы аудита (должен совпадать с --state-sqlite)")
 	flags.StringVar(&options.deviceMapFile, "device-map-file", "", "однократный импорт прежнего JSON-реестра устройств")
@@ -174,6 +177,10 @@ Recorder и диагностика:
   --capture-spool string           зашифрованный bounded spool при сбое SQLite
   --capture-spool-key string       файл 32-байтного ключа recorder spool
   --capture-spool-max-bytes int    максимальный размер recorder spool
+  --capture-spool-key-max-age duration срок действия ключа spool; 0 — без контроля
+  --capture-spool-key-max-age duration срок действия ключа spool; 0 — без контроля
+  --capture-spool-key-max-age duration срок действия ключа spool; 0 — без контроля
+  --capture-spool-key-max-age duration срок действия ключа spool; 0 — без контроля
   --audit-log string              однократный импорт прежнего JSONL-аудита
   --audit-sqlite string           SQLite-файл общей базы; путь должен совпадать с --state-sqlite
   --device-map-file string        однократный импорт прежнего JSON-реестра username/IP
@@ -242,6 +249,12 @@ func applyCLIOptions(config *RunningConfig, options cliOptions, specified map[st
 			return fmt.Errorf("--capture-spool-max-bytes должно быть от 1 до 4294967296")
 		}
 	}
+	if options.captureSpoolKeyMaxAge < 0 {
+		return fmt.Errorf("--capture-spool-key-max-age не может быть отрицательным")
+	}
+	if options.captureSpoolKeyMaxAge > 0 && options.captureSpool == "" {
+		return fmt.Errorf("--capture-spool-key-max-age требует --capture-spool")
+	}
 	for _, alias := range []struct{ flagName, path string }{{"--capture-sqlite", options.captureSQLite}, {"--audit-sqlite", options.auditSQLite}} {
 		if strings.TrimSpace(alias.path) != "" && !sameSQLitePath(stateSQLite, alias.path) {
 			return fmt.Errorf("%s должен указывать на общую базу --state-sqlite (%s)", alias.flagName, stateSQLite)
@@ -266,6 +279,7 @@ func applyCLIOptions(config *RunningConfig, options cliOptions, specified map[st
 	config.CaptureSpool = options.captureSpool
 	config.CaptureSpoolKey = options.captureSpoolKey
 	config.CaptureSpoolMaxBytes = options.captureSpoolMaxBytes
+	config.CaptureSpoolKeyMaxAge = options.captureSpoolKeyMaxAge
 	config.AuditLog = options.auditLog
 	config.AuditSQLite = options.auditSQLite
 	config.DeviceMapFile = options.deviceMapFile

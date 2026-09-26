@@ -19,15 +19,16 @@ import (
 )
 
 // TestProxyBinaryLoadMatrix exercises the built CLI binary against a local TLS
-// target. It is opt-in because it builds and starts four proxy processes.
+// target. It is opt-in because it builds and starts several proxy processes.
 func TestProxyBinaryLoadMatrix(t *testing.T) {
 	if os.Getenv("JA3PROXY_E2E_BINARY_PERF") != "1" {
 		t.Skip("set JA3PROXY_E2E_BINARY_PERF=1 to run the built-binary load matrix")
 	}
 	concurrency := perfEnvInt("JA3PROXY_E2E_PERF_CONCURRENCY", 16)
 	requests := perfEnvInt("JA3PROXY_E2E_PERF_REQUESTS", 100)
-	if concurrency < 1 || requests < 1 {
-		t.Fatalf("invalid performance settings: concurrency=%d requests=%d", concurrency, requests)
+	rounds := perfEnvInt("JA3PROXY_E2E_PERF_ROUNDS", 5)
+	if concurrency < 1 || requests < 1 || rounds < 1 {
+		t.Fatalf("invalid performance settings: concurrency=%d requests=%d rounds=%d", concurrency, requests, rounds)
 	}
 	root := repositoryRoot(t)
 	goTool := goToolPath(t)
@@ -38,17 +39,126 @@ func TestProxyBinaryLoadMatrix(t *testing.T) {
 		t.Fatalf("build proxy binary: %v\n%s", err, output)
 	}
 	target := newLocalHTTPSTarget(t)
-	results := make([]proxyLoadResult, 0, 4)
-	for _, downstream := range []string{"http", "socks5"} {
-		for _, recording := range []bool{false, true} {
-			results = append(results, runBinaryProxyLoadCase(t, binary, target, downstream, recording, concurrency, requests))
+	results := make([]proxyLoadResult, 0, rounds*4)
+	comparisons := make([]proxyLoadComparison, 0, rounds*2)
+	for round := 0; round < rounds; round++ {
+		for downstreamIndex, downstream := range []string{"http", "socks5"} {
+			recorderFirst := (round+downstreamIndex)%2 == 1
+			order := []bool{false, true}
+			if recorderFirst {
+				order = []bool{true, false}
+			}
+			var off, on proxyLoadResult
+			for _, recording := range order {
+				result := runBinaryProxyLoadCase(t, binary, target, downstream, recording, concurrency, requests)
+				results = append(results, result)
+				if recording {
+					on = result
+				} else {
+					off = result
+				}
+			}
+			comparisons = append(comparisons, proxyLoadComparison{
+				Round: round + 1, Downstream: downstream,
+				RecorderFirst:       recorderFirst,
+				ThroughputChangePct: percentChange(off.Throughput, on.Throughput),
+				P95ChangePct:        percentChange(float64(off.P95NS), float64(on.P95NS)),
+			})
 		}
 	}
-	data, err := json.MarshalIndent(results, "", "  ")
+	summaries := summarizeProxyLoadComparisons(comparisons)
+	report := struct {
+		Rounds      int                   `json:"rounds"`
+		Results     []proxyLoadResult     `json:"results"`
+		Comparisons []proxyLoadComparison `json:"paired_comparisons"`
+		Summaries   []proxyLoadSummary    `json:"summaries"`
+	}{Rounds: rounds, Results: results, Comparisons: comparisons, Summaries: summaries}
+	data, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Log(string(data))
+}
+
+type proxyLoadComparison struct {
+	Round               int     `json:"round"`
+	Downstream          string  `json:"downstream"`
+	RecorderFirst       bool    `json:"recorder_on_ran_first"`
+	ThroughputChangePct float64 `json:"throughput_on_vs_off_pct"`
+	P95ChangePct        float64 `json:"p95_on_vs_off_pct"`
+}
+
+type proxyLoadSummary struct {
+	Downstream                string  `json:"downstream"`
+	Rounds                    int     `json:"rounds"`
+	MedianThroughputChangePct float64 `json:"median_throughput_on_vs_off_pct"`
+	MedianP95ChangePct        float64 `json:"median_p95_on_vs_off_pct"`
+	PassUnderTenPercent       bool    `json:"pass_under_10_percent"`
+}
+
+func TestSummarizeProxyLoadComparisons(t *testing.T) {
+	comparisons := []proxyLoadComparison{
+		{Downstream: "http", ThroughputChangePct: 10, P95ChangePct: 8},
+		{Downstream: "http", ThroughputChangePct: -4, P95ChangePct: 2},
+		{Downstream: "socks5", ThroughputChangePct: 6, P95ChangePct: 12},
+	}
+	summaries := summarizeProxyLoadComparisons(comparisons)
+	if len(summaries) != 2 {
+		t.Fatalf("summaries = %+v, want both proxy protocols", summaries)
+	}
+	if summaries[0].Downstream != "http" || summaries[0].MedianThroughputChangePct != 3 || summaries[0].MedianP95ChangePct != 5 {
+		t.Fatalf("HTTP summary = %+v", summaries[0])
+	}
+	if !summaries[0].PassUnderTenPercent {
+		t.Fatalf("HTTP summary should pass both 10%% limits: %+v", summaries[0])
+	}
+	if summaries[1].Downstream != "socks5" || summaries[1].MedianThroughputChangePct != 6 || summaries[1].MedianP95ChangePct != 12 {
+		t.Fatalf("SOCKS5 summary = %+v", summaries[1])
+	}
+	if summaries[1].PassUnderTenPercent {
+		t.Fatalf("SOCKS5 summary should fail the p95 10%% limit: %+v", summaries[1])
+	}
+}
+
+func percentChange(off, on float64) float64 {
+	if off == 0 {
+		return 0
+	}
+	return (on - off) / off * 100
+}
+
+func summarizeProxyLoadComparisons(comparisons []proxyLoadComparison) []proxyLoadSummary {
+	summaries := make([]proxyLoadSummary, 0, 2)
+	for _, downstream := range []string{"http", "socks5"} {
+		throughputChanges := make([]float64, 0)
+		p95Changes := make([]float64, 0)
+		for _, comparison := range comparisons {
+			if comparison.Downstream == downstream {
+				throughputChanges = append(throughputChanges, comparison.ThroughputChangePct)
+				p95Changes = append(p95Changes, comparison.P95ChangePct)
+			}
+		}
+		if len(throughputChanges) == 0 {
+			continue
+		}
+		sort.Float64s(throughputChanges)
+		sort.Float64s(p95Changes)
+		summaries = append(summaries, proxyLoadSummary{
+			Downstream: downstream, Rounds: len(throughputChanges),
+			MedianThroughputChangePct: medianFloat64(throughputChanges),
+			MedianP95ChangePct:        medianFloat64(p95Changes),
+			PassUnderTenPercent:       medianFloat64(throughputChanges) > -10 && medianFloat64(p95Changes) < 10,
+		})
+	}
+	return summaries
+}
+
+func medianFloat64(sortedValues []float64) float64 {
+	middle := len(sortedValues) / 2
+	if len(sortedValues)%2 == 1 {
+		return sortedValues[middle]
+	}
+	return (sortedValues[middle-1] + sortedValues[middle]) / 2
 }
 
 func runBinaryProxyLoadCase(t *testing.T, binary, target, downstream string, recording bool, concurrency, requests int) proxyLoadResult {
@@ -66,6 +176,9 @@ func runBinaryProxyLoadCase(t *testing.T, binary, target, downstream string, rec
 	statePath := filepath.Join(workDir, "state.db")
 	args := []string{
 		"--listen", proxyAddress,
+		// Keep proxy behavior identical in recorder-on/off runs. Otherwise
+		// --capture-tls enables inspection while the default MITM mode differs.
+		"--tls-mode", "PASSTHROUGH",
 		"--state-sqlite", statePath,
 		"--ca-cert", filepath.Join(workDir, "ca.pem"),
 		"--ca-key", filepath.Join(workDir, "ca-key.pem"),

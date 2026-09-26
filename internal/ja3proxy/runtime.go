@@ -176,6 +176,7 @@ func (app *App) configureRuntime(ctx context.Context) error {
 			SQLitePath: app.Config.CaptureSQLite, SQLiteRetention: app.Config.CaptureSQLiteRetention,
 			SpoolPath: app.Config.CaptureSpool, SpoolKeyPath: app.Config.CaptureSpoolKey,
 			SpoolMaxBytes:  app.Config.CaptureSpoolMaxBytes,
+			SpoolKeyMaxAge: app.Config.CaptureSpoolKeyMaxAge,
 			SecretProvider: app.secretProvider(),
 		})
 		if err != nil {
@@ -453,25 +454,28 @@ func (app *App) serveProxyServices(ctx context.Context, proxyServer *httpproxy.P
 	}
 
 	panel := webpanel.Server{
-		Recorder:        app.Recorder,
-		Audit:           app.Audit,
-		AuthToken:       app.WebPanelToken,
-		AuthScopes:      app.WebPanelScopes,
-		AuthTokenExpiry: app.WebPanelTokenExpiry,
-		AuthTokens:      app.WebPanelTokens,
-		TLSCertFile:     app.Config.WebPanelCert,
-		TLSKeyFile:      app.Config.WebPanelKey,
-		SecretProvider:  app.secretProvider(),
-		Devices:         app.Devices,
-		Profiles:        app.TLSProfiles,
-		Routes:          app.Routes,
-		UpstreamTLS:     app.UpstreamTLSProfiles,
-		Address:         app.Config.WebPanel,
-		Monitor:         app.TrafficMonitor,
-		Runtime:         app.webPanelRuntimeStatus,
-		Update:          app.updateProxyConfig,
-		ReloadCA:        app.reloadCA,
-		CACertificate:   app.CA.X509Certificate,
+		Recorder:                  app.Recorder,
+		Audit:                     app.Audit,
+		AuthToken:                 app.WebPanelToken,
+		AuthScopes:                app.WebPanelScopes,
+		AuthTokenExpiry:           app.WebPanelTokenExpiry,
+		AuthTokens:                app.WebPanelTokens,
+		TLSCertFile:               app.Config.WebPanelCert,
+		TLSKeyFile:                app.Config.WebPanelKey,
+		SecretProvider:            app.secretProvider(),
+		Devices:                   app.Devices,
+		Profiles:                  app.TLSProfiles,
+		Routes:                    app.Routes,
+		UpstreamTLS:               app.UpstreamTLSProfiles,
+		Address:                   app.Config.WebPanel,
+		Monitor:                   app.TrafficMonitor,
+		Runtime:                   app.webPanelRuntimeStatus,
+		Update:                    app.updateProxyConfig,
+		ReloadCA:                  app.reloadCA,
+		RotateCA:                  app.rotateCA,
+		ReloadProxyAuth:           app.reloadProxyCredentials,
+		ReloadUpstreamCredentials: app.reloadUpstreamCredentials,
+		CACertificate:             app.CA.X509Certificate,
 	}
 	tokenRegistry, err := webpanel.OpenTokenRegistry(app.StateDB, app.webPanelAuthTokens())
 	if err != nil {
@@ -589,6 +593,82 @@ func (app *App) reloadCA() (webpanel.RuntimeStatus, error) {
 		return webpanel.RuntimeStatus{}, err
 	}
 	return app.webPanelRuntimeStatus(), nil
+}
+
+func (app *App) rotateCA() (webpanel.RuntimeStatus, error) {
+	if app == nil || app.Config == nil || app.CA == nil {
+		return webpanel.RuntimeStatus{}, fmt.Errorf("CA configuration is unavailable")
+	}
+	provider, ok := app.secretProvider().(secrets.LifecycleProvider)
+	if !ok {
+		return webpanel.RuntimeStatus{}, fmt.Errorf("secret provider does not support rotation")
+	}
+	if err := certstore.RotateCertificateAuthority(app.CA, provider, app.Config.Cert, app.Config.Key); err != nil {
+		return webpanel.RuntimeStatus{}, err
+	}
+	return app.webPanelRuntimeStatus(), nil
+}
+
+func (app *App) reloadProxyCredentials() (webpanel.RuntimeStatus, error) {
+	if app == nil || app.Config == nil {
+		return webpanel.RuntimeStatus{}, fmt.Errorf("proxy configuration is unavailable")
+	}
+	app.configMu.Lock()
+	defer app.configMu.Unlock()
+	if app.ProxyServer == nil {
+		return webpanel.RuntimeStatus{}, fmt.Errorf("proxy server is unavailable")
+	}
+	if app.Config.ProxyUsernameFile == "" && app.Config.ProxyPasswordFile == "" {
+		return webpanel.RuntimeStatus{}, fmt.Errorf("proxy credential files are not configured")
+	}
+	username, password := app.Config.ProxyUsername, app.Config.ProxyPassword
+	if app.Config.ProxyUsernameFile != "" {
+		value, err := secrets.Read(app.secretProvider(), app.Config.ProxyUsernameFile)
+		if err != nil {
+			return webpanel.RuntimeStatus{}, fmt.Errorf("read proxy username file: %w", err)
+		}
+		username = string(value)
+		clear(value)
+	}
+	if app.Config.ProxyPasswordFile != "" {
+		value, err := secrets.Read(app.secretProvider(), app.Config.ProxyPasswordFile)
+		if err != nil {
+			return webpanel.RuntimeStatus{}, fmt.Errorf("read proxy password file: %w", err)
+		}
+		password = string(value)
+		clear(value)
+	}
+	if err := validateProxyCredentials(username, password); err != nil {
+		return webpanel.RuntimeStatus{}, err
+	}
+	app.ProxyServer.SetAuthentication(username, password)
+	app.Config.ProxyUsername, app.Config.ProxyPassword = username, password
+	app.runtimeConfigVersion++
+	return app.webPanelRuntimeStatusLocked(), nil
+}
+
+func (app *App) reloadUpstreamCredentials() (webpanel.RuntimeStatus, error) {
+	if app == nil || app.Config == nil || app.UpstreamDialer == nil {
+		return webpanel.RuntimeStatus{}, fmt.Errorf("upstream proxy is unavailable")
+	}
+	app.configMu.Lock()
+	defer app.configMu.Unlock()
+	if !app.UpstreamDialer.HasFileCredentials() {
+		return webpanel.RuntimeStatus{}, fmt.Errorf("upstream credential files are not configured")
+	}
+	if err := app.UpstreamDialer.Configure(app.Config.Upstream); err != nil {
+		return webpanel.RuntimeStatus{}, fmt.Errorf("reload upstream credential files: %w", err)
+	}
+	app.routeDialersMu.Lock()
+	for _, current := range app.routeDialers {
+		if transport, ok := current.Transport.(*http.Transport); ok {
+			transport.CloseIdleConnections()
+		}
+	}
+	app.routeDialers = make(map[string]*dialer.UpstreamDialer)
+	app.routeDialersMu.Unlock()
+	app.runtimeConfigVersion++
+	return app.webPanelRuntimeStatusLocked(), nil
 }
 
 func (app *App) generateSessionKey() error {
@@ -1022,28 +1102,30 @@ func (app *App) webPanelRuntimeStatusLocked() webpanel.RuntimeStatus {
 		proxyProtocol = app.Config.ProxyProtocol
 	}
 	return webpanel.RuntimeStatus{
-		ConfigVersion:                  app.runtimeConfigVersion,
-		ProxyListen:                    proxyListen,
-		ProxyPort:                      proxyPort,
-		ProxyProtocol:                  proxyProtocol,
-		TLSClient:                      fp.Client,
-		TLSVersion:                     fp.Version,
-		TLSFingerprints:                fingerprintOptions,
-		Upstream:                       displayUpstream,
-		UpstreamEnabled:                upstream != "",
-		ProxyAuthEnabled:               app.Config.ProxyUsername != "" || app.Config.ProxyPassword != "",
-		ProxyUsername:                  app.Config.ProxyUsername,
-		MITMCACertificateStatus:        caValidity.Status,
-		MITMCACertificateSubject:       caSubject,
-		MITMCACertificateSHA256:        caSHA256,
-		MITMCACertificateNotBefore:     caNotBefore,
-		MITMCACertificateNotAfter:      caNotAfter,
-		MITMCACertificateDaysRemaining: caDaysRemaining,
-		PanelCertificateStatus:         panelValidity.Status,
-		PanelCertificateNotBefore:      panelNotBefore,
-		PanelCertificateNotAfter:       panelNotAfter,
-		PanelCertificateDaysRemaining:  panelDaysRemaining,
-		ConfigurationMode:              mode,
+		ConfigVersion:                     app.runtimeConfigVersion,
+		ProxyListen:                       proxyListen,
+		ProxyPort:                         proxyPort,
+		ProxyProtocol:                     proxyProtocol,
+		TLSClient:                         fp.Client,
+		TLSVersion:                        fp.Version,
+		TLSFingerprints:                   fingerprintOptions,
+		Upstream:                          displayUpstream,
+		UpstreamEnabled:                   upstream != "",
+		ProxyAuthEnabled:                  app.Config.ProxyUsername != "" || app.Config.ProxyPassword != "",
+		ProxyAuthFilesConfigured:          app.Config.ProxyUsernameFile != "" || app.Config.ProxyPasswordFile != "",
+		UpstreamCredentialFilesConfigured: app.UpstreamDialer != nil && app.UpstreamDialer.HasFileCredentials(),
+		ProxyUsername:                     app.Config.ProxyUsername,
+		MITMCACertificateStatus:           caValidity.Status,
+		MITMCACertificateSubject:          caSubject,
+		MITMCACertificateSHA256:           caSHA256,
+		MITMCACertificateNotBefore:        caNotBefore,
+		MITMCACertificateNotAfter:         caNotAfter,
+		MITMCACertificateDaysRemaining:    caDaysRemaining,
+		PanelCertificateStatus:            panelValidity.Status,
+		PanelCertificateNotBefore:         panelNotBefore,
+		PanelCertificateNotAfter:          panelNotAfter,
+		PanelCertificateDaysRemaining:     panelDaysRemaining,
+		ConfigurationMode:                 mode,
 		Chain: []webpanel.ChainHop{
 			{Role: "Клиент", Address: "Клиент прокси"},
 			{Role: "JA3Proxy", Address: proxyListen},

@@ -2,17 +2,17 @@
 <html lang="ru">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>JA3Proxy · TLS-профили и JA4</title><link rel="stylesheet" href="/profiles.css"></head>
 <body>
-<header><a href="/">JA3Proxy</a><a href="/recorder.html">Регистратор TLS</a><a href="/replay-lab.html">Replay Lab</a><a href="/tokens.html">Токены</a><strong>TLS-профили и JA4</strong></header>
+<header><a href="/">JA3Proxy</a><nav class="site-nav" aria-label="Навигация по панели"><a href="/recorder.html">Регистратор TLS</a><span aria-current="page">TLS-профили и JA4</span><a href="/replay-lab.html">Лаборатория TLS</a><a href="/tokens.html">Токены доступа</a></nav></header>
 <main>
   <h1>Конструктор TLS-профилей</h1>
-  <p>Детерминированные JA4 вычисляются из materialized ClientHello. RANDOMIZED создаёт новый ClientHello при каждом соединении; фактические JA3/JA4 смотрите в исходящих наблюдениях регистратора.</p>
-  <p class="notice">Random, session ID, GREASE, key shares и PSK остаются динамическими. Невоспроизводимые extensions явно помечаются как UNSUPPORTED и не могут быть активированы.</p>
+  <p>Детерминированные JA4 вычисляются по сформированному ClientHello. RANDOMIZED создаёт новый ClientHello при каждом соединении; фактические JA3/JA4 смотрите в исходящих наблюдениях регистратора.</p>
+  <p class="notice">Случайные значения, идентификатор сеанса, GREASE, key shares и PSK остаются динамическими. Невоспроизводимые расширения явно помечаются как UNSUPPORTED и не могут быть активированы.</p>
   <p id="status" role="status">Загрузка…</p>
 
   <section>
     <h2>Сохранённые профили</h2>
     <p>Версия конфигурации: <strong id="config-version">0</strong>; активный профиль: <strong id="active-profile">не выбран</strong>.</p>
-    <div class="table-scroll"><table><thead><tr><th>Имя</th><th>Семейство</th><th>Версия</th><th>База</th><th>Хосты</th><th>Ожидаемый JA4</th><th>Воспроизводимость</th><th>uTLS / совместимость</th><th>Действия</th></tr></thead><tbody id="profiles"></tbody></table></div>
+    <div class="table-scroll"><table aria-label="Сохранённые TLS-профили"><thead><tr><th>Имя</th><th>Семейство</th><th>Версия</th><th>База</th><th>Хосты</th><th>Ожидаемый JA4</th><th>Воспроизводимость</th><th>uTLS / совместимость</th><th>Действия</th></tr></thead><tbody id="profiles"></tbody></table></div>
     <button id="deactivate" type="button">Отключить пользовательский профиль</button>
   </section>
 
@@ -31,20 +31,20 @@
       <div class="actions deterministic-only"><button id="from-preset" type="button">Заполнить из пресета</button><button id="from-observation" type="button" hidden>Заполнить из наблюдения</button></div>
 
       <div class="fields deterministic-only">
-        <label>Cipher suites, JSON-массив uint16<textarea id="ciphers" rows="4" required></textarea></label>
-        <label>Порядок extensions, JSON-массив uint16<textarea id="extensions" rows="4" required></textarea></label>
+        <label>Наборы шифров TLS, JSON-массив uint16<textarea id="ciphers" rows="4" required></textarea></label>
+        <label>Порядок расширений TLS, JSON-массив uint16<textarea id="extensions" rows="4" required></textarea></label>
         <label>ALPN, JSON-массив строк<textarea id="alpn" rows="3" required></textarea></label>
-        <label>ALPN policy<select id="alpn-policy"><option>PROFILE</option><option>DOWNSTREAM</option><option selected>INTERSECTION</option><option>CUSTOM</option></select></label>
-        <label>Custom ALPN, JSON-массив строк<textarea id="custom-alpn" rows="3">[]</textarea></label>
+        <label>Политика ALPN<select id="alpn-policy"><option>PROFILE</option><option>DOWNSTREAM</option><option selected>INTERSECTION</option><option>CUSTOM</option></select></label>
+        <label>Пользовательский ALPN, массив строк JSON<textarea id="custom-alpn" rows="3">[]</textarea></label>
         <label>ALPS, JSON-массив строк<textarea id="alps" rows="3">[]</textarea></label>
-        <label>ALPS policy<select id="alps-policy"><option>PROFILE</option><option>DOWNSTREAM</option><option selected>INTERSECTION</option><option>CUSTOM</option></select></label>
-        <label>Custom ALPS, JSON-массив строк<textarea id="custom-alps" rows="3">[]</textarea></label>
-        <label>Supported versions, JSON-массив uint16<textarea id="versions" rows="3" required></textarea></label>
-        <label>Supported groups, JSON-массив uint16<textarea id="groups" rows="3" required></textarea></label>
-        <label>Signature algorithms, JSON-массив uint16<textarea id="signatures" rows="3" required></textarea></label>
-        <label>MUST-match, JSON Pointer paths<textarea id="must-match" rows="3" required></textarea></label>
-        <label>SHOULD-match, JSON Pointer paths<textarea id="should-match" rows="3" required></textarea></label>
-		<label class="wide">Constraints, JSON-массив объектов path/operator/value(s)<textarea id="constraints" rows="4" required></textarea></label>
+        <label>Политика ALPS<select id="alps-policy"><option>PROFILE</option><option>DOWNSTREAM</option><option selected>INTERSECTION</option><option>CUSTOM</option></select></label>
+        <label>Пользовательский ALPS, массив строк JSON<textarea id="custom-alps" rows="3">[]</textarea></label>
+        <label>Поддерживаемые версии, JSON-массив uint16<textarea id="versions" rows="3" required></textarea></label>
+        <label>Поддерживаемые группы, JSON-массив uint16<textarea id="groups" rows="3" required></textarea></label>
+        <label>Алгоритмы подписи, JSON-массив uint16<textarea id="signatures" rows="3" required></textarea></label>
+        <label>Обязательное совпадение, пути JSON Pointer<textarea id="must-match" rows="3" required></textarea></label>
+        <label>Желательное совпадение, пути JSON Pointer<textarea id="should-match" rows="3" required></textarea></label>
+		<label class="wide">Ограничения: массив объектов path/operator/value(s) в JSON<textarea id="constraints" rows="4" required></textarea></label>
       </div>
       <label class="check"><input id="enabled" type="checkbox" checked> Профиль разрешено активировать</label>
       <div class="actions"><button id="preview" type="button">Проверить профиль</button><button type="submit">Сохранить новую версию</button><button id="reset" type="button">Новый профиль</button></div>
@@ -53,7 +53,7 @@
 
   <section>
     <h2>Предварительный результат</h2>
-    <dl class="result"><div><dt>Воспроизводимость</dt><dd id="replayability">—</dd></div><div><dt>Ожидаемый JA4</dt><dd id="expected-ja4">—</dd></div><div><dt>Ожидаемый JA3</dt><dd id="expected-ja3">—</dd></div><div><dt>Normalized SHA-256</dt><dd id="expected-normalized">—</dd></div></dl>
+    <dl class="result"><div><dt>Воспроизводимость</dt><dd id="replayability">—</dd></div><div><dt>Ожидаемый JA4</dt><dd id="expected-ja4">—</dd></div><div><dt>Ожидаемый JA3</dt><dd id="expected-ja3">—</dd></div><div><dt>Нормализованный SHA-256</dt><dd id="expected-normalized">—</dd></div></dl>
     <pre id="preview-json">Сначала загрузите пресет или наблюдение.</pre>
   </section>
 </main>

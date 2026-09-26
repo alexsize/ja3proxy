@@ -38,12 +38,12 @@ async function refreshTokens() {
       }
       const actions = document.createElement("td");
       if (!item.revoked) {
-        const saveRole = document.createElement("button"); saveRole.type = "button"; saveRole.textContent = "Роль / scopes";
+        const saveRole = document.createElement("button"); saveRole.type = "button"; saveRole.textContent = "Изменить роль";
         saveRole.addEventListener("click", () => runTokenAction(async () => {
           await tokenAPI(`/api/v1/admin/tokens/${encodeURIComponent(item.id)}`, {method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify({role: role.value, expires_at: item.expires_at || ""})});
           await refreshTokens();
         }));
-        const rotate = document.createElement("button"); rotate.type = "button"; rotate.textContent = "Ротировать";
+        const rotate = document.createElement("button"); rotate.type = "button"; rotate.textContent = "Заменить токен";
         rotate.addEventListener("click", () => runTokenAction(async () => showIssued(await tokenAPI(`/api/v1/admin/tokens/${encodeURIComponent(item.id)}/rotate`, {method: "POST"}), true)));
         const revoke = document.createElement("button"); revoke.type = "button"; revoke.textContent = "Отозвать";
         revoke.addEventListener("click", () => runTokenAction(async () => { await tokenAPI(`/api/v1/admin/tokens/${encodeURIComponent(item.id)}`, {method: "DELETE"}); await refreshTokens(); }));

@@ -401,6 +401,17 @@ func TestDynamicUpstreamDialerReconfiguresNewRequests(t *testing.T) {
 	}
 }
 
+func TestDynamicUpstreamDialerDetectsFileCredentials(t *testing.T) {
+	fileBacked := &DynamicUpstreamDialer{upstream: "http://file%3A%2Ftmp%2Fuser:file%3A%2Ftmp%2Fpass@127.0.0.1:3128"}
+	if !fileBacked.HasFileCredentials() {
+		t.Fatal("HasFileCredentials() = false for file-backed credentials")
+	}
+	literal := &DynamicUpstreamDialer{upstream: "http://user:pass@127.0.0.1:3128"}
+	if literal.HasFileCredentials() {
+		t.Fatal("HasFileCredentials() = true for literal credentials")
+	}
+}
+
 func TestNewDynamicUpstreamDialerNormalizesInitialUpstream(t *testing.T) {
 	dynamic, err := NewDynamicUpstreamDialer("  socks5://127.0.0.1:1080  ", time.Second)
 	if err != nil {

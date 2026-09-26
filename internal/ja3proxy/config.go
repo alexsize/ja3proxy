@@ -1,5 +1,7 @@
 package ja3proxy
 
+import "time"
+
 type RunningConfig struct {
 	CaptureTLS             bool
 	CaptureTCPInterface    string
@@ -13,6 +15,7 @@ type RunningConfig struct {
 	CaptureSpool           string
 	CaptureSpoolKey        string
 	CaptureSpoolMaxBytes   int64
+	CaptureSpoolKeyMaxAge  time.Duration
 	AuditLog               string
 	AuditSQLite            string
 	DeviceMapFile          string

@@ -143,3 +143,75 @@ func TestCAReloadFailsClosedWithoutAuditAndPreservesErrorDetails(t *testing.T) {
 		t.Fatalf("failed reload = %d %s, calls=%d", response.Code, response.Body.String(), calls)
 	}
 }
+
+func TestCARotateRequiresAdminAndReportsClientTrustRequirement(t *testing.T) {
+	auditLog, err := audit.OpenSQLite(filepath.Join(t.TempDir(), "audit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer auditLog.Close()
+	calls := 0
+	panel := Server{
+		Address: "0.0.0.0:9090", TLSCertFile: "panel.pem", TLSKeyFile: "panel.pem", Audit: auditLog,
+		AuthTokens: []AuthToken{{ID: "viewer", Token: "viewer-secret", Role: "viewer"}, {ID: "admin", Token: "admin-secret", Role: "admin"}},
+		RotateCA: func() (RuntimeStatus, error) {
+			calls++
+			return RuntimeStatus{MITMCACertificateStatus: "VALID"}, nil
+		},
+	}
+	handler := panel.Handler()
+	request := func(token string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/ca/rotate", nil)
+		req.RemoteAddr = "192.0.2.1:1234"
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, req)
+		return response
+	}
+	if response := request(""); response.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous status = %d", response.Code)
+	}
+	if response := request("viewer-secret"); response.Code != http.StatusForbidden {
+		t.Fatalf("viewer status = %d", response.Code)
+	}
+	if calls != 0 {
+		t.Fatal("CA rotated without admin authorization")
+	}
+	response := request("admin-secret")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"client_trust_installation_required":true`) {
+		t.Fatalf("admin response = %d %s", response.Code, response.Body.String())
+	}
+	if calls != 1 || response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("calls=%d, cache-control=%q", calls, response.Header().Get("Cache-Control"))
+	}
+}
+
+func TestCARotateFailsWithoutAuditAndDoesNotExposeError(t *testing.T) {
+	calls := 0
+	panel := Server{Address: "127.0.0.1:9090", TLSCertFile: "panel.pem", TLSKeyFile: "panel.pem", RotateCA: func() (RuntimeStatus, error) {
+		calls++
+		return RuntimeStatus{}, errors.New("private key material")
+	}}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/ca/rotate", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.Host = "127.0.0.1:9090"
+	response := httptest.NewRecorder()
+	panel.Handler().ServeHTTP(response, req)
+	if response.Code != http.StatusServiceUnavailable || calls != 0 {
+		t.Fatalf("without audit = %d, calls=%d", response.Code, calls)
+	}
+	auditLog, err := audit.OpenSQLite(filepath.Join(t.TempDir(), "audit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer auditLog.Close()
+	panel.Audit = auditLog
+	response = httptest.NewRecorder()
+	panel.Handler().ServeHTTP(response, req)
+	if response.Code != http.StatusConflict || calls != 1 || strings.Contains(response.Body.String(), "private key") {
+		t.Fatalf("failed rotation = %d %s, calls=%d", response.Code, response.Body.String(), calls)
+	}
+}

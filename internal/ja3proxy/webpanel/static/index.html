@@ -18,9 +18,12 @@
       <button id="traffic-tab" class="tab active" type="button" role="tab" aria-selected="true" aria-controls="traffic-page" data-tab="traffic">Трафик</button>
       <button id="settings-tab" class="tab" type="button" role="tab" aria-selected="false" aria-controls="settings-page" data-tab="settings">Настройки</button>
     </nav>
-    <a href="/recorder.html">Регистратор TLS</a>
-    <a href="/profiles.html">TLS-профили и JA4</a>
-    <a href="/replay-lab.html">Replay Lab</a>
+    <nav class="topbar-links" aria-label="Инструменты панели">
+      <a href="/recorder.html">Регистратор TLS</a>
+      <a href="/profiles.html">TLS-профили и JA4</a>
+      <a href="/replay-lab.html">Лаборатория TLS</a>
+      <a href="/tokens.html">Токены доступа</a>
+    </nav>
     <span class="connection" id="connection"><i></i>Подключение</span>
   </header>
 
@@ -58,13 +61,13 @@
           <div class="panel-head">
             <div><p class="eyebrow">Журнал соединений</p><h2>Последние сессии</h2></div>
             <div class="filters" role="group" aria-label="Фильтр сессий">
-              <button class="active" data-filter="all" type="button">Все</button>
-              <button data-filter="active" type="button">Активные</button>
-              <button data-filter="failed" type="button">Ошибки</button>
+              <button class="active" data-filter="all" type="button" aria-pressed="true">Все</button>
+              <button data-filter="active" type="button" aria-pressed="false">Активные</button>
+              <button data-filter="failed" type="button" aria-pressed="false">Ошибки</button>
             </div>
           </div>
           <div class="table-wrap">
-            <table>
+            <table aria-label="Последние сессии прокси">
               <thead><tr><th>Состояние</th><th>Протокол</th><th>Назначение</th><th>Клиент</th><th>Передача</th><th>Возраст</th></tr></thead>
               <tbody id="sessions"><tr><td colspan="6" class="empty"><strong>Трафика пока нет</strong><span>Подключите клиент к JA3Proxy, и здесь появятся сессии.</span></td></tr></tbody>
             </table>
@@ -90,7 +93,9 @@
           <p id="mitm-ca-validity" role="status">Проверка сертификата…</p>
           <p id="mitm-ca-identity"></p>
           <a href="/api/v1/ca/certificate" data-auth-download data-filename="ja3proxy-ca.pem">Скачать публичный сертификат CA</a>
-          <p>Сначала замените настроенный PEM-файл согласованной парой. Клиенты должны доверять публичному сертификату нового CA.</p>
+          <p>Для ручной смены замените настроенный PEM согласованной парой и нажмите «Применить CA из файла». При создании нового CA кнопкой ниже всем клиентам потребуется установить новый публичный сертификат.</p>
+          <button id="ca-rotate-button" type="button">Создать и активировать новый CA</button>
+          <p id="ca-rotate-note" class="config-note" role="status" aria-live="polite"></p>
           <button id="ca-reload-button" type="button">Применить CA из файла</button>
           <p id="ca-reload-note" class="config-note" role="status" aria-live="polite"></p>
         </div>
@@ -106,6 +111,22 @@
           <p>Подготовьте новый файл ключа по настроенному пути. Применить его можно только при пустом spool. Сохраните прежний ключ до успешного применения.</p>
           <button id="spool-key-reload-button" type="button">Применить ключ spool из файла</button>
           <p id="spool-key-reload-note" class="config-note" role="status" aria-live="polite"></p>
+        </div>
+      </section>
+      <section class="setting-group" aria-labelledby="proxy-auth-reload-heading">
+        <header class="setting-heading"><span>ВХОДЯЩАЯ АВТОРИЗАЦИЯ</span><strong id="proxy-auth-reload-heading">Файлы учётных данных прокси</strong><small>Обновление логина и пароля прокси без перезапуска.</small></header>
+        <div class="ca-management">
+          <p>Замените настроенные файлы <code>--proxy-username-file</code> и/или <code>--proxy-password-file</code>, затем примените новую пару. Если файл не читается или значения некорректны, текущая пара останется активной.</p>
+          <button id="proxy-auth-reload-button" type="button">Применить файлы учётных данных</button>
+          <p id="proxy-auth-reload-note" class="config-note" role="status" aria-live="polite"></p>
+        </div>
+      </section>
+      <section class="setting-group" aria-labelledby="upstream-credentials-reload-heading">
+        <header class="setting-heading"><span>ИСХОДЯЩАЯ АВТОРИЗАЦИЯ</span><strong id="upstream-credentials-reload-heading">Файлы учётных данных вышестоящего прокси</strong><small>Обновление учётных данных вышестоящего прокси без перезапуска.</small></header>
+        <div class="ca-management">
+          <p>Замените файлы, на которые ссылаются ссылки <code>file:</code> в настройке вышестоящего прокси, затем примените их. Ошибка чтения оставит активный маршрут без изменений.</p>
+          <button id="upstream-credentials-reload-button" type="button">Применить файлы учётных данных</button>
+          <p id="upstream-credentials-reload-note" class="config-note" role="status" aria-live="polite"></p>
         </div>
       </section>
       <form id="config-form" class="settings-form">
@@ -133,7 +154,7 @@
           <header class="setting-heading"><span>02</span><strong id="outbound-settings">Исходящий профиль</strong><small>Как JA3Proxy выглядит для целевого сервера.</small></header>
           <div class="setting-fields">
             <div class="setting-field">
-              <label for="tls-fingerprint">TLS fingerprint</label>
+              <label for="tls-fingerprint">TLS-отпечаток</label>
               <select id="tls-fingerprint" name="tlsFingerprint"></select>
               <small>Применяется к перехваченным исходящим TLS-соединениям.</small>
             </div>

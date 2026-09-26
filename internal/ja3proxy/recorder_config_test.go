@@ -3,6 +3,7 @@ package ja3proxy
 import (
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestRecorderCLI(t *testing.T) {
@@ -75,17 +76,19 @@ func TestRecorderCLI(t *testing.T) {
 	if err := app.parseFlags([]string{
 		"--capture-tls", "--capture-sqlite", "capture.db",
 		"--capture-spool", "capture-spool", "--capture-spool-key", "spool.key",
-		"--capture-spool-max-bytes", "1048576",
+		"--capture-spool-max-bytes", "1048576", "--capture-spool-key-max-age", "8760h",
 	}); err != nil {
 		t.Fatalf("parse encrypted spool flags: %v", err)
 	}
-	if app.Config.CaptureSpool != "capture-spool" || app.Config.CaptureSpoolKey != "spool.key" || app.Config.CaptureSpoolMaxBytes != 1048576 {
+	if app.Config.CaptureSpool != "capture-spool" || app.Config.CaptureSpoolKey != "spool.key" || app.Config.CaptureSpoolMaxBytes != 1048576 || app.Config.CaptureSpoolKeyMaxAge != 8760*time.Hour {
 		t.Fatalf("encrypted spool config = %#v", app.Config)
 	}
 	for _, args := range [][]string{
 		{"--capture-tls", "--capture-sqlite", "capture.db", "--capture-spool", "capture-spool"},
 		{"--capture-tls", "--capture-sqlite", "capture.db", "--capture-spool-key", "spool.key"},
 		{"--capture-tls", "--capture-sqlite", "capture.db", "--capture-spool", "capture-spool", "--capture-spool-key", "spool.key", "--capture-spool-max-bytes", "0"},
+		{"--capture-spool-key-max-age", "8760h"},
+		{"--capture-spool-key-max-age", "-1s"},
 	} {
 		if err := newDefaultApp().parseFlags(args); err == nil {
 			t.Fatalf("accepted invalid encrypted spool flags %v", args)

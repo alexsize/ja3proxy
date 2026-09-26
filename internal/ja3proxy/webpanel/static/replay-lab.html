@@ -1,12 +1,12 @@
 <!doctype html>
 <html lang="ru">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>JA3Proxy · Replay Lab</title><link rel="stylesheet" href="/profiles.css"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>JA3Proxy · Лаборатория TLS</title><link rel="stylesheet" href="/profiles.css"></head>
 <body>
-<header><a href="/">JA3Proxy</a><a href="/recorder.html">Регистратор TLS</a><a href="/profiles.html">TLS-профили</a><a href="/tokens.html">Токены</a><strong>Replay Lab</strong></header>
+<header><a href="/">JA3Proxy</a><nav class="site-nav" aria-label="Навигация по панели"><a href="/recorder.html">Регистратор TLS</a><a href="/profiles.html">TLS-профили и JA4</a><span aria-current="page">Лаборатория TLS</span><a href="/tokens.html">Токены доступа</a></nav></header>
 <main>
-  <h1>Replay Lab</h1>
-  <p>Изолированная проверка TLS-профиля на тестовом endpoint. Лаборатория устанавливает TLS-соединение, но не отправляет HTTP-запрос и не меняет маршрутизацию. Для сохранённого профиля успешный прогон фиксирует совместимость с текущей версией uTLS.</p>
-  <p class="notice">Проверка сертификата сервера отключена, как и в текущем исходящем TLS-клиенте JA3Proxy. Используйте только доверенный тестовый endpoint.</p>
+  <h1>Лаборатория TLS</h1>
+  <p>Изолированная проверка TLS-профиля на тестовом сервере. Лаборатория устанавливает TLS-соединение, но не отправляет HTTP-запрос и не меняет маршрутизацию. Для сохранённого профиля успешный прогон фиксирует совместимость с текущей версией uTLS.</p>
+  <p class="notice">Проверка сертификата сервера отключена, как и в текущем исходящем TLS-клиенте JA3Proxy. Используйте только доверенный тестовый сервер.</p>
   <p id="status" role="status">Загрузка…</p>
   <section>
     <h2>Профиль и эталон</h2>
@@ -19,32 +19,32 @@
     </div>
   </section>
   <section>
-    <h2>Тестовый endpoint</h2>
+    <h2>Тестовый сервер</h2>
     <div class="grid">
       <label>Хост<input id="target-host" required placeholder="127.0.0.1 или tls.example.test"></label>
       <label>Порт<input id="target-port" type="number" min="1" max="65535" value="443" required></label>
-      <label>Server Name (SNI), пусто — хост<input id="server-name" placeholder="tls.example.test"></label>
+      <label>Имя сервера (SNI), пусто — имя хоста<input id="server-name" placeholder="tls.example.test"></label>
       <label>Таймаут, мс<input id="timeout" type="number" min="100" max="60000" value="10000"></label>
     </div>
-    <div class="actions"><button id="run" type="button">Запустить TLS replay</button></div>
+    <div class="actions"><button id="run" type="button">Проверить TLS-профиль</button></div>
   </section>
   <section>
-    <h2>Compatibility Matrix</h2>
-    <p>Проверяет сохранённые профили на том же endpoint по очереди. Лабораторный Roller может остановить перебор на первом успешном TLS handshake. Каждый запуск снимает фактический ClientHello; результат не меняет production-маршрутизацию.</p>
+    <h2>Матрица совместимости</h2>
+    <p>Проверяет сохранённые профили на том же сервере по очереди. Режим быстрого перебора может остановиться после первого успешного TLS-соединения. Каждый запуск фиксирует фактический ClientHello; результат не меняет рабочую маршрутизацию.</p>
     <label>Профили для проверки<select id="matrix-profiles" multiple size="7"></select></label>
-    <label class="check"><input id="roller-mode" type="checkbox"> Лабораторный Roller: остановиться после первого успешного handshake</label>
+    <label class="check"><input id="roller-mode" type="checkbox"> Остановить перебор после первого успешного TLS-соединения</label>
     <div class="actions"><button id="run-matrix" type="button">Запустить матрицу</button></div>
-    <div class="table-scroll"><table><thead><tr><th>Профиль</th><th>TLS</th><th>ALPN</th><th>Результат</th><th>Фактический JA4</th><th>Diff</th></tr></thead><tbody id="matrix-results"><tr><td colspan="6">Выберите профили и запустите матрицу.</td></tr></tbody></table></div>
+    <div class="table-scroll"><table aria-label="Результаты матрицы совместимости TLS-профилей"><thead><tr><th>Профиль</th><th>TLS</th><th>ALPN</th><th>Результат</th><th>Фактический JA4</th><th>Отличия</th></tr></thead><tbody id="matrix-results"><tr><td colspan="6">Выберите профили и запустите матрицу.</td></tr></tbody></table></div>
   </section>
   <section>
     <h2>Результаты</h2>
     <dl class="result">
-      <div><dt>Expected — захваченное наблюдение</dt><dd id="expected">—</dd></div>
-      <div><dt>Compiled — материализованный профиль</dt><dd id="compiled">—</dd></div>
-      <div><dt>Actual — фактический outbound ClientHello</dt><dd id="actual">—</dd></div>
-      <div><dt>Server response — TLS ServerHello и negotiated state</dt><dd id="server-response">—</dd></div>
-      <div class="wide"><dt>Diff</dt><dd id="diff">—</dd></div>
-      <div class="wide"><dt>Сверка политики профиля (MUST / SHOULD / constraints)</dt><dd id="policy-verification">—</dd></div>
+      <div><dt>Эталон — захваченное наблюдение</dt><dd id="expected">—</dd></div>
+      <div><dt>Сформированный профиль</dt><dd id="compiled">—</dd></div>
+      <div><dt>Фактический ClientHello на выходе</dt><dd id="actual">—</dd></div>
+      <div><dt>Ответ сервера — ServerHello и согласованные параметры</dt><dd id="server-response">—</dd></div>
+      <div class="wide"><dt>Отличия</dt><dd id="diff">—</dd></div>
+      <div class="wide"><dt>Проверка политики профиля (обязательные / желательные поля и ограничения)</dt><dd id="policy-verification">—</dd></div>
     </dl>
     <pre id="result-json">Заполните параметры и запустите проверку.</pre>
   </section>

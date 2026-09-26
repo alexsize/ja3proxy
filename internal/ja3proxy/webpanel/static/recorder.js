@@ -75,7 +75,7 @@ const fingerprintFamilies = [
   ["fingerprints", "TLS ClientHello", value => [["JA3", value.ja3], ["JA4", value.ja4], ["Нормализация", value.normalization_version]]],
   ["server_fingerprints", "TLS ServerHello", value => [["JA3S", value.ja3s], ["JA4S", value.ja4s], ["Версия JA4S", value.ja4s_version]]],
   ["http1", "HTTP/1", value => [["Направление", value.direction], ["Сообщение", `${value.method || value.status_code || "—"} · HTTP/${value.http_version}`], ["Порядок заголовков", value.header_order], ["Полнота тела", value.completeness], ["Фрейминг", value.body_framing]]],
-  ["http2", "HTTP/2", value => [["Направление", value.direction], ["Fingerprint hash", value.hash], ["Порядок SETTINGS", value.settings_order], ["Типы кадров", value.frame_types], ["Полнота", value.completeness]]],
+  ["http2", "HTTP/2", value => [["Направление", value.direction], ["Хеш отпечатка", value.hash], ["Порядок SETTINGS", value.settings_order], ["Типы кадров", value.frame_types], ["Полнота", value.completeness]]],
   ["tcp_syn", "TCP SYN / JA4T", value => [["JA4T", value.ja4t], ["Версия", value.ja4t_version], ["IP version", value.ip_version]]],
   ["dns", "DNS exchange", value => [["Транспорт", value.transport], ["Статус", value.status], ["Вопросы", value.questions], ["Адреса", value.addresses], ["CNAME", value.cname_answers]]],
   ["quic", "QUIC Initial", value => [["Версия", `0x${(value.version || 0).toString(16)}`], ["Transport parameters", value.transport_parameters]]],
@@ -107,8 +107,13 @@ function select(slot, id) {
 async function refresh(cursor = "") {
   try {
     const status = await api("/api/v1/status");
-    byId("status").className = status.stats.recording_degraded ? "error" : "";
-    byId("status").textContent = status.enabled ? `Обработано: ${status.stats.processed}; очередь: ${status.stats.queue_depth}; потеряно: ${status.stats.dropped}; ошибки записи: ${status.stats.write_errors}; spool: ${status.stats.spool_events || 0}.` : "Recorder выключен. Запустите proxy с --capture-tls.";
+    const keyStatus = status.stats.spool_key_status;
+    const keyStatusLabels = {VALID: "действует", EXPIRING: "скоро истечёт", EXPIRED: "истёк", UNKNOWN: "срок неизвестен"};
+    byId("status").className = status.stats.recording_degraded || keyStatus === "EXPIRING" || keyStatus === "EXPIRED" ? "error" : "";
+    const keyExpiry = keyStatus && keyStatus !== "UNCONFIGURED"
+      ? ` Ключ буфера: ${keyStatusLabels[keyStatus] || keyStatus}${status.stats.spool_key_expires_at ? `, истекает ${new Date(status.stats.spool_key_expires_at).toLocaleString()}` : ""}.`
+      : "";
+    byId("status").textContent = status.enabled ? `Обработано: ${status.stats.processed}; очередь: ${status.stats.queue_depth}; потеряно: ${status.stats.dropped}; ошибки записи: ${status.stats.write_errors}; событий в буфере: ${status.stats.spool_events || 0}.${keyExpiry}` : "Регистратор выключен. Запустите JA3Proxy с параметром --capture-tls.";
     const params = new URLSearchParams({q: byId("query").value, limit: "50", storage: byId("storage").value});
     for (const [field, param] of [["device-id", "device_id"], ["application", "application"], ["application-id", "application_id"], ["application-version", "application_version"], ["analysis-revision", "analysis_revision"]]) {
       const value = byId(field).value.trim();

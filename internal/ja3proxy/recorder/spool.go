@@ -36,10 +36,17 @@ var ErrSpoolUnavailable = errors.New("recorder spool is unavailable")
 type spoolStore struct {
 	dir         string
 	key         []byte
+	keyMaxAge   time.Duration
+	keyCreated  *time.Time
 	maxBytes    int64
 	mu          sync.Mutex
 	bytes       int64
 	quarantined uint64
+}
+
+type spoolKeyMarker struct {
+	KeyID       string     `json:"key_id"`
+	ActivatedAt *time.Time `json:"activated_at,omitempty"`
 }
 
 type spoolEnvelope struct {
@@ -59,6 +66,10 @@ func openSpool(dir, keyPath string, maxBytes int64) (*spoolStore, error) {
 }
 
 func openSpoolWithProvider(dir, keyPath string, maxBytes int64, provider secrets.Provider) (*spoolStore, error) {
+	return openSpoolWithPolicy(dir, keyPath, maxBytes, provider, 0)
+}
+
+func openSpoolWithPolicy(dir, keyPath string, maxBytes int64, provider secrets.Provider, keyMaxAge time.Duration) (*spoolStore, error) {
 	dir = strings.TrimSpace(dir)
 	keyPath = strings.TrimSpace(keyPath)
 	if dir == "" || keyPath == "" {
@@ -81,7 +92,10 @@ func openSpoolWithProvider(dir, keyPath string, maxBytes int64, provider secrets
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, fmt.Errorf("create recorder spool directory: %w", err)
 	}
-	store := &spoolStore{dir: dir, key: append([]byte(nil), key...), maxBytes: maxBytes}
+	if keyMaxAge < 0 {
+		return nil, errors.New("recorder spool key max age cannot be negative")
+	}
+	store := &spoolStore{dir: dir, key: append([]byte(nil), key...), maxBytes: maxBytes, keyMaxAge: keyMaxAge}
 	files, err := store.files()
 	if err != nil {
 		return nil, err
@@ -108,7 +122,23 @@ func (s *spoolStore) checkKeyID(files []string) error {
 	want := hex.EncodeToString(digest[:])
 	data, err := os.ReadFile(marker)
 	if err == nil {
-		if strings.TrimSpace(string(data)) == want {
+		markerID := strings.TrimSpace(string(data))
+		var metadata spoolKeyMarker
+		if json.Unmarshal(data, &metadata) == nil && metadata.KeyID != "" {
+			markerID = metadata.KeyID
+			s.keyCreated = metadata.ActivatedAt
+		} else if markerID == want {
+			// Legacy markers predate explicit metadata. Their mtime is the best
+			// available activation estimate; do not invent a fresh activation time.
+			if info, statErr := os.Stat(marker); statErr == nil {
+				activatedAt := info.ModTime().UTC()
+				s.keyCreated = &activatedAt
+			}
+		}
+		if markerID == want {
+			if metadata.KeyID == "" {
+				return s.writeKeyID(marker, want, s.keyCreated)
+			}
 			return nil
 		}
 		if len(files) != 0 {
@@ -134,10 +164,15 @@ func (s *spoolStore) checkKeyID(files []string) error {
 			return errors.New("cannot verify recorder spool key for legacy pending records; records were left unchanged")
 		}
 	}
-	return s.writeKeyID(marker, want)
+	var activatedAt *time.Time
+	if len(files) == 0 {
+		now := time.Now().UTC()
+		activatedAt = &now
+	}
+	return s.writeKeyID(marker, want, activatedAt)
 }
 
-func (s *spoolStore) writeKeyID(marker, keyID string) error {
+func (s *spoolStore) writeKeyID(marker, keyID string, activatedAt *time.Time) error {
 	tmp, err := os.CreateTemp(s.dir, ".spool-key-id-*")
 	if err != nil {
 		return fmt.Errorf("create recorder spool key ID: %w", err)
@@ -149,7 +184,11 @@ func (s *spoolStore) writeKeyID(marker, keyID string) error {
 	if err := tmp.Chmod(0600); err != nil {
 		return err
 	}
-	if _, err := tmp.WriteString(keyID + "\n"); err != nil {
+	encoded, err := json.Marshal(spoolKeyMarker{KeyID: keyID, ActivatedAt: activatedAt})
+	if err != nil {
+		return err
+	}
+	if _, err := tmp.Write(append(encoded, '\n')); err != nil {
 		return err
 	}
 	if err := tmp.Sync(); err != nil {
@@ -161,6 +200,7 @@ func (s *spoolStore) writeKeyID(marker, keyID string) error {
 	if err := os.Rename(tmp.Name(), marker); err != nil {
 		return fmt.Errorf("publish recorder spool key ID: %w", err)
 	}
+	s.keyCreated = activatedAt
 	return nil
 }
 
@@ -399,4 +439,28 @@ func (s *spoolStore) stats() (int64, int, uint64) {
 		return s.bytes, 0, s.quarantined
 	}
 	return s.bytes, len(files), s.quarantined
+}
+
+func (s *spoolStore) keyExpiryStatus(now time.Time) (string, *time.Time, *time.Time) {
+	if s == nil || s.keyMaxAge == 0 {
+		return "UNCONFIGURED", nil, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.keyCreated == nil || s.keyCreated.IsZero() || s.keyCreated.After(now) {
+		return "UNKNOWN", nil, nil
+	}
+	activatedAt := s.keyCreated.UTC()
+	expiresAt := activatedAt.Add(s.keyMaxAge)
+	if !now.Before(expiresAt) {
+		return "EXPIRED", &activatedAt, &expiresAt
+	}
+	warningWindow := 30 * 24 * time.Hour
+	if scaled := s.keyMaxAge / 10; scaled < warningWindow {
+		warningWindow = scaled
+	}
+	if warningWindow > 0 && expiresAt.Sub(now) <= warningWindow {
+		return "EXPIRING", &activatedAt, &expiresAt
+	}
+	return "VALID", &activatedAt, &expiresAt
 }

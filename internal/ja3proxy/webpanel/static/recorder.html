@@ -2,13 +2,13 @@
 <html lang="ru">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>JA3Proxy · Регистратор TLS</title><link rel="stylesheet" href="/recorder.css"></head>
 <body>
-<header><a href="/">JA3Proxy</a><span>Регистратор TLS</span><a href="/profiles.html">TLS-профили и JA4</a><a href="/replay-lab.html">Replay Lab</a><a href="/tokens.html">Токены</a><a data-auth-download data-filename="ja3proxy-export.jsonl" href="/api/v1/export/observations">Экспорт JSONL</a></header>
+<header><a href="/">JA3Proxy</a><nav class="site-nav" aria-label="Навигация по панели"><span aria-current="page">Регистратор TLS</span><a href="/profiles.html">TLS-профили и JA4</a><a href="/replay-lab.html">Лаборатория TLS</a><a href="/tokens.html">Токены доступа</a></nav><a data-auth-download data-filename="ja3proxy-export.jsonl" href="/api/v1/export/observations">Экспорт JSONL</a></header>
 <main>
   <h1>Наблюдаемые TLS-отпечатки</h1>
-  <p>Поиск по недавним наблюдениям в памяти или полной SQLite-истории; детали и повторный разбор доступны для сохранённых исходных ClientHello.</p>
+  <p>Поиск по недавним наблюдениям в памяти или полной истории SQLite; подробности и повторный разбор доступны для сохранённых исходных ClientHello.</p>
   <p id="status" role="status">Загрузка…</p>
   <form id="search">
-    <label for="query">Поиск: хост, ID, fingerprint, HTTP/DNS/TCP/QUIC metadata</label><input id="query" type="search" maxlength="256">
+    <label for="query">Поиск по хосту, ID, отпечатку и метаданным HTTP/DNS/TCP/QUIC</label><input id="query" type="search" maxlength="256">
     <label for="storage">Хранилище</label><select id="storage"><option value="memory">Недавние в памяти</option><option value="sqlite">Вся история SQLite</option></select>
     <label for="device-id">Устройство</label><input id="device-id" type="search" maxlength="128">
     <label for="application">Приложение</label><input id="application" type="search" maxlength="128">
@@ -19,10 +19,10 @@
     <label for="to">До даты (не включая)</label><input id="to" type="datetime-local">
     <button>Найти</button><button id="refresh" type="button">Обновить</button>
   </form>
-  <div class="table-scroll"><table><thead><tr><th>Время</th><th>Назначение</th><th>Точка</th><th>Режим</th><th>JA4 / JA3S / результат захвата</th><th>Просмотр</th><th>Сравнить</th></tr></thead><tbody id="observations"></tbody></table></div>
+  <div class="table-scroll"><table aria-label="Наблюдения TLS-регистратора"><thead><tr><th>Время</th><th>Назначение</th><th>Точка</th><th>Режим</th><th>JA4 / JA3S / результат захвата</th><th>Просмотр</th><th>Сравнить</th></tr></thead><tbody id="observations"></tbody></table></div>
   <button id="more" type="button" hidden>Следующая страница</button>
-  <section><h2>Семейства отпечатков</h2><p>Автоматическая группировка входящих CLIENT_IN-наблюдений читается из SQLite-истории (если она включена) и дополняется свежими событиями. TLS-профили можно явно связать общим family_id в редакторе профилей.</p><button id="families-refresh" type="button">Обновить семейства</button><div id="families" aria-live="polite"></div></section>
-  <section><h2>Сравнение наблюдений</h2><p id="selection">Выберите A и B в таблице. Результат сравнивает наблюдения; соответствие выбранному пресету здесь не проверяется.</p><button id="compare" type="button" disabled>Сравнить A ↔ B</button><pre id="diff">Нет выбранной пары.</pre></section>
-  <section><h2>Карточка наблюдения</h2><p>Исходные байты присутствуют только при явном включении их сохранения. Claims версии приложения из HTTP имеют низкую уверенность и не назначаются автоматически.</p><div id="detail-card" aria-live="polite">Выберите наблюдение.</div><details><summary>Полный JSON</summary><pre id="detail">Выберите наблюдение.</pre></details></section>
+  <section><h2>Семейства отпечатков</h2><p>Автоматическая группировка входящих наблюдений CLIENT_IN загружается из истории SQLite (если она включена) и дополняется свежими событиями. TLS-профили можно явно связать общим family_id в редакторе профилей.</p><button id="families-refresh" type="button">Обновить семейства</button><div id="families" aria-live="polite"></div></section>
+  <section><h2>Сравнение наблюдений</h2><p id="selection">Выберите в таблице наблюдения A и B. Здесь сравниваются сами наблюдения, а не их соответствие выбранному пресету.</p><button id="compare" type="button" disabled>Сравнить A ↔ B</button><pre id="diff">Нет выбранной пары.</pre></section>
+  <section><h2>Карточка наблюдения</h2><p>Исходные байты сохраняются только при явном включении этой функции. Признаки версии приложения из HTTP имеют низкую уверенность и не назначаются автоматически.</p><div id="detail-card" aria-live="polite">Выберите наблюдение.</div><details><summary>Полный JSON</summary><pre id="detail">Выберите наблюдение.</pre></details></section>
 </main><script src="/auth.js" defer></script><script src="/recorder.js" defer></script>
 </body></html>

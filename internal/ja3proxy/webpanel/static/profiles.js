@@ -88,10 +88,10 @@ function renderLibrary() {
 async function loadLibrary() { library = await api("/api/v1/tls/profiles"); renderLibrary(); }
 async function loadPresets() {
   const presets = await api("/api/v1/tls/presets");
-	const option = item => `<option value="${item.client}|${item.version}">${item.client}@${item.version}${item.handshake_type === "PSK" ? " — PSK / resumption profile" : " — full-handshake profile"}</option>`;
+	const option = item => `<option value="${item.client}|${item.version}">${item.client}@${item.version}${item.handshake_type === "PSK" ? " — профиль с возобновлением сеанса (PSK)" : " — полное TLS-соединение"}</option>`;
 	const full = presets.filter(item => item.handshake_type !== "PSK");
 	const psk = presets.filter(item => item.handshake_type === "PSK");
-	el("preset").innerHTML = `<optgroup label="Обычный full-handshake">${full.map(option).join("")}</optgroup>${psk.length ? `<optgroup label="PSK / resumption profile">${psk.map(option).join("")}</optgroup>` : ""}`;
+	el("preset").innerHTML = `<optgroup label="Полное TLS-соединение">${full.map(option).join("")}</optgroup>${psk.length ? `<optgroup label="Возобновление сеанса (PSK)">${psk.map(option).join("")}</optgroup>` : ""}`;
 	if (presets.some(item => item.client === "Chrome" && item.version === "120")) el("preset").value = "Chrome|120";
 }
 async function fromPreset() {

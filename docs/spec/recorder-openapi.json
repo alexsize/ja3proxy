@@ -109,6 +109,20 @@
         }
       }
     },
+    "/api/v1/admin/ca/rotate": {
+      "post": {
+        "operationId": "rotateMITMCA",
+        "description": "Создаёт новый CA, атомарно заменяет существующий combined PEM bundle и активирует сертификат без перезапуска. Поддерживается только когда --ca-cert и --ca-key указывают на один файл. Все клиенты должны установить новый публичный сертификат; старый CA больше не подписывает новые TLS-сертификаты. На non-loopback требуется роль admin; на loopback авторизация необязательна. Аудит обязателен в обоих режимах.",
+        "responses": {
+          "200": {"description": "Новый CA активирован; требуется обновить доверие клиентов", "content": {"application/json": {"schema": {"type": "object", "required": ["runtime", "client_trust_installation_required"], "properties": {"runtime": {"$ref": "#/components/schemas/RuntimeConfigResponse/properties/runtime"}, "client_trust_installation_required": {"type": "boolean", "const": true}}}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "501": {"description": "Ротация CA недоступна"},
+          "503": {"$ref": "#/components/responses/ServiceUnavailable"}
+        }
+      }
+    },
     "/api/v1/ca/certificate": {
       "get": {
         "operationId": "downloadMITMCACertificate",
@@ -116,6 +130,36 @@
         "responses": {
           "200": {"description": "Публичный сертификат CA", "headers": {"Content-Disposition": {"schema": {"type": "string"}}, "Cache-Control": {"schema": {"type": "string"}}}, "content": {"application/x-pem-file": {"schema": {"type": "string", "format": "binary"}}}},
           "404": {"description": "Активный CA недоступен"}
+        }
+      }
+    },
+    "/api/v1/admin/proxy-auth/reload": {
+      "post": {
+        "operationId": "reloadProxyAuthFromFiles",
+        "description": "Повторно читает настроенные --proxy-username-file/--proxy-password-file и применяет пару для новых подключений без перезапуска. При ошибке прежние учётные данные остаются активными. Тело запроса отсутствует. Non-loopback требует роль admin; loopback авторизация необязательна. Аудит должен быть доступен.",
+        "responses": {
+          "204": {"description": "Учётные данные применены"},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"description": "Требуется Bearer-токен"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "409": {"description": "Credential-файлы не прочитаны или пара не прошла проверку; активные данные сохранены"},
+          "501": {"description": "Повторная загрузка не настроена"},
+          "503": {"$ref": "#/components/responses/ServiceUnavailable"}
+        }
+      }
+    },
+    "/api/v1/admin/upstream-credentials/reload": {
+      "post": {
+        "operationId": "reloadUpstreamCredentialsFromFiles",
+        "description": "Повторно читает file:-ссылки учётных данных глобального upstream и сбрасывает кеш route-upstream dialer. Новые подключения используют обновлённые значения; ошибка загрузки сохраняет активный глобальный upstream. Тело запроса отсутствует. Non-loopback требует роль admin; loopback авторизация необязательна. Аудит должен быть доступен.",
+        "responses": {
+          "204": {"description": "Credential-файлы применены"},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"description": "Требуется Bearer-токен"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "409": {"description": "Credential-файл не прочитан; прежняя конфигурация остаётся активной"},
+          "501": {"description": "Повторная загрузка не настроена"},
+          "503": {"$ref": "#/components/responses/ServiceUnavailable"}
         }
       }
     },
@@ -1441,6 +1485,8 @@
               "upstream": {"type": "string"},
               "upstreamEnabled": {"type": "boolean"},
               "proxyAuthEnabled": {"type": "boolean"},
+              "proxyAuthFilesConfigured": {"type": "boolean", "description": "Настроен хотя бы один file-backed параметр входящей proxy-аутентификации"},
+              "upstreamCredentialFilesConfigured": {"type": "boolean", "description": "Глобальный upstream содержит file:-ссылку на username или password"},
               "proxyUsername": {"type": "string"},
               "mitmCaCertificateStatus": {"type": "string", "enum": ["UNAVAILABLE", "VALID", "EXPIRING", "EXPIRED", "NOT_YET_VALID"]},
               "mitmCaCertificateSubject": {"type": "string", "description": "Subject активного сертификата CA"},
@@ -1670,7 +1716,13 @@
           "spool_quota_failures": {
             "type": "integer",
             "minimum": 0
-          }
+          },
+          "spool_key_status": {
+            "type": "string",
+            "enum": ["UNCONFIGURED", "UNKNOWN", "VALID", "EXPIRING", "EXPIRED"]
+          },
+          "spool_key_activated_at": {"type": "string", "format": "date-time"},
+          "spool_key_expires_at": {"type": "string", "format": "date-time"}
         }
       },
       "DeviceList": {

@@ -32,29 +32,31 @@ var ErrConfigVersionConflict = errors.New("runtime configuration version conflic
 var staticFiles embed.FS
 
 type RuntimeStatus struct {
-	ConfigVersion                  uint64     `json:"configVersion"`
-	ProxyListen                    string     `json:"proxyListen"`
-	ProxyPort                      int        `json:"proxyPort"`
-	ProxyProtocol                  string     `json:"proxyProtocol"`
-	TLSClient                      string     `json:"tlsClient"`
-	TLSVersion                     string     `json:"tlsVersion"`
-	TLSFingerprints                []string   `json:"tlsFingerprints"`
-	Upstream                       string     `json:"upstream"`
-	UpstreamEnabled                bool       `json:"upstreamEnabled"`
-	ProxyAuthEnabled               bool       `json:"proxyAuthEnabled"`
-	ProxyUsername                  string     `json:"proxyUsername"`
-	MITMCACertificateStatus        string     `json:"mitmCaCertificateStatus,omitempty"`
-	MITMCACertificateSubject       string     `json:"mitmCaCertificateSubject,omitempty"`
-	MITMCACertificateSHA256        string     `json:"mitmCaCertificateSHA256,omitempty"`
-	MITMCACertificateNotBefore     *time.Time `json:"mitmCaCertificateNotBefore,omitempty"`
-	MITMCACertificateNotAfter      *time.Time `json:"mitmCaCertificateNotAfter,omitempty"`
-	MITMCACertificateDaysRemaining *int64     `json:"mitmCaCertificateDaysRemaining,omitempty"`
-	PanelCertificateStatus         string     `json:"panelCertificateStatus,omitempty"`
-	PanelCertificateNotBefore      *time.Time `json:"panelCertificateNotBefore,omitempty"`
-	PanelCertificateNotAfter       *time.Time `json:"panelCertificateNotAfter,omitempty"`
-	PanelCertificateDaysRemaining  *int64     `json:"panelCertificateDaysRemaining,omitempty"`
-	ConfigurationMode              string     `json:"configurationMode"`
-	Chain                          []ChainHop `json:"chain"`
+	ConfigVersion                     uint64     `json:"configVersion"`
+	ProxyListen                       string     `json:"proxyListen"`
+	ProxyPort                         int        `json:"proxyPort"`
+	ProxyProtocol                     string     `json:"proxyProtocol"`
+	TLSClient                         string     `json:"tlsClient"`
+	TLSVersion                        string     `json:"tlsVersion"`
+	TLSFingerprints                   []string   `json:"tlsFingerprints"`
+	Upstream                          string     `json:"upstream"`
+	UpstreamEnabled                   bool       `json:"upstreamEnabled"`
+	ProxyAuthEnabled                  bool       `json:"proxyAuthEnabled"`
+	ProxyAuthFilesConfigured          bool       `json:"proxyAuthFilesConfigured"`
+	UpstreamCredentialFilesConfigured bool       `json:"upstreamCredentialFilesConfigured"`
+	ProxyUsername                     string     `json:"proxyUsername"`
+	MITMCACertificateStatus           string     `json:"mitmCaCertificateStatus,omitempty"`
+	MITMCACertificateSubject          string     `json:"mitmCaCertificateSubject,omitempty"`
+	MITMCACertificateSHA256           string     `json:"mitmCaCertificateSHA256,omitempty"`
+	MITMCACertificateNotBefore        *time.Time `json:"mitmCaCertificateNotBefore,omitempty"`
+	MITMCACertificateNotAfter         *time.Time `json:"mitmCaCertificateNotAfter,omitempty"`
+	MITMCACertificateDaysRemaining    *int64     `json:"mitmCaCertificateDaysRemaining,omitempty"`
+	PanelCertificateStatus            string     `json:"panelCertificateStatus,omitempty"`
+	PanelCertificateNotBefore         *time.Time `json:"panelCertificateNotBefore,omitempty"`
+	PanelCertificateNotAfter          *time.Time `json:"panelCertificateNotAfter,omitempty"`
+	PanelCertificateDaysRemaining     *int64     `json:"panelCertificateDaysRemaining,omitempty"`
+	ConfigurationMode                 string     `json:"configurationMode"`
+	Chain                             []ChainHop `json:"chain"`
 }
 
 type ChainHop struct {
@@ -77,26 +79,29 @@ type RuntimeProvider func() RuntimeStatus
 type ConfigUpdater func(ConfigUpdate) (RuntimeStatus, error)
 
 type Server struct {
-	Recorder        *recorder.Recorder
-	Audit           *audit.Store
-	AuthToken       string
-	AuthScopes      []string
-	AuthTokenExpiry time.Time
-	AuthTokens      []AuthToken
-	TokenRegistry   *TokenRegistry
-	TLSCertFile     string
-	TLSKeyFile      string
-	SecretProvider  secrets.Provider
-	Devices         *device.Store
-	Profiles        *tlsprofile.Store
-	Routes          *routing.Store
-	UpstreamTLS     *upstreamtls.UpstreamTLSProfileStore
-	Address         string
-	Monitor         *traffic.TrafficMonitor
-	Runtime         RuntimeProvider
-	Update          ConfigUpdater
-	ReloadCA        func() (RuntimeStatus, error)
-	CACertificate   func() *x509.Certificate
+	Recorder                  *recorder.Recorder
+	Audit                     *audit.Store
+	AuthToken                 string
+	AuthScopes                []string
+	AuthTokenExpiry           time.Time
+	AuthTokens                []AuthToken
+	TokenRegistry             *TokenRegistry
+	TLSCertFile               string
+	TLSKeyFile                string
+	SecretProvider            secrets.Provider
+	Devices                   *device.Store
+	Profiles                  *tlsprofile.Store
+	Routes                    *routing.Store
+	UpstreamTLS               *upstreamtls.UpstreamTLSProfileStore
+	Address                   string
+	Monitor                   *traffic.TrafficMonitor
+	Runtime                   RuntimeProvider
+	Update                    ConfigUpdater
+	ReloadCA                  func() (RuntimeStatus, error)
+	RotateCA                  func() (RuntimeStatus, error)
+	ReloadProxyAuth           func() (RuntimeStatus, error)
+	ReloadUpstreamCredentials func() (RuntimeStatus, error)
+	CACertificate             func() *x509.Certificate
 }
 
 type stateResponse struct {
@@ -185,6 +190,9 @@ func (panel Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/admin/tokens/{id}", panel.handleTokenRevoke)
 	mux.HandleFunc("POST /api/v1/admin/tokens/{id}/rotate", panel.handleTokenRotate)
 	mux.HandleFunc("POST /api/v1/admin/ca/reload", panel.handleCAReload)
+	mux.HandleFunc("POST /api/v1/admin/ca/rotate", panel.handleCARotate)
+	mux.HandleFunc("POST /api/v1/admin/proxy-auth/reload", panel.handleProxyAuthReload)
+	mux.HandleFunc("POST /api/v1/admin/upstream-credentials/reload", panel.handleUpstreamCredentialsReload)
 	mux.HandleFunc("GET /api/v1/ca/certificate", panel.handleCACertificate)
 	mux.HandleFunc("POST /api/v1/admin/spool/reload-key", panel.handleSpoolKeyReload)
 	mux.Handle("GET /api/v1/export/config", recorderLocalOnly(http.HandlerFunc(panel.exportConfig)))

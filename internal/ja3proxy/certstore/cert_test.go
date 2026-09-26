@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/secrets"
 )
 
 func TestGenerateCombinedCABundleAndRotate(t *testing.T) {
@@ -42,6 +44,44 @@ func TestGenerateCombinedCABundleAndRotate(t *testing.T) {
 	}
 	if bytes.Equal(first, ca.X509Certificate().Raw) {
 		t.Fatal("CA bundle did not rotate")
+	}
+}
+
+func TestRotateCertificateAuthorityUsesLifecycleProviderAtomically(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ca.pem")
+	ca := &CertificateAuthority{}
+	if err := ca.Generate(path, path); err != nil {
+		t.Fatal(err)
+	}
+	previous := append([]byte(nil), ca.X509Certificate().Raw...)
+
+	if err := RotateCertificateAuthority(ca, secrets.FileProvider{}, path, path); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(previous, ca.X509Certificate().Raw) {
+		t.Fatal("active CA certificate was not replaced")
+	}
+	loaded := &CertificateAuthority{}
+	if err := loaded.LoadWithProvider(secrets.FileProvider{}, path, path); err != nil {
+		t.Fatalf("load rotated CA bundle: %v", err)
+	}
+	if !bytes.Equal(loaded.X509Certificate().Raw, ca.X509Certificate().Raw) {
+		t.Fatal("persisted and active CA certificates differ")
+	}
+}
+
+func TestRotateCertificateAuthorityRejectsSplitPathsWithoutChangingActiveCA(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ca.pem")
+	ca := &CertificateAuthority{}
+	if err := ca.Generate(path, path); err != nil {
+		t.Fatal(err)
+	}
+	previous := append([]byte(nil), ca.X509Certificate().Raw...)
+	if err := RotateCertificateAuthority(ca, secrets.FileProvider{}, path, path+".key"); err == nil {
+		t.Fatal("split certificate/key paths accepted")
+	}
+	if !bytes.Equal(previous, ca.X509Certificate().Raw) {
+		t.Fatal("CA changed after rejected rotation")
 	}
 }
 

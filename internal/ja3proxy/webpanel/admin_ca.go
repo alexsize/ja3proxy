@@ -49,3 +49,32 @@ func (panel Server) handleCAReload(w http.ResponseWriter, r *http.Request) {
 		Runtime RuntimeStatus `json:"runtime"`
 	}{Runtime: status})
 }
+
+func (panel Server) handleCARotate(w http.ResponseWriter, r *http.Request) {
+	if !panel.requireTokenAdmin(w, r) {
+		return
+	}
+	if panel.Audit == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "аудит недоступен; ротация CA отклонена")
+		return
+	}
+	if panel.RotateCA == nil {
+		writeAPIError(w, http.StatusNotImplemented, "ротация CA недоступна")
+		return
+	}
+	if r.ContentLength > 0 {
+		writeAPIError(w, http.StatusBadRequest, "запрос не должен содержать тело")
+		return
+	}
+	status, err := panel.RotateCA()
+	if err != nil {
+		writeAPIError(w, http.StatusConflict, "не удалось выполнить ротацию CA; активный CA не изменён")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(struct {
+		Runtime                 RuntimeStatus `json:"runtime"`
+		ClientTrustInstallation bool          `json:"client_trust_installation_required"`
+	}{Runtime: status, ClientTrustInstallation: true})
+}

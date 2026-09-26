@@ -2,7 +2,9 @@ package ja3proxy
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
@@ -10,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -100,6 +103,31 @@ func TestEnsureCAWithCombinedBundle(t *testing.T) {
 	}
 	if app.CA.X509Certificate() == nil {
 		t.Fatal("combined CA was not loaded")
+	}
+}
+
+func TestRotateCAUsesConfiguredLifecycleProviderAndUpdatesActiveCA(t *testing.T) {
+	app := newRuntimeTestApp(t)
+	path := filepath.Join(t.TempDir(), "ca-bundle.pem")
+	app.Config.Cert = path
+	app.Config.Key = path
+	if err := app.CA.Generate(path, path); err != nil {
+		t.Fatal(err)
+	}
+	previous := append([]byte(nil), app.CA.X509Certificate().Raw...)
+
+	if _, err := app.rotateCA(); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(previous, app.CA.X509Certificate().Raw) {
+		t.Fatal("active CA was not rotated")
+	}
+	persisted := &certstore.CertificateAuthority{}
+	if err := persisted.Load(path, path); err != nil {
+		t.Fatalf("load persisted CA: %v", err)
+	}
+	if !bytes.Equal(persisted.X509Certificate().Raw, app.CA.X509Certificate().Raw) {
+		t.Fatal("persisted CA differs from active CA")
 	}
 }
 
@@ -823,6 +851,110 @@ func TestUpdateProxyConfigChangesDownstreamAuthentication(t *testing.T) {
 	}
 	if status.ProxyAuthEnabled || status.ProxyUsername != "" || app.Config.ProxyPassword != "" {
 		t.Fatalf("authentication was not cleared: status=%+v config=%+v", status, app.Config)
+	}
+}
+
+func TestReloadProxyCredentialsAppliesFilesAtomically(t *testing.T) {
+	app := newRuntimeTestApp(t)
+	dir := t.TempDir()
+	usernamePath, passwordPath := filepath.Join(dir, "username"), filepath.Join(dir, "password")
+	if err := os.WriteFile(usernamePath, []byte("first-user"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(passwordPath, []byte("first-password"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	app.Config.ProxyUsernameFile, app.Config.ProxyPasswordFile = usernamePath, passwordPath
+	if _, err := app.buildProxy(); err != nil {
+		t.Fatalf("build proxy: %v", err)
+	}
+	if err := os.WriteFile(usernamePath, []byte("second-user"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(passwordPath, []byte("second-password"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	status, err := app.reloadProxyCredentials()
+	if err != nil {
+		t.Fatalf("reload credentials: %v", err)
+	}
+	if status.ProxyUsername != "second-user" || app.Config.ProxyUsernameFile != usernamePath || app.Config.ProxyPasswordFile != passwordPath {
+		t.Fatalf("reload status/config = %+v / %+v", status, app.Config)
+	}
+	proxyStatus := func(username, password string) int {
+		req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:1/", nil)
+		credentials := base64.StdEncoding.EncodeToString([]byte(username + ":" + password))
+		req.Header.Set("Proxy-Authorization", "Basic "+credentials)
+		response := httptest.NewRecorder()
+		app.ProxyServer.ServeHTTP(response, req)
+		return response.Code
+	}
+	if got := proxyStatus("first-user", "first-password"); got != http.StatusProxyAuthRequired {
+		t.Fatalf("old credential response = %d, want 407", got)
+	}
+	if got := proxyStatus("second-user", "second-password"); got == http.StatusProxyAuthRequired {
+		t.Fatal("new credentials were not applied")
+	}
+	if err := os.WriteFile(passwordPath, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.reloadProxyCredentials(); err == nil {
+		t.Fatal("accepted empty password file")
+	}
+	if app.Config.ProxyUsername != "second-user" || app.Config.ProxyPassword != "second-password" {
+		t.Fatal("failed reload replaced active credentials")
+	}
+	if got := proxyStatus("second-user", "second-password"); got == http.StatusProxyAuthRequired {
+		t.Fatal("failed reload disabled the previously active credential pair")
+	}
+}
+
+func TestReloadUpstreamCredentialsRebuildsDialersAndPreservesOnFailure(t *testing.T) {
+	app := newRuntimeTestApp(t)
+	dir := t.TempDir()
+	usernamePath, passwordPath := filepath.Join(dir, "username"), filepath.Join(dir, "password")
+	for path, value := range map[string]string{usernamePath: "first-user", passwordPath: "first-password"} {
+		if err := os.WriteFile(path, []byte(value), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	credentials := url.UserPassword("file:"+usernamePath, "file:"+passwordPath).String()
+	app.Config.Upstream = "http://" + credentials + "@127.0.0.1:3128"
+	var err error
+	app.UpstreamDialer, err = dialer.NewDynamicUpstreamDialerWithProvider(app.Config.Upstream, time.Second, app.secretProvider())
+	if err != nil {
+		t.Fatalf("configure dynamic upstream: %v", err)
+	}
+	if _, err := app.routeUpstreamDialer("http://route:secret@127.0.0.1:3129"); err != nil {
+		t.Fatalf("configure cached route upstream: %v", err)
+	}
+	if len(app.routeDialers) != 1 {
+		t.Fatal("expected a cached route dialer before reload")
+	}
+	if err := os.WriteFile(usernamePath, []byte("second-user"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	status, err := app.reloadUpstreamCredentials()
+	if err != nil {
+		t.Fatalf("reload upstream credentials: %v", err)
+	}
+	if !status.UpstreamCredentialFilesConfigured || status.ConfigVersion != 1 {
+		t.Fatalf("reload status = %+v", status)
+	}
+	if got := len(app.routeDialers); got != 0 {
+		t.Fatalf("cached route dialers after reload = %d, want 0", got)
+	}
+	if err := os.Remove(usernamePath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.reloadUpstreamCredentials(); err == nil {
+		t.Fatal("reload succeeded after credential file was removed")
+	}
+	if got := app.UpstreamDialer.Upstream(); got != app.Config.Upstream {
+		t.Fatalf("active upstream changed on failed reload: %q != %q", got, app.Config.Upstream)
+	}
+	if app.runtimeConfigVersion != 1 {
+		t.Fatalf("config version after failed reload = %d, want 1", app.runtimeConfigVersion)
 	}
 }
 

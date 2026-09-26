@@ -238,6 +238,7 @@ type Options struct {
 	SpoolPath         string
 	SpoolKeyPath      string
 	SpoolMaxBytes     int64
+	SpoolKeyMaxAge    time.Duration
 	SecretProvider    secrets.Provider
 }
 
@@ -319,6 +320,9 @@ type Stats struct {
 	SpoolEvents           int               `json:"spool_events"`
 	SpoolQuarantined      uint64            `json:"spool_quarantined"`
 	SpoolQuotaFailures    uint64            `json:"spool_quota_failures"`
+	SpoolKeyStatus        string            `json:"spool_key_status,omitempty"`
+	SpoolKeyActivatedAt   *time.Time        `json:"spool_key_activated_at,omitempty"`
+	SpoolKeyExpiresAt     *time.Time        `json:"spool_key_expires_at,omitempty"`
 }
 
 type Recorder struct {
@@ -387,7 +391,7 @@ func New(opts Options) (*Recorder, error) {
 	}
 	r := &Recorder{opts: opts, queue: make(chan queued, opts.QueueSize), criticalQueue: make(chan queued, opts.CriticalQueueSize), done: make(chan struct{})}
 	if opts.SpoolPath != "" || opts.SpoolKeyPath != "" {
-		spool, err := openSpoolWithProvider(opts.SpoolPath, opts.SpoolKeyPath, opts.SpoolMaxBytes, opts.SecretProvider)
+		spool, err := openSpoolWithPolicy(opts.SpoolPath, opts.SpoolKeyPath, opts.SpoolMaxBytes, opts.SecretProvider, opts.SpoolKeyMaxAge)
 		if err != nil {
 			return nil, err
 		}
@@ -1281,6 +1285,7 @@ func (r *Recorder) Stats() Stats {
 	r.mu.RUnlock()
 	dropped, writes := r.dropped.Load(), r.writeErrors.Load()
 	spoolBytes, spoolEvents, spoolQuarantined := r.spool.stats()
+	spoolKeyStatus, spoolKeyActivatedAt, spoolKeyExpiresAt := r.spool.keyExpiryStatus(time.Now().UTC())
 	spoolQuotaFailures := r.spoolQuotaFailures.Load()
 	queueDepth := len(r.queue)
 	criticalQueueDepth := 0
@@ -1304,6 +1309,8 @@ func (r *Recorder) Stats() Stats {
 		},
 		SpoolBytes: spoolBytes, SpoolEvents: spoolEvents, SpoolQuarantined: spoolQuarantined,
 		SpoolQuotaFailures: spoolQuotaFailures,
+		SpoolKeyStatus:     spoolKeyStatus, SpoolKeyActivatedAt: spoolKeyActivatedAt,
+		SpoolKeyExpiresAt: spoolKeyExpiresAt,
 	}
 }
 

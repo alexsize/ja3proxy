@@ -4,14 +4,17 @@ const elements = Object.fromEntries([
   "total-download", "uptime", "sessions", "events", "error-toast",
   "config-form", "tls-fingerprint", "proxy-protocol-choice", "traffic-page", "settings-page",
   "upstream-choice", "upstream-field", "upstream-input", "config-note", "proxy-port",
-  "proxy-auth-choice", "proxy-username-field", "proxy-username", "proxy-password-field", "proxy-password", "mitm-ca-validity", "panel-cert-validity", "ca-reload-button", "ca-reload-note",
-  "spool-key-reload-button", "spool-key-reload-note", "mitm-ca-identity"
+  "proxy-auth-choice", "proxy-username-field", "proxy-username", "proxy-password-field", "proxy-password", "mitm-ca-validity", "panel-cert-validity", "ca-reload-button", "ca-reload-note", "ca-rotate-button", "ca-rotate-note",
+  "spool-key-reload-button", "spool-key-reload-note", "mitm-ca-identity",
+  "proxy-auth-reload-button", "proxy-auth-reload-note", "upstream-credentials-reload-button", "upstream-credentials-reload-note"
 ].map(id => [id, document.getElementById(id)]));
 
 let previous = null;
 let filter = "all";
 let configInitialized = false;
 let configuredProxyAuthEnabled = false;
+let proxyAuthFilesConfigured = false;
+let upstreamCredentialFilesConfigured = false;
 let runtimeConfigVersion = 0;
 let lastEventsSignature = "";
 let lastRouteSignature = "";
@@ -182,7 +185,7 @@ function syncConfig(runtime, force = false) {
   elements["upstream-input"].value = "";
 
   elements["config-note"].textContent = runtime.configurationMode === "fingerprint-file"
-    ? "TLS fingerprint управляется файлом; следующий прокси можно изменять."
+    ? "TLS-отпечаток задаётся файлом; следующий прокси можно изменить."
     : "Изменения применяются к новым соединениям без прерывания активных сессий.";
   elements["config-note"].className = "config-note";
   configInitialized = true;
@@ -191,6 +194,16 @@ function syncConfig(runtime, force = false) {
 function render(data) {
   const traffic = data.traffic;
   const runtime = data.runtime;
+  proxyAuthFilesConfigured = Boolean(runtime.proxyAuthFilesConfigured);
+  elements["proxy-auth-reload-button"].disabled = !proxyAuthFilesConfigured;
+  if (!proxyAuthFilesConfigured && !elements["proxy-auth-reload-note"].textContent) {
+    elements["proxy-auth-reload-note"].textContent = "Файлы учётных данных не настроены.";
+  }
+  upstreamCredentialFilesConfigured = Boolean(runtime.upstreamCredentialFilesConfigured);
+  elements["upstream-credentials-reload-button"].disabled = !upstreamCredentialFilesConfigured;
+  if (!upstreamCredentialFilesConfigured && !elements["upstream-credentials-reload-note"].textContent) {
+    elements["upstream-credentials-reload-note"].textContent = "Файлы учётных данных вышестоящего прокси не настроены.";
+  }
   const caStatus = runtime.mitmCaCertificateStatus || "UNAVAILABLE";
   const caStarted = runtime.mitmCaCertificateNotBefore ? new Date(runtime.mitmCaCertificateNotBefore).toLocaleString() : "не определено";
   elements["mitm-ca-identity"].textContent = `Субъект: ${runtime.mitmCaCertificateSubject || "—"} · SHA-256: ${runtime.mitmCaCertificateSHA256 || "—"} · Действует с: ${caStarted}`;
@@ -262,7 +275,11 @@ async function runRefreshLoop() {
 
 document.querySelectorAll("[data-filter]").forEach(button => button.addEventListener("click", () => {
   filter = button.dataset.filter;
-  document.querySelectorAll("[data-filter]").forEach(item => item.classList.toggle("active", item === button));
+  document.querySelectorAll("[data-filter]").forEach(item => {
+    const selected = item === button;
+    item.classList.toggle("active", selected);
+    item.setAttribute("aria-pressed", String(selected));
+  });
   if (previous) renderSessions(previous.sessions);
 }));
 
@@ -281,8 +298,13 @@ function activateTab(name, updateHash = true) {
 document.querySelectorAll("[data-tab]").forEach(tab => {
   tab.addEventListener("click", () => activateTab(tab.dataset.tab));
   tab.addEventListener("keydown", event => {
-    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-    const target = tab.dataset.tab === "traffic" ? "settings" : "traffic";
+    let target;
+    if (event.key === "Home") target = "traffic";
+    else if (event.key === "End") target = "settings";
+    else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      target = tab.dataset.tab === "traffic" ? "settings" : "traffic";
+    } else return;
+    event.preventDefault();
     activateTab(target);
     document.querySelector(`[data-tab="${target}"]`).focus();
   });
@@ -327,6 +349,28 @@ elements["ca-reload-button"].addEventListener("click", async () => {
   }
 });
 
+elements["ca-rotate-button"].addEventListener("click", async () => {
+  if (!window.confirm("Создать новый CA и немедленно активировать его? Все клиенты должны будут установить новый публичный сертификат; старый CA больше не будет подписывать новые TLS-сертификаты.")) return;
+  const button = elements["ca-rotate-button"];
+  const note = elements["ca-rotate-note"];
+  button.disabled = true;
+  note.className = "config-note";
+  note.textContent = "Создание и активация нового CA…";
+  try {
+    const response = await ja3proxyFetch("/api/v1/admin/ca/rotate", { method: "POST" });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+    note.innerHTML = `Новый CA активирован. <a href="/api/v1/ca/certificate" data-auth-download data-filename="ja3proxy-ca.pem">Скачайте новый публичный сертификат</a> и установите его на клиентах.`;
+    note.className = "config-note success";
+    await refreshState();
+  } catch (error) {
+    note.textContent = error.message || "Ротация не выполнена; действующий CA не изменён.";
+    note.className = "config-note error";
+  } finally {
+    button.disabled = false;
+  }
+});
+
 elements["spool-key-reload-button"].addEventListener("click", async () => {
   const button = elements["spool-key-reload-button"];
   const note = elements["spool-key-reload-note"];
@@ -347,6 +391,54 @@ elements["spool-key-reload-button"].addEventListener("click", async () => {
     note.className = "config-note error";
   } finally {
     button.disabled = false;
+  }
+});
+
+elements["proxy-auth-reload-button"].addEventListener("click", async () => {
+  const button = elements["proxy-auth-reload-button"];
+  const note = elements["proxy-auth-reload-note"];
+  if (button.disabled) return;
+  button.disabled = true;
+  note.className = "config-note";
+  note.textContent = "Чтение и проверка файлов учётных данных…";
+  try {
+    const response = await ja3proxyFetch("/api/v1/admin/proxy-auth/reload", { method: "POST" });
+    if (!response.ok) {
+      const result = await response.json();
+      throw new Error(result.error || `HTTP ${response.status}`);
+    }
+    note.textContent = "Новые учётные данные применены для новых подключений.";
+    note.className = "config-note success";
+    await refreshState();
+  } catch (error) {
+    note.textContent = error.message || "Не удалось применить файлы учётных данных; прежняя пара сохранена.";
+    note.className = "config-note error";
+  } finally {
+    button.disabled = !proxyAuthFilesConfigured;
+  }
+});
+
+elements["upstream-credentials-reload-button"].addEventListener("click", async () => {
+  const button = elements["upstream-credentials-reload-button"];
+  const note = elements["upstream-credentials-reload-note"];
+  if (button.disabled) return;
+  button.disabled = true;
+  note.className = "config-note";
+  note.textContent = "Чтение файлов учётных данных вышестоящего прокси…";
+  try {
+    const response = await ja3proxyFetch("/api/v1/admin/upstream-credentials/reload", { method: "POST" });
+    if (!response.ok) {
+      const result = await response.json();
+      throw new Error(result.error || `HTTP ${response.status}`);
+    }
+    note.textContent = "Новые учётные данные вышестоящего прокси применены для новых подключений.";
+    note.className = "config-note success";
+    await refreshState();
+  } catch (error) {
+    note.textContent = error.message || "Не удалось применить файлы; текущие подключения сохранены.";
+    note.className = "config-note error";
+  } finally {
+    button.disabled = !upstreamCredentialFilesConfigured;
   }
 });
 
