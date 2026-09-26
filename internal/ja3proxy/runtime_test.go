@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/fingerprint"
 	httpproxy "github.com/lylemi/ja3proxy/internal/ja3proxy/proxy"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/routing"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/state"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/tlsprofile"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/traffic"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/webpanel"
@@ -211,12 +213,150 @@ func TestParseFlagsEnablesTUI(t *testing.T) {
 func TestParseFlagsEnablesWebPanel(t *testing.T) {
 	app := newRuntimeTestApp(t)
 
-	err := app.parseFlags([]string{"--web-panel", "127.0.0.1:9090"})
+	err := app.parseFlags([]string{"--web-panel", "127.0.0.1:9090", "--web-panel-token-file", "credentials/panel.token"})
 	if err != nil {
 		t.Fatalf("parse flags: %v", err)
 	}
 	if app.Config.WebPanel != "127.0.0.1:9090" {
 		t.Fatalf("web panel = %q, want 127.0.0.1:9090", app.Config.WebPanel)
+	}
+	if app.Config.WebPanelTokenFile != "credentials/panel.token" {
+		t.Fatalf("web panel token file = %q, want credentials/panel.token", app.Config.WebPanelTokenFile)
+	}
+}
+
+func TestParseFlagsWebPanelTLS(t *testing.T) {
+	app := newRuntimeTestApp(t)
+	if err := app.parseFlags([]string{
+		"--web-panel", "0.0.0.0:9090",
+		"--web-panel-token-file", "credentials/panel.token",
+		"--web-panel-cert", "credentials/panel.crt",
+		"--web-panel-key", "credentials/panel.key",
+	}); err != nil {
+		t.Fatalf("parse flags: %v", err)
+	}
+	if app.Config.WebPanelCert != "credentials/panel.crt" || app.Config.WebPanelKey != "credentials/panel.key" {
+		t.Fatalf("web panel TLS files = %q/%q", app.Config.WebPanelCert, app.Config.WebPanelKey)
+	}
+}
+
+func TestLoadWebPanelToken(t *testing.T) {
+	app := newRuntimeTestApp(t)
+	tokenPath := filepath.Join(t.TempDir(), "panel.token")
+	if err := os.WriteFile(tokenPath, []byte("  0123456789abcdef  \n"), 0600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+	app.Config.WebPanelTokenFile = tokenPath
+
+	if err := app.loadWebPanelToken(); err != nil {
+		t.Fatalf("load token: %v", err)
+	}
+	if app.WebPanelToken != "0123456789abcdef" {
+		t.Fatalf("token = %q, want trimmed token", app.WebPanelToken)
+	}
+	if strings.Join(app.WebPanelScopes, ",") != "read,write" {
+		t.Fatalf("scopes = %v, want read,write", app.WebPanelScopes)
+	}
+
+	app.Config.WebPanelTokenFile = ""
+	if err := app.loadWebPanelToken(); err != nil {
+		t.Fatalf("clear token: %v", err)
+	}
+	if app.WebPanelToken != "" {
+		t.Fatalf("token after clearing path = %q, want empty", app.WebPanelToken)
+	}
+}
+
+func TestLoadWebPanelTokenReadsExplicitScopes(t *testing.T) {
+	app := newRuntimeTestApp(t)
+	tokenPath := filepath.Join(t.TempDir(), "panel.token.json")
+	if err := os.WriteFile(tokenPath, []byte(`{"token":"0123456789abcdef","scopes":["read","raw","read"]}`), 0600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+	app.Config.WebPanelTokenFile = tokenPath
+
+	if err := app.loadWebPanelToken(); err != nil {
+		t.Fatalf("load token: %v", err)
+	}
+	if strings.Join(app.WebPanelScopes, ",") != "read,raw" {
+		t.Fatalf("scopes = %v, want read,raw", app.WebPanelScopes)
+	}
+}
+
+func TestLoadWebPanelTokenReadsRoleRegistry(t *testing.T) {
+	app := newRuntimeTestApp(t)
+	tokenPath := filepath.Join(t.TempDir(), "panel.tokens.json")
+	contents := `{"tokens":[{"id":"viewer-1","token":"viewer-token-012345","role":"viewer"},{"id":"admin-1","token":"admin-token-012345","role":"admin"}]}`
+	if err := os.WriteFile(tokenPath, []byte(contents), 0600); err != nil {
+		t.Fatalf("write token registry: %v", err)
+	}
+	app.Config.WebPanelTokenFile = tokenPath
+
+	if err := app.loadWebPanelToken(); err != nil {
+		t.Fatalf("load token registry: %v", err)
+	}
+	if app.WebPanelToken != "" || len(app.WebPanelTokens) != 2 {
+		t.Fatalf("legacy token fields = %q/%v, tokens = %+v", app.WebPanelToken, app.WebPanelScopes, app.WebPanelTokens)
+	}
+	if strings.Join(app.WebPanelTokens[0].Scopes, ",") != "read" || strings.Join(app.WebPanelTokens[1].Scopes, ",") != "read,write,raw,export" {
+		t.Fatalf("role scopes = %+v", app.WebPanelTokens)
+	}
+}
+
+func TestLoadWebPanelTokenRejectsRegistryWithOnlyRevokedTokens(t *testing.T) {
+	app := newRuntimeTestApp(t)
+	path := filepath.Join(t.TempDir(), "panel.tokens.json")
+	if err := os.WriteFile(path, []byte(`{"tokens":[{"id":"old","token":"old-token-012345","role":"admin","revoked":true}]}`), 0600); err != nil {
+		t.Fatalf("write token registry: %v", err)
+	}
+	app.Config.WebPanelTokenFile = path
+	if err := app.loadWebPanelToken(); err == nil || !strings.Contains(err.Error(), "active token") {
+		t.Fatalf("load revoked-only token registry error = %v", err)
+	}
+}
+
+func TestLoadWebPanelTokenReadsExpiry(t *testing.T) {
+	app := newRuntimeTestApp(t)
+	tokenPath := filepath.Join(t.TempDir(), "panel.token.json")
+	expiresAt := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
+	contents := fmt.Sprintf(`{"token":"0123456789abcdef","scopes":["read"],"expires_at":%q}`, expiresAt.Format(time.RFC3339))
+	if err := os.WriteFile(tokenPath, []byte(contents), 0600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+	app.Config.WebPanelTokenFile = tokenPath
+
+	if err := app.loadWebPanelToken(); err != nil {
+		t.Fatalf("load token: %v", err)
+	}
+	if !app.WebPanelTokenExpiry.Equal(expiresAt) {
+		t.Fatalf("expiry = %s, want %s", app.WebPanelTokenExpiry, expiresAt)
+	}
+}
+
+func TestLoadWebPanelTokenRejectsExpiredToken(t *testing.T) {
+	app := newRuntimeTestApp(t)
+	tokenPath := filepath.Join(t.TempDir(), "panel.token.json")
+	contents := `{"token":"0123456789abcdef","scopes":["read"],"expires_at":"2020-01-01T00:00:00Z"}`
+	if err := os.WriteFile(tokenPath, []byte(contents), 0600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+	app.Config.WebPanelTokenFile = tokenPath
+
+	if err := app.loadWebPanelToken(); err == nil {
+		t.Fatal("load expired token error = nil")
+	}
+}
+
+func TestLoadWebPanelTokenRejectsShortToken(t *testing.T) {
+	app := newRuntimeTestApp(t)
+	tokenPath := filepath.Join(t.TempDir(), "panel.token")
+	if err := os.WriteFile(tokenPath, []byte("too-short"), 0600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+	app.Config.WebPanelTokenFile = tokenPath
+
+	if err := app.loadWebPanelToken(); err == nil {
+		t.Fatal("load token error = nil, want short-token error")
 	}
 }
 
@@ -320,6 +460,51 @@ func TestConfigureTLSFingerprintReturnsValidationError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "failed configuring TLS fingerprint") {
 		t.Fatalf("error = %q, want fingerprint context", err)
+	}
+}
+
+func TestConfigureTLSFingerprintUsesSQLiteUnlessCLIOverridesIt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	database, err := state.OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &fingerprint.TLSFingerprintStore{}
+	if _, err := store.BindState(database); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetValidated(fingerprint.TLSFingerprint{Client: "Firefox", Version: "105"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	database, err = state.OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	app := newRuntimeTestApp(t)
+	app.StateDB = database
+	app.Config.TLSClient = "Golang"
+	app.Config.TLSVersion = "0"
+	if err := app.configureTLSFingerprint(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := app.configuredTLSFingerprint(); got.Client != "Firefox" || got.Version != "105" {
+		t.Fatalf("SQLite fingerprint = %+v, want Firefox 105", got)
+	}
+
+	app.Config.TLSClient = "Chrome"
+	app.Config.TLSVersion = "120"
+	app.Config.TLSFingerprintExplicit = true
+	if err := app.configureTLSFingerprint(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := app.configuredTLSFingerprint(); got.Client != "Chrome" || got.Version != "120" {
+		t.Fatalf("explicit CLI fingerprint = %+v, want Chrome 120", got)
 	}
 }
 
@@ -536,6 +721,9 @@ func TestUpdateProxyConfigChangesFingerprintAndRoute(t *testing.T) {
 	if status.TLSClient != "Chrome" || status.TLSVersion != "120" {
 		t.Fatalf("fingerprint = %s@%s, want Chrome@120", status.TLSClient, status.TLSVersion)
 	}
+	if status.ConfigVersion != 1 {
+		t.Fatalf("config version = %d, want 1", status.ConfigVersion)
+	}
 	if status.Upstream != "socks5://user@127.0.0.1:1080" {
 		t.Fatalf("display upstream = %q, want redacted credentials", status.Upstream)
 	}
@@ -544,6 +732,30 @@ func TestUpdateProxyConfigChangesFingerprintAndRoute(t *testing.T) {
 	}
 	if app.Config.Upstream != upstream {
 		t.Fatalf("config upstream = %q, want %q", app.Config.Upstream, upstream)
+	}
+}
+
+func TestUpdateProxyConfigRejectsStaleExpectedVersionWithoutMutation(t *testing.T) {
+	app := newRuntimeTestApp(t)
+	if _, err := app.buildProxy(); err != nil {
+		t.Fatalf("buildProxy() error = %v", err)
+	}
+	fingerprintSpec := "chrome@120"
+	expected := uint64(0)
+	if _, err := app.updateProxyConfig(webpanel.ConfigUpdate{ExpectedVersion: &expected, TLSFingerprint: &fingerprintSpec}); err != nil {
+		t.Fatalf("initial update: %v", err)
+	}
+
+	stale := uint64(0)
+	upstream := "socks5://127.0.0.1:1080"
+	if _, err := app.updateProxyConfig(webpanel.ConfigUpdate{ExpectedVersion: &stale, Upstream: &upstream}); !errors.Is(err, webpanel.ErrConfigVersionConflict) {
+		t.Fatalf("stale update error = %v, want conflict", err)
+	}
+	if got := app.UpstreamDialer.Upstream(); got != "" {
+		t.Fatalf("stale update mutated upstream = %q", got)
+	}
+	if got := app.runtimeConfigVersion; got != 1 {
+		t.Fatalf("config version after stale update = %d, want 1", got)
 	}
 }
 

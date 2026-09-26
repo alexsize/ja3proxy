@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/secrets"
 	"golang.org/x/net/proxy"
 )
 
@@ -27,20 +28,25 @@ type DynamicUpstreamDialer struct {
 	current  *UpstreamDialer
 	upstream string
 	timeout  time.Duration
+	provider secrets.Provider
 }
 
 func NewDynamicUpstreamDialer(upstream string, timeout time.Duration) (*DynamicUpstreamDialer, error) {
+	return NewDynamicUpstreamDialerWithProvider(upstream, timeout, nil)
+}
+
+func NewDynamicUpstreamDialerWithProvider(upstream string, timeout time.Duration, provider secrets.Provider) (*DynamicUpstreamDialer, error) {
 	upstream = strings.TrimSpace(upstream)
-	current, err := NewUpstreamDialer(upstream, timeout)
+	current, err := NewUpstreamDialerWithProvider(upstream, timeout, provider)
 	if err != nil {
 		return nil, err
 	}
-	return &DynamicUpstreamDialer{current: current, upstream: upstream, timeout: timeout}, nil
+	return &DynamicUpstreamDialer{current: current, upstream: upstream, timeout: timeout, provider: provider}, nil
 }
 
 func (u *DynamicUpstreamDialer) Configure(upstream string) error {
 	upstream = strings.TrimSpace(upstream)
-	next, err := NewUpstreamDialer(upstream, u.timeout)
+	next, err := NewUpstreamDialerWithProvider(upstream, u.timeout, u.provider)
 	if err != nil {
 		return err
 	}
@@ -83,12 +89,21 @@ func (u *DynamicUpstreamDialer) RoundTrip(request *http.Request) (*http.Response
 }
 
 func NewUpstreamDialer(upstream string, timeout time.Duration) (*UpstreamDialer, error) {
+	return NewUpstreamDialerWithProvider(upstream, timeout, nil)
+}
+
+// NewUpstreamDialerWithProvider resolves credentials written as file:<path>
+// in URL userinfo. Literal URL credentials remain supported.
+func NewUpstreamDialerWithProvider(upstream string, timeout time.Duration, provider secrets.Provider) (*UpstreamDialer, error) {
 	var dialer proxy.Dialer
 	var transport http.RoundTripper
 
 	if upstream != "" {
 		parsedURL, err := parseProxyURL(upstream)
 		if err != nil {
+			return nil, err
+		}
+		if err := resolveProxyCredentials(parsedURL, provider); err != nil {
 			return nil, err
 		}
 
@@ -125,6 +140,36 @@ func NewUpstreamDialer(upstream string, timeout time.Duration) (*UpstreamDialer,
 		dialer:    dialer,
 		Transport: transport,
 	}, nil
+}
+
+func resolveProxyCredentials(parsedURL *url.URL, provider secrets.Provider) error {
+	if parsedURL == nil || parsedURL.User == nil {
+		return nil
+	}
+	username := parsedURL.User.Username()
+	password, hasPassword := parsedURL.User.Password()
+	if strings.HasPrefix(username, "file:") {
+		value, err := secrets.Read(provider, strings.TrimPrefix(username, "file:"))
+		if err != nil {
+			return fmt.Errorf("load upstream proxy username reference: %w", err)
+		}
+		username = string(value)
+		clear(value)
+	}
+	if hasPassword && strings.HasPrefix(password, "file:") {
+		value, err := secrets.Read(provider, strings.TrimPrefix(password, "file:"))
+		if err != nil {
+			return fmt.Errorf("load upstream proxy password reference: %w", err)
+		}
+		password = string(value)
+		clear(value)
+	}
+	if hasPassword {
+		parsedURL.User = url.UserPassword(username, password)
+	} else {
+		parsedURL.User = url.User(username)
+	}
+	return nil
 }
 
 func parseProxyURL(upstream string) (*url.URL, error) {

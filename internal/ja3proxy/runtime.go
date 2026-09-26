@@ -2,6 +2,7 @@ package ja3proxy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -16,6 +17,10 @@ import (
 	"time"
 
 	cflog "github.com/cloudflare/cfssl/log"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/audit"
+	dnscapture "github.com/lylemi/ja3proxy/internal/ja3proxy/capture/dns"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/capture/live"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/capture/pcap"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/certstore"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/device"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/dialer"
@@ -24,6 +29,8 @@ import (
 	httpproxy "github.com/lylemi/ja3proxy/internal/ja3proxy/proxy"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/recorder"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/routing"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/secrets"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/state"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/tlsprofile"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/traffic"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/tui"
@@ -33,23 +40,32 @@ import (
 )
 
 type App struct {
-	Recorder            *recorder.Recorder
-	Devices             *device.Store
-	TLSProfiles         *tlsprofile.Store
-	Config              *RunningConfig
-	CA                  *certstore.CertificateAuthority
-	SessionKey          *certstore.SessionKeyHelper
-	TLSFingerprints     *fingerprint.TLSFingerprintStore
-	UpstreamTLSProfiles *upstreamtls.UpstreamTLSProfileStore
-	Routes              *routing.Store
-	TrafficMonitor      *traffic.TrafficMonitor
-	UpstreamDialer      *dialer.DynamicUpstreamDialer
-	ProxyServer         *httpproxy.Proxy
-	proxyListener       *rebindableListener
-	protocolListener    *httpproxy.MixedProxyListener
-	configMu            sync.Mutex
-	routeDialersMu      sync.Mutex
-	routeDialers        map[string]*dialer.UpstreamDialer
+	Recorder             *recorder.Recorder
+	SecretProvider       secrets.Provider
+	Audit                *audit.Store
+	WebPanelToken        string
+	WebPanelScopes       []string
+	WebPanelTokenExpiry  time.Time
+	WebPanelTokens       []webpanel.AuthToken
+	Devices              *device.Store
+	TLSProfiles          *tlsprofile.Store
+	Config               *RunningConfig
+	CA                   *certstore.CertificateAuthority
+	SessionKey           *certstore.SessionKeyHelper
+	TLSFingerprints      *fingerprint.TLSFingerprintStore
+	UpstreamTLSProfiles  *upstreamtls.UpstreamTLSProfileStore
+	Routes               *routing.Store
+	StateDB              *state.SQLiteStore
+	TrafficMonitor       *traffic.TrafficMonitor
+	UpstreamDialer       *dialer.DynamicUpstreamDialer
+	ProxyServer          *httpproxy.Proxy
+	proxyListener        *rebindableListener
+	protocolListener     *httpproxy.MixedProxyListener
+	configMu             sync.Mutex
+	runtimeConfigVersion uint64
+	routeDialersMu       sync.Mutex
+	routeDialers         map[string]*dialer.UpstreamDialer
+	dnsCorrelator        *dnscapture.Correlator
 
 	watchFingerprintFile func(context.Context, string, time.Duration) error
 }
@@ -62,6 +78,7 @@ func Run() error {
 func newDefaultApp() *App {
 	return &App{
 		Config:              &RunningConfig{},
+		SecretProvider:      secrets.FileProvider{},
 		CA:                  &certstore.CertificateAuthority{},
 		SessionKey:          &certstore.SessionKeyHelper{},
 		TLSFingerprints:     &fingerprint.TLSFingerprintStore{},
@@ -83,17 +100,22 @@ func (app *App) runWithContext(ctx context.Context) error {
 		fmt.Print(fingerprint.FormatCatalog())
 		return nil
 	}
+	if app.Config.ListCaptureInterfaces {
+		devices, err := pcap.ListDevices()
+		if err != nil {
+			return fmt.Errorf("list packet-capture interfaces: %w", err)
+		}
+		for _, device := range devices {
+			fmt.Printf("%s\t%s\n", device.Name, device.Description)
+		}
+		return nil
+	}
 
 	if err := app.configureRuntime(ctx); err != nil {
+		app.closePersistentStores()
 		return err
 	}
-	defer func() {
-		if app.Recorder != nil {
-			if err := app.Recorder.Close(); err != nil {
-				logutil.Warn("recorder", "recording output incomplete")
-			}
-		}
-	}()
+	defer app.closePersistentStores()
 	proxyServer, err := app.buildProxy()
 	if err != nil {
 		return err
@@ -112,6 +134,13 @@ func (app *App) configureRuntime(ctx context.Context) error {
 	if err := app.generateSessionKey(); err != nil {
 		return fmt.Errorf("failed generating session key: %w", err)
 	}
+	if app.StateDB == nil && strings.TrimSpace(app.Config.StateSQLite) != "" {
+		var err error
+		app.StateDB, err = state.OpenSQLite(app.Config.StateSQLite)
+		if err != nil {
+			return fmt.Errorf("configure application SQLite state: %w", err)
+		}
+	}
 	if err := app.configureTLSFingerprint(ctx); err != nil {
 		return err
 	}
@@ -123,7 +152,7 @@ func (app *App) configureRuntime(ctx context.Context) error {
 	}
 	if app.Devices == nil {
 		var err error
-		app.Devices, err = device.Open(app.Config.DeviceMapFile)
+		app.Devices, err = device.OpenWithState(app.Config.DeviceMapFile, app.StateDB)
 		if err != nil {
 			return fmt.Errorf("configure device registry: %w", err)
 		}
@@ -131,7 +160,7 @@ func (app *App) configureRuntime(ctx context.Context) error {
 	app.ensureTrafficMonitor()
 	if app.TLSProfiles == nil {
 		var err error
-		app.TLSProfiles, err = tlsprofile.Open(app.Config.TLSTemplateFile)
+		app.TLSProfiles, err = tlsprofile.OpenWithState(app.Config.TLSTemplateFile, app.StateDB)
 		if err != nil {
 			return fmt.Errorf("configure TLS profile library: %w", err)
 		}
@@ -139,14 +168,214 @@ func (app *App) configureRuntime(ctx context.Context) error {
 	if err := app.validateRouteReferences(); err != nil {
 		return err
 	}
-	if app.Config.CaptureTLS && app.Recorder == nil {
+	if (app.Config.CaptureTLS || app.Config.CaptureTCPInterface != "") && app.Recorder == nil {
 		var err error
-		app.Recorder, err = recorder.New(recorder.Options{Raw: app.Config.CaptureRaw, JSONLPath: app.Config.CaptureJSONL, SQLitePath: app.Config.CaptureSQLite, SQLiteRetention: app.Config.CaptureSQLiteRetention})
+		app.Recorder, err = recorder.New(recorder.Options{
+			Raw: app.Config.CaptureRaw, JSONLPath: app.Config.CaptureJSONL,
+			SQLitePath: app.Config.CaptureSQLite, SQLiteRetention: app.Config.CaptureSQLiteRetention,
+			SpoolPath: app.Config.CaptureSpool, SpoolKeyPath: app.Config.CaptureSpoolKey,
+			SpoolMaxBytes:  app.Config.CaptureSpoolMaxBytes,
+			SecretProvider: app.secretProvider(),
+		})
 		if err != nil {
 			return fmt.Errorf("configure recorder: %w", err)
 		}
 	}
+	if app.Audit == nil {
+		var err error
+		if strings.TrimSpace(app.Config.StateSQLite) != "" {
+			app.Audit, err = audit.OpenSQLiteWithLegacy(app.Config.StateSQLite, app.Config.AuditLog)
+		} else if strings.TrimSpace(app.Config.AuditSQLite) != "" {
+			app.Audit, err = audit.OpenSQLite(app.Config.AuditSQLite)
+		} else {
+			app.Audit, err = audit.Open(app.Config.AuditLog)
+		}
+		if err != nil {
+			return fmt.Errorf("configure audit storage: %w", err)
+		}
+	}
+	if err := app.loadWebPanelToken(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(app.Config.CaptureTCPInterface) != "" && app.dnsCorrelator == nil {
+		app.dnsCorrelator = dnscapture.NewCorrelator(dnscapture.Config{})
+	}
 	return nil
+}
+
+func (app *App) closePersistentStores() {
+	if app == nil {
+		return
+	}
+	if app.Recorder != nil {
+		if err := app.Recorder.Close(); err != nil {
+			logutil.Warn("recorder", "recording output incomplete")
+		}
+		app.Recorder = nil
+	}
+	if app.Audit != nil {
+		if err := app.Audit.Close(); err != nil {
+			logutil.Warn("audit", "failed closing audit log")
+		}
+		app.Audit = nil
+	}
+	if app.StateDB != nil {
+		if err := app.StateDB.Close(); err != nil {
+			logutil.Warn("state", "failed closing SQLite state")
+		}
+		app.StateDB = nil
+	}
+}
+
+func (app *App) loadWebPanelToken() error {
+	app.WebPanelToken = ""
+	app.WebPanelScopes = nil
+	app.WebPanelTokenExpiry = time.Time{}
+	app.WebPanelTokens = nil
+	path := strings.TrimSpace(app.Config.WebPanelTokenFile)
+	if path == "" {
+		return nil
+	}
+
+	data, err := secrets.Read(app.secretProvider(), path)
+	if err != nil {
+		return fmt.Errorf("read web panel token: %w", err)
+	}
+	defer clear(data)
+	if len(data) > 4<<10 {
+		return fmt.Errorf("web panel token file exceeds 4 KiB")
+	}
+	contents := strings.TrimSpace(string(data))
+	app.WebPanelScopes = []string{"read", "write"}
+	if strings.HasPrefix(contents, "{") {
+		var file struct {
+			Token     string   `json:"token"`
+			Scopes    []string `json:"scopes"`
+			ExpiresAt string   `json:"expires_at"`
+			Role      string   `json:"role"`
+			Tokens    []struct {
+				ID        string   `json:"id"`
+				Token     string   `json:"token"`
+				Role      string   `json:"role"`
+				Scopes    []string `json:"scopes"`
+				ExpiresAt string   `json:"expires_at"`
+				Revoked   bool     `json:"revoked"`
+			} `json:"tokens"`
+		}
+		if err := json.Unmarshal(data, &file); err != nil {
+			return fmt.Errorf("decode web panel token file: %w", err)
+		}
+		if len(file.Tokens) > 0 {
+			seenTokens := make(map[string]struct{}, len(file.Tokens))
+			seenIDs := make(map[string]struct{}, len(file.Tokens))
+			activeTokens := 0
+			for index, entry := range file.Tokens {
+				token := strings.TrimSpace(entry.Token)
+				if len(token) < 16 {
+					return fmt.Errorf("web panel token %d must contain at least 16 characters", index+1)
+				}
+				if _, exists := seenTokens[token]; exists {
+					return fmt.Errorf("web panel token %d duplicates another token", index+1)
+				}
+				seenTokens[token] = struct{}{}
+				id := strings.TrimSpace(entry.ID)
+				if id != "" {
+					if _, exists := seenIDs[id]; exists {
+						return fmt.Errorf("web panel token %d duplicates token id %q", index+1, id)
+					}
+					seenIDs[id] = struct{}{}
+				}
+				role := strings.ToLower(strings.TrimSpace(entry.Role))
+				scopes := normalizeWebPanelScopes(entry.Scopes)
+				if role != "" {
+					roleScopes, ok := webpanel.ScopesForRole(role)
+					if !ok {
+						return fmt.Errorf("unknown web panel role %q", entry.Role)
+					}
+					if len(scopes) == 0 {
+						scopes = roleScopes
+					}
+				}
+				if len(scopes) == 0 {
+					return fmt.Errorf("web panel token %d must grant at least one valid scope or role", index+1)
+				}
+				var expiresAt time.Time
+				if strings.TrimSpace(entry.ExpiresAt) != "" {
+					parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(entry.ExpiresAt))
+					if err != nil {
+						return fmt.Errorf("parse web panel token %d expiry: %w", index+1, err)
+					}
+					if !parsed.After(time.Now().UTC()) {
+						return fmt.Errorf("web panel token %d is expired", index+1)
+					}
+					expiresAt = parsed.UTC()
+				}
+				app.WebPanelTokens = append(app.WebPanelTokens, webpanel.AuthToken{ID: id, Token: token, Role: role, Scopes: scopes, ExpiresAt: expiresAt, Revoked: entry.Revoked})
+				if !entry.Revoked {
+					activeTokens++
+				}
+			}
+			if len(app.WebPanelTokens) == 0 {
+				return fmt.Errorf("web panel token file must contain at least one token")
+			}
+			if activeTokens == 0 {
+				return fmt.Errorf("web panel token file must contain at least one active token")
+			}
+			return nil
+		}
+		contents = strings.TrimSpace(file.Token)
+		app.WebPanelScopes = normalizeWebPanelScopes(file.Scopes)
+		if len(app.WebPanelScopes) == 0 && strings.TrimSpace(file.Role) != "" {
+			roleScopes, ok := webpanel.ScopesForRole(file.Role)
+			if !ok {
+				return fmt.Errorf("unknown web panel role %q", file.Role)
+			}
+			app.WebPanelScopes = roleScopes
+		}
+		if len(app.WebPanelScopes) == 0 {
+			return fmt.Errorf("web panel token file must grant at least one valid scope")
+		}
+		if strings.TrimSpace(file.ExpiresAt) != "" {
+			expiresAt, err := time.Parse(time.RFC3339, strings.TrimSpace(file.ExpiresAt))
+			if err != nil {
+				return fmt.Errorf("parse web panel token expiry: %w", err)
+			}
+			if !expiresAt.After(time.Now().UTC()) {
+				return fmt.Errorf("web panel token is expired")
+			}
+			app.WebPanelTokenExpiry = expiresAt.UTC()
+		}
+	}
+	app.WebPanelToken = contents
+	if len(app.WebPanelToken) < 16 {
+		return fmt.Errorf("web panel token must contain at least 16 characters")
+	}
+	return nil
+}
+
+func (app *App) secretProvider() secrets.Provider {
+	if app != nil && app.SecretProvider != nil {
+		return app.SecretProvider
+	}
+	return secrets.FileProvider{}
+}
+
+func normalizeWebPanelScopes(scopes []string) []string {
+	valid := map[string]struct{}{"read": {}, "write": {}, "raw": {}, "export": {}}
+	seen := make(map[string]struct{}, len(scopes))
+	result := make([]string, 0, len(scopes))
+	for _, scope := range scopes {
+		scope = strings.ToLower(strings.TrimSpace(scope))
+		if _, ok := valid[scope]; !ok {
+			continue
+		}
+		if _, ok := seen[scope]; ok {
+			continue
+		}
+		seen[scope] = struct{}{}
+		result = append(result, scope)
+	}
+	return result
 }
 
 func (app *App) validateRouteReferences() error {
@@ -159,7 +388,7 @@ func (app *App) validateRouteReferences() error {
 	}
 	validateAction := func(scope string, action routing.Action) error {
 		if upstream := strings.TrimSpace(action.Upstream); upstream != "" {
-			if _, err := dialer.NewUpstreamDialer(upstream, 10*time.Second); err != nil {
+			if _, err := dialer.NewUpstreamDialerWithProvider(upstream, 10*time.Second, app.SecretProvider); err != nil {
 				return fmt.Errorf("invalid %s upstream: %w", scope, err)
 			}
 		}
@@ -211,21 +440,66 @@ func (app *App) serveWithTUI(ctx context.Context, proxyServer *httpproxy.Proxy) 
 }
 
 func (app *App) serveProxyServices(ctx context.Context, proxyServer *httpproxy.Proxy) error {
+	services := []runtimeService{app.serveService(proxyServer)}
+	if captureService := app.tcpCaptureService(); captureService != nil {
+		services = append(services, captureService)
+	}
 	if app.Config.WebPanel == "" {
+		if len(services) > 1 {
+			return runServices(ctx, services...)
+		}
 		return app.serve(ctx, proxyServer)
 	}
 
 	panel := webpanel.Server{
-		Recorder: app.Recorder,
-		Devices:  app.Devices,
-		Profiles: app.TLSProfiles,
-		Routes:   app.Routes,
-		Address:  app.Config.WebPanel,
-		Monitor:  app.TrafficMonitor,
-		Runtime:  app.webPanelRuntimeStatus,
-		Update:   app.updateProxyConfig,
+		Recorder:        app.Recorder,
+		Audit:           app.Audit,
+		AuthToken:       app.WebPanelToken,
+		AuthScopes:      app.WebPanelScopes,
+		AuthTokenExpiry: app.WebPanelTokenExpiry,
+		AuthTokens:      app.WebPanelTokens,
+		TLSCertFile:     app.Config.WebPanelCert,
+		TLSKeyFile:      app.Config.WebPanelKey,
+		SecretProvider:  app.secretProvider(),
+		Devices:         app.Devices,
+		Profiles:        app.TLSProfiles,
+		Routes:          app.Routes,
+		UpstreamTLS:     app.UpstreamTLSProfiles,
+		Address:         app.Config.WebPanel,
+		Monitor:         app.TrafficMonitor,
+		Runtime:         app.webPanelRuntimeStatus,
+		Update:          app.updateProxyConfig,
 	}
-	return runServices(ctx, app.serveService(proxyServer), panel.Serve)
+	tokenRegistry, err := webpanel.OpenTokenRegistry(app.StateDB, app.webPanelAuthTokens())
+	if err != nil {
+		return fmt.Errorf("configure web panel token registry: %w", err)
+	}
+	panel.TokenRegistry = tokenRegistry
+	services = append(services, panel.Serve)
+	return runServices(ctx, services...)
+}
+
+func (app *App) tcpCaptureService() runtimeService {
+	interfaceName := strings.TrimSpace(app.Config.CaptureTCPInterface)
+	if interfaceName == "" {
+		return nil
+	}
+	return func(ctx context.Context) error {
+		return live.OpenTCPWithCorrelator(ctx, interfaceName, app.Recorder, app.dnsCorrelator)
+	}
+}
+
+func (app *App) webPanelAuthTokens() []webpanel.AuthToken {
+	if len(app.WebPanelTokens) > 0 {
+		return append([]webpanel.AuthToken(nil), app.WebPanelTokens...)
+	}
+	if strings.TrimSpace(app.WebPanelToken) == "" {
+		return nil
+	}
+	return []webpanel.AuthToken{{
+		ID: "bootstrap-admin", Token: app.WebPanelToken,
+		Scopes: append([]string(nil), app.WebPanelScopes...), ExpiresAt: app.WebPanelTokenExpiry,
+	}}
 }
 
 type runtimeService func(context.Context) error
@@ -304,7 +578,7 @@ func (app *App) ensureCA() error {
 }
 
 func (app *App) loadExistingCA() error {
-	return app.CA.Load(app.Config.Cert, app.Config.Key)
+	return app.CA.LoadWithProvider(app.secretProvider(), app.Config.Cert, app.Config.Key)
 }
 
 func (app *App) generateSessionKey() error {
@@ -312,11 +586,24 @@ func (app *App) generateSessionKey() error {
 }
 
 func (app *App) configureTLSFingerprint(ctx context.Context) error {
+	stateFound := false
+	if app.StateDB != nil {
+		var err error
+		stateFound, err = app.TLSFingerprints.BindState(app.StateDB)
+		if err != nil {
+			return fmt.Errorf("failed loading TLS fingerprint from SQLite: %w", err)
+		}
+	}
 	if app.Config.FingerprintConfig != "" {
 		if err := app.watchTLSFingerprintFile(runtimeContext(ctx), app.Config.FingerprintConfig, 2*time.Second); err != nil {
 			return fmt.Errorf("failed loading fingerprint config: %w", err)
 		}
-	} else if err := app.TLSFingerprints.SetValidated(fingerprint.TLSFingerprint{
+		return nil
+	}
+	if stateFound && !app.Config.TLSFingerprintExplicit {
+		return nil
+	}
+	if err := app.TLSFingerprints.SetValidated(fingerprint.TLSFingerprint{
 		Client:  app.Config.TLSClient,
 		Version: app.Config.TLSVersion,
 	}); err != nil {
@@ -333,33 +620,30 @@ func (app *App) watchTLSFingerprintFile(ctx context.Context, path string, interv
 }
 
 func (app *App) configureUpstreamTLSProfiles() error {
-	if app.Config.UpstreamTLSConfig == "" {
-		return nil
-	}
 	if app.UpstreamTLSProfiles == nil {
 		app.UpstreamTLSProfiles = &upstreamtls.UpstreamTLSProfileStore{}
 	}
-	if err := app.UpstreamTLSProfiles.ApplyFile(app.Config.UpstreamTLSConfig); err != nil {
+	if err := app.UpstreamTLSProfiles.RestoreWithState(app.Config.UpstreamTLSConfig, app.StateDB); err != nil {
 		return fmt.Errorf("failed loading upstream TLS config: %w", err)
 	}
 	return nil
 }
 
 func (app *App) configureRoutes() error {
-	if app.Config.RouteConfigFile == "" {
-		return nil
-	}
 	if app.Routes == nil {
 		app.Routes = &routing.Store{}
 	}
-	if err := app.Routes.ApplyFile(app.Config.RouteConfigFile); err != nil {
+	if err := app.Routes.RestoreWithState(app.Config.RouteConfigFile, app.StateDB); err != nil {
 		return fmt.Errorf("failed loading route config: %w", err)
 	}
 	return nil
 }
 
 func (app *App) buildProxy() (*httpproxy.Proxy, error) {
-	upstreamDialer, err := dialer.NewDynamicUpstreamDialer(app.Config.Upstream, time.Second*10)
+	if err := app.resolveProxyCredentialFiles(); err != nil {
+		return nil, err
+	}
+	upstreamDialer, err := dialer.NewDynamicUpstreamDialerWithProvider(app.Config.Upstream, time.Second*10, app.SecretProvider)
 	if err != nil {
 		return nil, fmt.Errorf("configure upstream proxy: %w", err)
 	}
@@ -374,12 +658,24 @@ func (app *App) buildProxy() (*httpproxy.Proxy, error) {
 	handler.DialUpstream = func(request tunnel.ConnectRequest, upstream string) (net.Conn, error) {
 		return app.dialTunnelThroughUpstream(request, upstream, upstreamDialer)
 	}
+	handler.DialDefault = func(request tunnel.ConnectRequest) (net.Conn, error) {
+		return upstreamDialer.Dial("tcp", net.JoinHostPort(request.Host, strconv.Itoa(request.Port)))
+	}
 	proxyServer := httpproxy.NewProxy(upstreamDialer.Dial, handler.Connect, upstreamDialer).
 		WithTunnelDialRequest(func(request httpproxy.TunnelRequest) (net.Conn, error) {
 			return app.dialRoutedTunnel(request, upstreamDialer)
 		}).
-		WithTunnelConnectRequest(func(request httpproxy.TunnelRequest, destConn net.Conn, clientConn net.Conn) {
-			handler.ConnectWithRequest(tunnel.ConnectRequest{Host: request.Host, Port: request.Port, Username: request.Username}, destConn, clientConn)
+		WithTunnelConnectRequestAndSession(func(request httpproxy.TunnelRequest, destConn net.Conn, clientConn net.Conn, session *traffic.TrafficSessionHandle) {
+			handler.ConnectWithRequestAndSession(tunnel.ConnectRequest{Host: request.Host, Port: request.Port, Username: request.Username, ClientAddr: request.ClientAddr}, destConn, clientConn, session)
+		}).
+		WithTunnelBlockRequest(func(request httpproxy.TunnelRequest) bool {
+			if app.Routes == nil {
+				return false
+			}
+			decision := app.Routes.Resolve(routing.PhasePreTLS, app.routingRequest(tunnel.ConnectRequest{
+				Host: request.Host, Port: request.Port, Username: request.Username, ClientAddr: request.ClientAddr,
+			}))
+			return strings.EqualFold(strings.TrimSpace(decision.Action.Mode), "BLOCK")
 		}).
 		WithAuthentication(app.Config.ProxyUsername, app.Config.ProxyPassword).
 		WithTLSInspection(app.Config.CaptureTLS || (app.Config.TLSMode != "" && app.Config.TLSMode != "MITM_REISSUE")).
@@ -400,13 +696,9 @@ func (app *App) dialRoutedTunnel(request httpproxy.TunnelRequest, defaultDialer 
 	}
 	upstream := defaultDialer.Upstream()
 	if app.Routes != nil {
-		var clientIP netip.Addr
-		if host, _, splitErr := net.SplitHostPort(request.ClientAddr); splitErr == nil {
-			clientIP, _ = netip.ParseAddr(host)
-		}
-		decision := app.Routes.Resolve(routing.PhasePreTLS, routing.Request{
-			Host: request.Host, Port: request.Port, Username: request.Username, IP: clientIP,
-		})
+		decision := app.Routes.Resolve(routing.PhasePreTLS, app.routingRequest(tunnel.ConnectRequest{
+			Host: request.Host, Port: request.Port, Username: request.Username, ClientAddr: request.ClientAddr,
+		}))
 		if selected := strings.TrimSpace(decision.Action.Upstream); selected != "" {
 			upstream = selected
 		}
@@ -415,6 +707,25 @@ func (app *App) dialRoutedTunnel(request httpproxy.TunnelRequest, defaultDialer 
 		return defaultDialer.Dial("tcp", net.JoinHostPort(request.Host, strconv.Itoa(request.Port)))
 	}
 	return app.dialTunnelThroughUpstream(tunnel.ConnectRequest{Host: request.Host, Port: request.Port, Username: request.Username}, upstream, defaultDialer)
+}
+
+func (app *App) routingRequest(request tunnel.ConnectRequest) routing.Request {
+	result := routing.Request{Host: request.Host, Port: request.Port, Username: request.Username}
+	if host, _, splitErr := net.SplitHostPort(request.ClientAddr); splitErr == nil {
+		result.IP, _ = netip.ParseAddr(host)
+	}
+	if app != nil && app.Devices != nil {
+		sourceIP := ""
+		if result.IP.IsValid() {
+			sourceIP = result.IP.String()
+		}
+		resolution := app.Devices.ResolveAt(request.Username, sourceIP, time.Now().UTC())
+		if !resolution.Ambiguous {
+			result.DeviceID = resolution.DeviceID
+			result.DeviceTags = append([]string(nil), resolution.DeviceTags...)
+		}
+	}
+	return result
 }
 
 func (app *App) dialTunnelThroughUpstream(request tunnel.ConnectRequest, upstream string, defaultDialer *dialer.DynamicUpstreamDialer) (net.Conn, error) {
@@ -437,7 +748,7 @@ func (app *App) routeUpstreamDialer(upstream string) (*dialer.UpstreamDialer, er
 	if existing := app.routeDialers[upstream]; existing != nil {
 		return existing, nil
 	}
-	created, err := dialer.NewUpstreamDialer(upstream, 10*time.Second)
+	created, err := dialer.NewUpstreamDialerWithProvider(upstream, 10*time.Second, app.SecretProvider)
 	if err != nil {
 		return nil, fmt.Errorf("configure route upstream: %w", err)
 	}
@@ -448,6 +759,9 @@ func (app *App) routeUpstreamDialer(upstream string) (*dialer.UpstreamDialer, er
 func (app *App) updateProxyConfig(update webpanel.ConfigUpdate) (webpanel.RuntimeStatus, error) {
 	app.configMu.Lock()
 	defer app.configMu.Unlock()
+	if update.ExpectedVersion != nil && *update.ExpectedVersion != app.runtimeConfigVersion {
+		return webpanel.RuntimeStatus{}, webpanel.ErrConfigVersionConflict
+	}
 
 	var nextFingerprint fingerprint.TLSFingerprint
 	var nextListener net.Listener
@@ -512,9 +826,13 @@ func (app *App) updateProxyConfig(update webpanel.ConfigUpdate) (webpanel.Runtim
 		app.ProxyServer.SetAuthentication(nextProxyUsername, nextProxyPassword)
 		app.Config.ProxyUsername = nextProxyUsername
 		app.Config.ProxyPassword = nextProxyPassword
+		app.Config.ProxyUsernameFile = ""
+		app.Config.ProxyPasswordFile = ""
 	}
 	if update.TLSFingerprint != nil {
-		app.TLSFingerprints.Set(nextFingerprint)
+		if err := app.TLSFingerprints.SetValidated(nextFingerprint); err != nil {
+			return webpanel.RuntimeStatus{}, fmt.Errorf("persist TLS fingerprint: %w", err)
+		}
 	}
 	if update.ProxyProtocol != nil {
 		protocol := strings.ToLower(strings.TrimSpace(*update.ProxyProtocol))
@@ -531,6 +849,7 @@ func (app *App) updateProxyConfig(update webpanel.ConfigUpdate) (webpanel.Runtim
 		app.Config.Listen = nextListenAddress
 		app.Config.Port = strconv.Itoa(*update.ProxyPort)
 	}
+	app.runtimeConfigVersion++
 
 	status := app.webPanelRuntimeStatusLocked()
 	logutil.Info("runtime", "proxy configuration updated", "proxy_listen", status.ProxyListen, "tls_fingerprint", status.TLSClient+"@"+status.TLSVersion, "upstream", status.Upstream)
@@ -538,6 +857,39 @@ func (app *App) updateProxyConfig(update webpanel.ConfigUpdate) (webpanel.Runtim
 		app.TrafficMonitor.RecordEvent("info", "proxy configuration updated", traffic.TrafficSessionInfo{}, nil)
 	}
 	return status, nil
+}
+
+func (app *App) resolveProxyCredentialFiles() error {
+	if app == nil || app.Config == nil {
+		return fmt.Errorf("proxy configuration is unavailable")
+	}
+	username := app.Config.ProxyUsername
+	password := app.Config.ProxyPassword
+	if app.Config.ProxyUsernameFile != "" {
+		value, err := secrets.Read(app.SecretProvider, app.Config.ProxyUsernameFile)
+		if err != nil {
+			return fmt.Errorf("load incoming proxy username file: %w", err)
+		}
+		username = string(value)
+		clear(value)
+	}
+	if app.Config.ProxyPasswordFile != "" {
+		value, err := secrets.Read(app.SecretProvider, app.Config.ProxyPasswordFile)
+		if err != nil {
+			return fmt.Errorf("load incoming proxy password file: %w", err)
+		}
+		password = string(value)
+		clear(value)
+	}
+	if (app.Config.ProxyUsernameFile != "" || app.Config.ProxyPasswordFile != "") && (username == "" || password == "") {
+		return fmt.Errorf("proxy credential files must both contain a non-empty value")
+	}
+	if err := validateProxyCredentials(username, password); err != nil {
+		return err
+	}
+	app.Config.ProxyUsername = username
+	app.Config.ProxyPassword = password
+	return nil
 }
 
 func (app *App) resolveProxyAuthUpdate(update webpanel.ConfigUpdate) (string, string, bool, error) {
@@ -617,6 +969,39 @@ func (app *App) webPanelRuntimeStatusLocked() webpanel.RuntimeStatus {
 	}
 	_, proxyPortText, _ := net.SplitHostPort(proxyListen)
 	proxyPort, _ := strconv.Atoi(proxyPortText)
+	caValidity := certstore.CertificateValidity{Status: "UNAVAILABLE"}
+	if app.CA != nil {
+		caValidity = app.CA.Validity(time.Now().UTC())
+	}
+	var caNotBefore, caNotAfter *time.Time
+	var caDaysRemaining *int64
+	if !caValidity.NotBefore.IsZero() {
+		value := caValidity.NotBefore
+		caNotBefore = &value
+	}
+	if !caValidity.NotAfter.IsZero() {
+		value := caValidity.NotAfter
+		caNotAfter = &value
+	}
+	if caValidity.Status != "UNAVAILABLE" {
+		value := caValidity.DaysRemaining
+		caDaysRemaining = &value
+	}
+	panelValidity := certstore.CertificateFileValidity(app.SecretProvider, app.Config.WebPanelCert, time.Now().UTC())
+	var panelNotBefore, panelNotAfter *time.Time
+	var panelDaysRemaining *int64
+	if !panelValidity.NotBefore.IsZero() {
+		value := panelValidity.NotBefore
+		panelNotBefore = &value
+	}
+	if !panelValidity.NotAfter.IsZero() {
+		value := panelValidity.NotAfter
+		panelNotAfter = &value
+	}
+	if panelValidity.Status != "UNAVAILABLE" {
+		value := panelValidity.DaysRemaining
+		panelDaysRemaining = &value
+	}
 	proxyProtocol := httpproxy.ProtocolMixed
 	if app.protocolListener != nil {
 		proxyProtocol = app.protocolListener.Protocol()
@@ -624,17 +1009,26 @@ func (app *App) webPanelRuntimeStatusLocked() webpanel.RuntimeStatus {
 		proxyProtocol = app.Config.ProxyProtocol
 	}
 	return webpanel.RuntimeStatus{
-		ProxyListen:       proxyListen,
-		ProxyPort:         proxyPort,
-		ProxyProtocol:     proxyProtocol,
-		TLSClient:         fp.Client,
-		TLSVersion:        fp.Version,
-		TLSFingerprints:   fingerprintOptions,
-		Upstream:          displayUpstream,
-		UpstreamEnabled:   upstream != "",
-		ProxyAuthEnabled:  app.Config.ProxyUsername != "" || app.Config.ProxyPassword != "",
-		ProxyUsername:     app.Config.ProxyUsername,
-		ConfigurationMode: mode,
+		ConfigVersion:                  app.runtimeConfigVersion,
+		ProxyListen:                    proxyListen,
+		ProxyPort:                      proxyPort,
+		ProxyProtocol:                  proxyProtocol,
+		TLSClient:                      fp.Client,
+		TLSVersion:                     fp.Version,
+		TLSFingerprints:                fingerprintOptions,
+		Upstream:                       displayUpstream,
+		UpstreamEnabled:                upstream != "",
+		ProxyAuthEnabled:               app.Config.ProxyUsername != "" || app.Config.ProxyPassword != "",
+		ProxyUsername:                  app.Config.ProxyUsername,
+		MITMCACertificateStatus:        caValidity.Status,
+		MITMCACertificateNotBefore:     caNotBefore,
+		MITMCACertificateNotAfter:      caNotAfter,
+		MITMCACertificateDaysRemaining: caDaysRemaining,
+		PanelCertificateStatus:         panelValidity.Status,
+		PanelCertificateNotBefore:      panelNotBefore,
+		PanelCertificateNotAfter:       panelNotAfter,
+		PanelCertificateDaysRemaining:  panelDaysRemaining,
+		ConfigurationMode:              mode,
 		Chain: []webpanel.ChainHop{
 			{Role: "Клиент", Address: "Клиент прокси"},
 			{Role: "JA3Proxy", Address: proxyListen},
@@ -741,12 +1135,18 @@ func (app *App) configuredTLSFingerprint() fingerprint.TLSFingerprint {
 }
 
 func (app *App) tunnelHandler() *tunnel.TunnelHandler {
+	captureRecorder := app.Recorder
+	if !app.Config.CaptureTLS {
+		captureRecorder = nil
+	}
 	return &tunnel.TunnelHandler{
-		Recorder:            app.Recorder,
+		Recorder:            captureRecorder,
+		DNSCorrelator:       app.dnsCorrelator,
 		Devices:             app.Devices,
 		TLSProfiles:         app.TLSProfiles,
 		Mode:                app.Config.TLSMode,
 		Debug:               app.Config.dumpTrafficEnabled(),
+		TLSKeyLogFile:       app.Config.TLSKeyLogFile,
 		CA:                  app.CA,
 		SessionKey:          app.SessionKey,
 		TLSFingerprints:     app.TLSFingerprints,

@@ -39,6 +39,8 @@ type Proxy struct {
 	tunnelDialRequest    func(TunnelRequest) (net.Conn, error)
 	tunnelConnect        func(sni string, destConn net.Conn, clientConn net.Conn)
 	tunnelConnectRequest func(TunnelRequest, net.Conn, net.Conn)
+	tunnelConnectSession func(TunnelRequest, net.Conn, net.Conn, *traffic.TrafficSessionHandle)
+	tunnelBlockRequest   func(TunnelRequest) bool
 	httpTransport        http.RoundTripper
 	traffic              *traffic.TrafficMonitor
 	credentialsMu        sync.RWMutex
@@ -84,6 +86,26 @@ func NewProxy(
 func (p *Proxy) WithTunnelConnectRequest(connect func(TunnelRequest, net.Conn, net.Conn)) *Proxy {
 	if p != nil {
 		p.tunnelConnectRequest = connect
+	}
+	return p
+}
+
+// WithTunnelConnectRequestAndSession lets the handler own the upstream dial
+// while retaining the per-tunnel traffic session. This is required for
+// POST_CLIENTHELLO routing: no upstream connection may be opened before the
+// bounded ClientHello decision is complete.
+func (p *Proxy) WithTunnelConnectRequestAndSession(connect func(TunnelRequest, net.Conn, net.Conn, *traffic.TrafficSessionHandle)) *Proxy {
+	if p != nil {
+		p.tunnelConnectSession = connect
+	}
+	return p
+}
+
+// WithTunnelBlockRequest rejects a route-level PRE_TLS block before hijacking
+// or dialing the destination.
+func (p *Proxy) WithTunnelBlockRequest(block func(TunnelRequest) bool) *Proxy {
+	if p != nil {
+		p.tunnelBlockRequest = block
 	}
 	return p
 }
@@ -178,6 +200,12 @@ func (p *Proxy) handleTunneling(w http.ResponseWriter, r *http.Request, proxyUse
 		SNI:        netutil.StripPort(r.Host),
 	}
 
+	tunnelRequest := TunnelRequest{Host: netutil.StripPort(r.Host), Port: targetPort(r.Host), Username: proxyUsername, ClientAddr: r.RemoteAddr}
+	if p.tunnelBlockRequest != nil && p.tunnelBlockRequest(tunnelRequest) {
+		http.Error(w, "tunnel blocked by route policy", http.StatusForbidden)
+		return
+	}
+
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
 		http.Error(w, "Hijacking not supported", http.StatusInternalServerError)
@@ -186,19 +214,23 @@ func (p *Proxy) handleTunneling(w http.ResponseWriter, r *http.Request, proxyUse
 		return
 	}
 
-	tunnelRequest := TunnelRequest{Host: netutil.StripPort(r.Host), Port: targetPort(r.Host), Username: proxyUsername, ClientAddr: r.RemoteAddr}
-	destConn, err := p.dialRequest(tunnelRequest)
-
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
-		logger.Warn("dial target failed", "err", err)
-		p.monitor().RecordEvent("warn", "dial target failed", info, err)
-		return
+	var destConn net.Conn
+	if p.tunnelConnectSession == nil {
+		var err error
+		destConn, err = p.dialRequest(tunnelRequest)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			logger.Warn("dial target failed", "err", err)
+			p.monitor().RecordEvent("warn", "dial target failed", info, err)
+			return
+		}
 	}
 
 	clientConn, clientRW, err := hijacker.Hijack()
 	if err != nil {
-		destConn.Close()
+		if destConn != nil {
+			destConn.Close()
+		}
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		logger.Error("hijack failed", "err", err)
 		p.monitor().RecordEvent("error", "hijack failed", info, err)
@@ -218,14 +250,18 @@ func (p *Proxy) handleTunneling(w http.ResponseWriter, r *http.Request, proxyUse
 	tunnelClientConn = flowid.WithProxyUsername(tunnelClientConn, proxyUsername)
 
 	if _, err := io.WriteString(clientRW, connectEstablishedResponse); err != nil {
-		destConn.Close()
+		if destConn != nil {
+			destConn.Close()
+		}
 		clientConn.Close()
 		logger.Warn("write CONNECT response failed", "err", err)
 		p.monitor().RecordEvent("warn", "write CONNECT response failed", info, err)
 		return
 	}
 	if err := clientRW.Flush(); err != nil {
-		destConn.Close()
+		if destConn != nil {
+			destConn.Close()
+		}
 		clientConn.Close()
 		logger.Warn("flush CONNECT response failed", "err", err)
 		p.monitor().RecordEvent("warn", "flush CONNECT response failed", info, err)
@@ -233,9 +269,17 @@ func (p *Proxy) handleTunneling(w http.ResponseWriter, r *http.Request, proxyUse
 	}
 
 	session := p.monitor().StartSession(info)
-	destConn, tunnelClientConn = traffic.WrapTunnel(session, destConn, tunnelClientConn)
+	if destConn != nil {
+		destConn, tunnelClientConn = traffic.WrapTunnel(session, destConn, tunnelClientConn)
+	} else {
+		_, tunnelClientConn = traffic.WrapTunnel(session, nil, tunnelClientConn)
+	}
 	go func() {
 		defer session.Finish()
+		if p.tunnelConnectSession != nil {
+			p.tunnelConnectSession(tunnelRequest, destConn, tunnelClientConn, session)
+			return
+		}
 		p.connectRequest(tunnelRequest, destConn, tunnelClientConn)
 	}()
 }

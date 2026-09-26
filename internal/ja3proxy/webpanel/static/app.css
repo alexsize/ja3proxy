@@ -169,6 +169,8 @@ tbody tr:hover { background: #f0f6f6; }
 .config-note { min-height: 15px; margin: 0; color: var(--muted); font: 10px var(--mono); }
 .config-note.error { color: var(--alert); }
 .config-note.success { color: var(--live); }
+.ca-validity { color: var(--live); font-weight: 600; }
+.ca-validity-warning { color: var(--alert); font-weight: 700; }
 
 .error-toast { position: fixed; right: 22px; bottom: 22px; min-width: 230px; padding: 14px 17px; border-left: 4px solid var(--alert); color: var(--ink); background: var(--surface); box-shadow: 0 14px 40px rgba(16, 42, 48, .18); transform: translateY(120px); transition: transform .2s ease; }
 .error-toast.show { transform: translateY(0); }

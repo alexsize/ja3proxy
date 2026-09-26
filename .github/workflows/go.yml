@@ -63,6 +63,12 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Check uTLS profile baseline
+        run: go test ./internal/ja3proxy/tlsprofile -run '^TestUTLSProfileBaseline$' -count=1 -v
+
+      - name: Check uTLS outbound wire baseline
+        run: go test ./internal/ja3proxy/e2e -run '^TestRecorderOutboundWireThroughProxyMatrix$' -count=1 -v
+
       - name: Test
         run: go test -count=1 -v ./...
 

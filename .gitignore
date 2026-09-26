@@ -21,13 +21,20 @@
 go.work
 
 *.pem
+*.key
+*.evt
 credentials
+*.db
+*.audit.jsonl
+audit.jsonl
 bin/
 /ja3proxy
 
 # Local build toolchain and caches
+/.cache/
 /.tools/
 /.gocache/
 /.gomodcache/
 /profiles/
 /recordings/
+/capture-spool/

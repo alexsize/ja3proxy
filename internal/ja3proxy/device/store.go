@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/state"
 )
 
 const (
@@ -78,6 +80,7 @@ type Registry struct {
 
 type Resolution struct {
 	DeviceID            string
+	DeviceTags          []string
 	Application         string
 	ApplicationVersion  string
 	ApplicationID       string
@@ -90,10 +93,40 @@ type Store struct {
 	mu       sync.RWMutex
 	registry Registry
 	path     string
+	stateDB  *state.SQLiteStore
 }
 
 func Open(path string) (*Store, error) {
-	store := &Store{path: path, registry: Registry{SchemaVersion: SchemaVersion, Devices: []Device{}, Assignments: []ApplicationAssignment{}, Applications: []Application{}}}
+	return OpenWithState(path, nil)
+}
+
+// OpenWithState loads the registry from SQLite, importing a legacy JSON file
+// once when the database does not yet contain a registry snapshot.
+func OpenWithState(path string, stateDB *state.SQLiteStore) (*Store, error) {
+	store := &Store{path: path, stateDB: stateDB, registry: Registry{SchemaVersion: SchemaVersion, Devices: []Device{}, Assignments: []ApplicationAssignment{}, Applications: []Application{}}}
+	if stateDB != nil {
+		document, found, err := stateDB.Load("devices")
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			if document.SchemaVersion != SchemaVersion {
+				return nil, fmt.Errorf("unsupported sqlite device registry schema %q", document.SchemaVersion)
+			}
+			var registry Registry
+			if err := json.Unmarshal(document.Payload, &registry); err != nil {
+				return nil, fmt.Errorf("decode sqlite device registry: %w", err)
+			}
+			if err := validate(registry); err != nil {
+				return nil, err
+			}
+			if registry.ConfigVersion != document.Revision {
+				return nil, errors.New("sqlite device registry revision does not match its payload")
+			}
+			store.registry = cloneRegistry(registry)
+			return store, nil
+		}
+	}
 	if path == "" {
 		return store, nil
 	}
@@ -118,7 +151,20 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	store.registry = cloneRegistry(registry)
+	if stateDB != nil {
+		if err := store.persist(store.registry); err != nil {
+			return nil, err
+		}
+	}
 	return store, nil
+}
+
+// ValidateRegistry checks a backup registry without opening or mutating a store.
+func ValidateRegistry(registry Registry) error {
+	if registry.SchemaVersion != SchemaVersion {
+		return fmt.Errorf("unsupported device registry schema %q", registry.SchemaVersion)
+	}
+	return validate(registry)
 }
 
 func (s *Store) Get(id string) (Device, bool) {
@@ -250,6 +296,29 @@ func (s *Store) Snapshot() Registry {
 	return cloneRegistry(s.registry)
 }
 
+// Replace atomically installs a validated registry after an optimistic version
+// check. The imported config version is not reused; the local version advances.
+func (s *Store) Replace(registry Registry, expectedVersion uint64) (Registry, error) {
+	if s == nil {
+		return Registry{}, errors.New("device registry is unavailable")
+	}
+	if err := ValidateRegistry(registry); err != nil {
+		return Registry{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.registry.ConfigVersion != expectedVersion {
+		return cloneRegistry(s.registry), ErrVersionConflict
+	}
+	next := cloneRegistry(registry)
+	next.ConfigVersion = s.registry.ConfigVersion + 1
+	if err := s.persist(next); err != nil {
+		return cloneRegistry(s.registry), fmt.Errorf("%w: %v", ErrPersistence, err)
+	}
+	s.registry = next
+	return cloneRegistry(next), nil
+}
+
 func (s *Store) Resolve(proxyUsername, sourceIP string) Resolution {
 	return s.ResolveAt(proxyUsername, sourceIP, time.Now().UTC())
 }
@@ -282,6 +351,12 @@ func (s *Store) ResolveAt(proxyUsername, sourceIP string, at time.Time) Resoluti
 }
 
 func (s *Store) resolveAssignment(resolution Resolution, at time.Time) Resolution {
+	for _, candidate := range s.registry.Devices {
+		if candidate.ID == resolution.DeviceID {
+			resolution.DeviceTags = append([]string(nil), candidate.Tags...)
+			break
+		}
+	}
 	var matches []ApplicationAssignment
 	for _, assignment := range s.registry.Assignments {
 		if assignment.DeviceID == resolution.DeviceID && assignmentActive(assignment, at) {
@@ -691,6 +766,16 @@ func intervalsOverlap(leftFrom, leftTo, rightFrom, rightTo time.Time) bool {
 }
 
 func (s *Store) persist(registry Registry) error {
+	if s.stateDB != nil {
+		data, err := json.Marshal(registry)
+		if err != nil {
+			return fmt.Errorf("encode device registry: %w", err)
+		}
+		if err := s.stateDB.Save("devices", SchemaVersion, registry.ConfigVersion, data); err != nil {
+			return fmt.Errorf("persist device registry in SQLite: %w", err)
+		}
+		return nil
+	}
 	if s.path == "" {
 		return nil
 	}

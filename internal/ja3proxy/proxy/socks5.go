@@ -109,16 +109,27 @@ func (p *Proxy) handleSOCKS5(conn net.Conn) {
 		Username:   username,
 		ClientAddr: netutil.RemoteAddr(conn),
 	}
-	destConn, err := p.dialRequest(tunnelRequest)
-	if err != nil {
-		_ = writeSOCKS5Reply(conn, socks5GeneralFail)
-		logger.Warn("dial target failed", "err", err)
-		p.monitor().RecordEvent("warn", "dial target failed", info, err)
+	if p.tunnelBlockRequest != nil && p.tunnelBlockRequest(tunnelRequest) {
+		_ = writeSOCKS5Reply(conn, 0x02)
 		return
+	}
+	var destConn net.Conn
+	deferDial := p.tunnelConnectSession != nil && (p.inspectTLS || request.port == 443)
+	if !deferDial {
+		var err error
+		destConn, err = p.dialRequest(tunnelRequest)
+		if err != nil {
+			_ = writeSOCKS5Reply(conn, socks5GeneralFail)
+			logger.Warn("dial target failed", "err", err)
+			p.monitor().RecordEvent("warn", "dial target failed", info, err)
+			return
+		}
 	}
 
 	if err := writeSOCKS5Reply(conn, socks5Succeeded); err != nil {
-		destConn.Close()
+		if destConn != nil {
+			destConn.Close()
+		}
 		logger.Warn("reply failed", "err", err)
 		p.monitor().RecordEvent("warn", "SOCKS5 reply failed", info, err)
 		return
@@ -286,8 +297,18 @@ func (p *Proxy) handleSOCKS5Tunnel(tunnel socks5Tunnel) {
 
 	if p.inspectTLS || tunnel.request.port == 443 {
 		tunnelClientConn := flowid.WithProxyUsername(tunnel.bufferedClientConn(), tunnel.username)
-		destConn, wrappedClientConn := traffic.WrapTunnel(session, destConn, tunnelClientConn)
-		p.connectRequest(TunnelRequest{Host: tunnel.request.host, Port: int(tunnel.request.port), Username: tunnel.username, ClientAddr: tunnel.info.ClientAddr}, destConn, wrappedClientConn)
+		var wrappedClientConn net.Conn
+		if destConn != nil {
+			destConn, wrappedClientConn = traffic.WrapTunnel(session, destConn, tunnelClientConn)
+		} else {
+			_, wrappedClientConn = traffic.WrapTunnel(session, nil, tunnelClientConn)
+		}
+		request := TunnelRequest{Host: tunnel.request.host, Port: int(tunnel.request.port), Username: tunnel.username, ClientAddr: tunnel.info.ClientAddr}
+		if p.tunnelConnectSession != nil {
+			p.tunnelConnectSession(request, destConn, wrappedClientConn, session)
+		} else {
+			p.connectRequest(request, destConn, wrappedClientConn)
+		}
 		return
 	}
 
@@ -316,7 +337,12 @@ func (p *Proxy) handleSOCKS5Tunnel(tunnel socks5Tunnel) {
 	tunnelClientConn := tunnel.bufferedClientConn()
 	if len(first) > 0 && first[0] == tlsHandshakeRecord {
 		destConn, wrappedClientConn := traffic.WrapTunnel(session, destConn, tunnelClientConn)
-		p.connectRequest(TunnelRequest{Host: tunnel.request.host, Port: int(tunnel.request.port), Username: tunnel.username}, destConn, wrappedClientConn)
+		request := TunnelRequest{Host: tunnel.request.host, Port: int(tunnel.request.port), Username: tunnel.username, ClientAddr: tunnel.info.ClientAddr}
+		if p.tunnelConnectSession != nil {
+			p.tunnelConnectSession(request, destConn, wrappedClientConn, session)
+		} else {
+			p.connectRequest(request, destConn, wrappedClientConn)
+		}
 		return
 	}
 

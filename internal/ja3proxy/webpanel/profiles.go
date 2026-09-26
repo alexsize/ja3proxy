@@ -18,6 +18,7 @@ type templateMutation struct {
 
 func (panel Server) registerProfileRoutes(mux *http.ServeMux) {
 	routes := map[string]http.HandlerFunc{
+		"POST /api/v1/replay-lab/run":                panel.runReplayLab,
 		"GET /api/v1/tls/profiles":                   panel.listTLSProfiles,
 		"GET /api/v1/tls/profiles/{id}":              panel.getTLSProfile,
 		"GET /api/v1/tls/profiles/{id}/versions":     panel.getTLSProfileVersions,
@@ -60,6 +61,7 @@ func (panel Server) getTLSProfile(w http.ResponseWriter, r *http.Request) {
 func (panel Server) profileFromPreset(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Name         string                     `json:"name"`
+		FamilyID     string                     `json:"family_id"`
 		BasePreset   fingerprint.TLSFingerprint `json:"base_preset"`
 		HostPatterns []string                   `json:"host_patterns"`
 	}
@@ -72,6 +74,7 @@ func (panel Server) profileFromPreset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	template.HostPatterns = request.HostPatterns
+	template.FamilyID = request.FamilyID
 	template, err = tlsprofile.Preview(template)
 	if err != nil {
 		writeAPIError(w, http.StatusBadRequest, err.Error())
@@ -174,6 +177,7 @@ func (panel Server) profileFromObservation(w http.ResponseWriter, r *http.Reques
 		ExpectedVersion uint64                     `json:"expected_version"`
 		ObservationID   string                     `json:"observation_id"`
 		Name            string                     `json:"name"`
+		FamilyID        string                     `json:"family_id"`
 		BasePreset      fingerprint.TLSFingerprint `json:"base_preset"`
 		HostPatterns    []string                   `json:"host_patterns"`
 		Save            bool                       `json:"save"`
@@ -197,7 +201,7 @@ func (panel Server) profileFromObservation(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		template = tlsprofile.Template{
-			Name: request.Name, Enabled: true, HostPatterns: request.HostPatterns,
+			Name: request.Name, FamilyID: request.FamilyID, ProfileType: tlsprofile.ProfileTypeObserved, Enabled: true, HostPatterns: request.HostPatterns,
 			BasePreset: request.BasePreset, Fields: fields, Policy: tlsprofile.DefaultMatchPolicy(), SourceObservationID: observation.ID,
 			Source: &tlsprofile.ObservedSource{
 				ObservationID: observation.ID, ServerName: observation.Hello.ServerName,

@@ -1,6 +1,7 @@
 package webpanel
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -43,7 +44,9 @@ func (panel Server) registerRecorderRoutes(mux *http.ServeMux) {
 		"GET /api/v1/observations":               panel.observations,
 		"GET /api/v1/observations/{id}":          panel.observation,
 		"POST /api/v1/observations/{id}/reparse": panel.reparseObservation,
+		"POST /api/v1/reparse/sqlite":            panel.reparseSQLite,
 		"GET /api/v1/fingerprints/diff":          panel.fingerprintDiff,
+		"GET /api/v1/fingerprint-families":       panel.fingerprintFamilies,
 		"GET /api/v1/fingerprints/timeline":      panel.fingerprintTimeline,
 		"GET /api/v1/export/observations":        panel.exportObservations,
 		"POST /api/v1/routes/test":               panel.routeTest,
@@ -109,6 +112,10 @@ func (panel Server) recorderStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (panel Server) observations(w http.ResponseWriter, r *http.Request) {
+	if panel.Recorder == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "recorder is disabled")
+		return
+	}
 	filter, ok := parseObservationFilter(w, r)
 	if !ok {
 		return
@@ -121,6 +128,25 @@ func (panel Server) observations(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		limit = n
+	}
+	if storage := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("storage"))); storage != "" && storage != "memory" {
+		if storage != "sqlite" {
+			writeAPIError(w, http.StatusBadRequest, "storage must be memory or sqlite")
+			return
+		}
+		page, err := panel.Recorder.QueryStored(storedObservationQuery(filter, r, limit))
+		if err != nil {
+			writeStoredQueryError(w, err)
+			return
+		}
+		for i := range page.Items {
+			page.Items[i] = compactObservation(page.Items[i])
+		}
+		_ = json.NewEncoder(w).Encode(struct {
+			Items      []recorder.Observation `json:"items"`
+			NextCursor string                 `json:"next_cursor,omitempty"`
+		}{page.Items, page.NextCursor})
+		return
 	}
 	query := strings.ToLower(r.URL.Query().Get("q"))
 	cursor := r.URL.Query().Get("cursor")
@@ -137,24 +163,14 @@ func (panel Server) observations(w http.ResponseWriter, r *http.Request) {
 		if !filter.matches(o) {
 			continue
 		}
-		search := o.Destination + " " + o.Source + " " + o.ConnectionID + " " + o.IdentitySource + " " + o.IdentityValue + " " + o.Confidence + " " + o.ResolvedDeviceID + " " + o.Application + " " + o.ApplicationVersion
-		if o.Fingerprints != nil {
-			search += " " + o.Fingerprints.JA3 + " " + o.Fingerprints.JA3Hash + " " + o.Fingerprints.JA4
-		}
-		if query != "" && !strings.Contains(strings.ToLower(search), query) {
+		if query != "" && !strings.Contains(observationSearchText(o), query) {
 			continue
 		}
 		if len(items) == limit {
 			next = items[len(items)-1].ID
 			break
 		}
-		o.Raw = nil
-		o.Records = nil
-		o.Hello = nil
-		if o.Fingerprints != nil {
-			o.Fingerprints.Normalized = nil
-		}
-		items = append(items, o)
+		items = append(items, compactObservation(o))
 	}
 	if !after {
 		writeAPIError(w, 409, "cursor expired; refresh the bounded observation window")
@@ -167,6 +183,28 @@ func (panel Server) observations(w http.ResponseWriter, r *http.Request) {
 }
 
 func (panel Server) observation(w http.ResponseWriter, r *http.Request) {
+	if panel.Recorder == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "recorder is disabled")
+		return
+	}
+	storage := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("storage")))
+	if storage != "" && storage != "memory" && storage != "sqlite" {
+		writeAPIError(w, http.StatusBadRequest, "storage must be memory or sqlite")
+		return
+	}
+	if storage == "sqlite" {
+		o, err := panel.Recorder.Stored(r.PathValue("id"))
+		if err == nil {
+			_ = json.NewEncoder(w).Encode(o)
+			return
+		}
+		if !errors.Is(err, recorder.ErrObservationNotFound) {
+			writeStoredQueryError(w, err)
+			return
+		}
+		writeAPIError(w, 404, "observation not retained")
+		return
+	}
 	for _, o := range panel.Recorder.Snapshot() {
 		if o.ID == r.PathValue("id") {
 			json.NewEncoder(w).Encode(o)
@@ -176,12 +214,56 @@ func (panel Server) observation(w http.ResponseWriter, r *http.Request) {
 	writeAPIError(w, 404, "observation not retained")
 }
 
+func compactObservation(observation recorder.Observation) recorder.Observation {
+	observation.RawClientHelloAvailable = observation.RawClientHelloAvailable || len(observation.Raw) > 0
+	observation.Raw = nil
+	observation.Records = nil
+	observation.Hello = nil
+	observation.RawServerHello = nil
+	observation.ServerRecords = nil
+	observation.ServerHello = nil
+	if observation.Fingerprints != nil {
+		observation.Fingerprints.Normalized = nil
+	}
+	return observation
+}
+
+func observationSearchText(observation recorder.Observation) string {
+	encoded, err := json.Marshal(compactObservation(observation))
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(string(encoded))
+}
+
+func writeStoredQueryError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, recorder.ErrHistoricalUnavailable):
+		writeAPIError(w, http.StatusServiceUnavailable, "historical SQLite storage is not enabled")
+	case errors.Is(err, recorder.ErrHistoricalCursor):
+		writeAPIError(w, http.StatusConflict, "historical cursor expired; refresh the SQLite window")
+	default:
+		writeAPIError(w, http.StatusServiceUnavailable, err.Error())
+	}
+}
+
 func (panel Server) reparseObservation(w http.ResponseWriter, r *http.Request) {
 	if panel.Recorder == nil {
 		writeAPIError(w, 503, "recorder is disabled")
 		return
 	}
-	o, err := panel.Recorder.Reparse(r.PathValue("id"))
+	storage := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("storage")))
+	if storage != "" && storage != "memory" && storage != "sqlite" {
+		writeAPIError(w, http.StatusBadRequest, "storage must be memory or sqlite")
+		return
+	}
+	var o recorder.Observation
+	var err error
+	if storage == "sqlite" {
+		o, err = panel.Recorder.ReparseStored(r.PathValue("id"))
+	} else {
+		o, err = panel.Recorder.Reparse(r.PathValue("id"))
+	}
 	if err != nil {
 		switch {
 		case errors.Is(err, recorder.ErrObservationNotFound):
@@ -197,17 +279,70 @@ func (panel Server) reparseObservation(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(o)
 }
 
+func (panel Server) reparseSQLite(w http.ResponseWriter, r *http.Request) {
+	if panel.Recorder == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "recorder is disabled")
+		return
+	}
+	filter, ok := parseObservationFilter(w, r)
+	if !ok {
+		return
+	}
+	limit := 100
+	if value := strings.TrimSpace(r.URL.Query().Get("limit")); value != "" {
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 1 || n > 100 {
+			writeAPIError(w, http.StatusBadRequest, "limit must be 1..100")
+			return
+		}
+		limit = n
+	}
+	result, err := panel.Recorder.ReparseStoredPage(storedObservationQuery(filter, r, limit))
+	if err != nil {
+		writeStoredQueryError(w, err)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(result)
+}
+
 func (panel Server) fingerprintDiff(w http.ResponseWriter, r *http.Request) {
+	if panel.Recorder == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "recorder is disabled")
+		return
+	}
 	a, b := r.URL.Query().Get("a"), r.URL.Query().Get("b")
 	var left, right *recorder.Observation
-	for _, o := range panel.Recorder.Snapshot() {
-		if o.ID == a {
-			v := o
-			left = &v
+	storage := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("storage")))
+	if storage != "" && storage != "memory" && storage != "sqlite" {
+		writeAPIError(w, http.StatusBadRequest, "storage must be memory or sqlite")
+		return
+	}
+	if storage == "sqlite" {
+		for _, target := range []struct {
+			id        string
+			observation **recorder.Observation
+		}{{a, &left}, {b, &right}} {
+			observation, err := panel.Recorder.Stored(target.id)
+			if err != nil {
+				if errors.Is(err, recorder.ErrObservationNotFound) {
+					continue
+				}
+				writeStoredQueryError(w, err)
+				return
+			}
+			copy := observation
+			*target.observation = &copy
 		}
-		if o.ID == b {
-			v := o
-			right = &v
+	} else {
+		for _, o := range panel.Recorder.Snapshot() {
+			if o.ID == a {
+				v := o
+				left = &v
+			}
+			if o.ID == b {
+				v := o
+				right = &v
+			}
 		}
 	}
 	if left == nil || right == nil {
@@ -226,6 +361,18 @@ func (panel Server) exportObservations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	format := strings.ToLower(r.URL.Query().Get("format"))
+	if storage := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("storage"))); storage != "" && storage != "memory" {
+		if storage != "sqlite" {
+			writeAPIError(w, http.StatusBadRequest, "storage must be memory or sqlite")
+			return
+		}
+		if format != "" && format != "jsonl" && format != "csv" {
+			writeAPIError(w, http.StatusBadRequest, "format must be jsonl or csv")
+			return
+		}
+		panel.exportStoredObservations(w, r, filter, format)
+		return
+	}
 	if format == "" || format == "jsonl" {
 		w.Header().Set("Content-Type", "application/x-ndjson")
 		w.Header().Set("Content-Disposition", `attachment; filename="observations.jsonl"`)
@@ -247,9 +394,56 @@ func (panel Server) exportObservations(w http.ResponseWriter, r *http.Request) {
 	writeFingerprintCSV(w, filteredObservations(panel.Recorder.Snapshot(), filter))
 }
 
+func (panel Server) exportStoredObservations(w http.ResponseWriter, r *http.Request, filter observationFilter, format string) {
+	query := storedObservationQuery(filter, r, 100)
+	if format == "" || format == "jsonl" {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.Header().Set("Content-Disposition", `attachment; filename="observations.sqlite.jsonl"`)
+		encoder := json.NewEncoder(w)
+		for {
+			stored, err := panel.Recorder.QueryStored(query)
+			if err != nil {
+				writeStoredQueryError(w, err)
+				return
+			}
+			for _, observation := range stored.Items {
+				if err := encoder.Encode(observation); err != nil {
+					return
+				}
+			}
+			if stored.NextCursor == "" {
+				return
+			}
+			query.Cursor = stored.NextCursor
+		}
+	}
+
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="fingerprints.sqlite.csv"`)
+	writer := csv.NewWriter(w)
+	writeFingerprintCSVHeader(writer)
+	for {
+		stored, err := panel.Recorder.QueryStored(query)
+		if err != nil {
+			writeStoredQueryError(w, err)
+			return
+		}
+		writeFingerprintCSVRows(writer, stored.Items)
+		if stored.NextCursor == "" {
+			writer.Flush()
+			return
+		}
+		query.Cursor = stored.NextCursor
+	}
+}
+
 // RecorderMetrics avoids device/host/fingerprint labels with unbounded cardinality.
 func (panel Server) RecorderMetrics(w http.ResponseWriter, r *http.Request) {
 	s := panel.Recorder.Stats()
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-	fmt.Fprintf(w, "recorder_accepted_total %d\nrecorder_processed_total %d\nrecorder_dropped_total %d\nrecorder_write_errors_total %d\nrecorder_queue_depth %d\n", s.Accepted, s.Processed, s.Dropped, s.WriteErrors, s.QueueDepth)
+	fmt.Fprintf(w, "recorder_accepted_total %d\nrecorder_processed_total %d\nrecorder_dropped_total %d\nrecorder_write_errors_total %d\nrecorder_queue_depth %d\nrecorder_critical_queue_depth %d\nrecorder_critical_spill_accepted_total %d\nrecorder_spool_bytes %d\nrecorder_spool_events %d\nrecorder_spool_quarantined_total %d\nrecorder_spool_quota_failures_total %d\n", s.Accepted, s.Processed, s.Dropped, s.WriteErrors, s.QueueDepth, s.CriticalQueueDepth, s.CriticalSpillAccepted, s.SpoolBytes, s.SpoolEvents, s.SpoolQuarantined, s.SpoolQuotaFailures)
+	for _, class := range []string{recorder.DeliveryClassCritical, recorder.DeliveryClassImportant, recorder.DeliveryClassOptional} {
+		fmt.Fprintf(w, "recorder_dropped_by_class_total{class=\"%s\"} %d\n", class, s.DroppedByClass[class])
+		fmt.Fprintf(w, "recorder_lost_by_class_total{class=\"%s\"} %d\n", class, s.LostByClass[class])
+	}
 }

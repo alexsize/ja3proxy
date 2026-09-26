@@ -3,14 +3,220 @@
   "info": {
     "title": "Локальный API регистратора JA3Proxy",
     "version": "0.5.0",
-    "description": "Наблюдения в ограниченной памяти и явные device mappings. Доступ только через loopback с проверкой Host, адреса клиента и Origin; аутентификация пользователей пока отсутствует. Это не полный API центра управления."
+    "description": "Наблюдения в ограниченной памяти и явные device mappings. Loopback binding работает без обязательных TLS и Bearer-аутентификации; локальный token admin API разрешён без токена. Для non-loopback binding обязательны HTTPS и Bearer-токен, управление токенами требует роль admin. Реестр секретов хранится в общей SQLite в виде SHA-256."
   },
+  "security": [
+    {"BearerAuth": []},
+    {}
+  ],
   "servers": [
     {
       "url": "http://127.0.0.1:9090"
     }
   ],
   "paths": {
+    "/api/v1/admin/tokens": {
+      "get": {
+        "operationId": "listPanelTokens",
+        "description": "Возвращает метаданные token registry без bearer-секретов. Для non-loopback требуется роль admin; на loopback авторизация необязательна.",
+        "responses": {
+          "200": {"description": "Список токенов", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TokenList"}}}},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "401": {"description": "Bearer-токен отсутствует или недействителен"},
+          "503": {"$ref": "#/components/responses/ServiceUnavailable"}
+        }
+      },
+      "post": {
+        "operationId": "issuePanelToken",
+        "description": "Создаёт bearer-токен со случайным секретом. Секрет возвращается только в этом ответе; в SQLite хранится SHA-256.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TokenIssue"}}}},
+        "responses": {
+          "201": {"description": "Токен создан; сохраните секрет из ответа", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/IssuedToken"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "503": {"$ref": "#/components/responses/ServiceUnavailable"}
+        }
+      }
+    },
+    "/api/v1/admin/tokens/{id}": {
+      "put": {
+        "operationId": "updatePanelTokenRole",
+        "description": "Меняет роль/scopes/срок действия существующего токена без изменения секрета. Последний активный admin не может быть понижен или лишён роли.",
+        "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TokenUpdate"}}}},
+        "responses": {
+          "200": {"description": "Роль и разрешения обновлены", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TokenMetadata"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "503": {"$ref": "#/components/responses/ServiceUnavailable"}
+        }
+      },
+      "delete": {
+        "operationId": "revokePanelToken",
+        "description": "Немедленно отзывает токен. Нельзя отозвать последний активный admin-токен.",
+        "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {
+          "200": {"description": "Токен отозван", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TokenMetadata"}}}},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "503": {"$ref": "#/components/responses/ServiceUnavailable"}
+        }
+      }
+    },
+    "/api/v1/admin/tokens/{id}/rotate": {
+      "post": {
+        "operationId": "rotatePanelToken",
+        "description": "Немедленно заменяет секрет активного токена, сохраняя ID, роль и scopes. Новый секрет возвращается только один раз.",
+        "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {
+          "200": {"description": "Секрет токена заменён", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/IssuedToken"}}}},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "503": {"$ref": "#/components/responses/ServiceUnavailable"}
+        }
+      }
+    },
+    "/api/config": {
+      "put": {
+        "operationId": "updateRuntimeConfig",
+        "description": "Атомарно обновляет runtime-настройки. expected_version обязателен; устаревшая версия получает 409 без применения изменения.",
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RuntimeConfigUpdate"}}}
+        },
+        "responses": {
+          "200": {"description": "Настройки применены к новым соединениям", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RuntimeConfigResponse"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "409": {"$ref": "#/components/responses/Conflict"}
+        }
+      }
+    },
+    "/api/v1/export/config": {
+      "get": {
+        "operationId": "exportConfigBackup",
+        "description": "Экспортирует control-plane конфигурацию в JSON или ZIP. Телеметрия не включается; пароли из upstream URL удаляются перед выдачей.",
+        "parameters": [
+          {"name": "format", "in": "query", "schema": {"type": "string", "enum": ["json", "zip"], "default": "json"}}
+        ],
+        "responses": {
+          "200": {
+            "description": "Файл резервной копии конфигурации",
+            "content": {
+              "application/json": {"schema": {"$ref": "#/components/schemas/ConfigBackup"}},
+              "application/zip": {"schema": {"type": "string", "format": "binary"}}
+            }
+          },
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "403": {"$ref": "#/components/responses/Forbidden"}
+        }
+      }
+    },
+    "/api/v1/import/config/validate": {
+      "post": {
+        "operationId": "validateConfigBackup",
+        "description": "Проверяет JSON или ZIP backup без изменения runtime и файлов. Проверяются схемы registry, TLS profiles, routes и upstream TLS.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {"schema": {"$ref": "#/components/schemas/ConfigBackup"}},
+            "application/zip": {"schema": {"type": "string", "format": "binary"}}
+          }
+        },
+        "responses": {
+          "200": {"description": "Backup совместим", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ConfigValidation"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "422": {"description": "Backup прочитан, но не прошёл проверку", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ConfigValidation"}}}}
+        }
+      }
+    },
+    "/api/v1/export/telemetry": {
+      "get": {
+        "operationId": "exportTelemetrySQLite",
+        "description": "Создаёт согласованный standalone snapshot durable SQLite telemetry. Endpoint требует scopes export и raw; memory-only recorder не поддерживается.",
+        "responses": {
+          "200": {
+            "description": "SQLite-файл telemetry backup",
+            "content": {"application/vnd.sqlite3": {"schema": {"type": "string", "format": "binary"}}}
+          },
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "503": {"$ref": "#/components/responses/ServiceUnavailable"}
+        }
+      }
+    },
+    "/api/v1/import/telemetry": {
+      "post": {
+        "operationId": "importTelemetry",
+        "description": "Валидирует SQLite snapshot и идемпотентно объединяет observations с активной durable базой. Активный файл SQLite не заменяется.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/vnd.sqlite3": {"schema": {"type": "string", "format": "binary"}},
+            "application/octet-stream": {"schema": {"type": "string", "format": "binary"}}
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Snapshot импортирован",
+            "content": {"application/json": {"schema": {"type": "object", "required": ["imported"], "properties": {"imported": {"type": "integer", "minimum": 0}}}}}
+          },
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "415": {"description": "Неподдерживаемый Content-Type", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "422": {"description": "SQLite snapshot не прошёл проверку", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "503": {"$ref": "#/components/responses/ServiceUnavailable"}
+        }
+      }
+    },
+    "/api/v1/import/config": {
+      "post": {
+        "operationId": "importConfigBackup",
+        "description": "Применяет предварительно проверенный JSON или ZIP backup. Все четыре expected_*_version обязательны; runtime settings намеренно не восстанавливаются, поскольку credentials отсутствуют в backup.",
+        "parameters": [
+          {"name": "expected_devices_version", "in": "query", "required": true, "schema": {"type": "integer", "minimum": 0}},
+          {"name": "expected_tls_profiles_version", "in": "query", "required": true, "schema": {"type": "integer", "minimum": 0}},
+          {"name": "expected_routes_version", "in": "query", "required": true, "schema": {"type": "integer", "minimum": 0}},
+          {"name": "expected_upstream_tls_version", "in": "query", "required": true, "schema": {"type": "integer", "minimum": 0}}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {"schema": {"$ref": "#/components/schemas/ConfigBackup"}},
+            "application/zip": {"schema": {"type": "string", "format": "binary"}}
+          }
+        },
+        "responses": {
+          "200": {"description": "Компоненты backup применены", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ConfigImportResult"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "422": {"description": "Backup не прошёл preflight", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ConfigValidation"}}}},
+          "503": {"$ref": "#/components/responses/ServiceUnavailable"}
+        }
+      }
+    },
+    "/api/v1/audit": {
+      "get": {
+        "operationId": "listAuditEvents",
+        "description": "Постраничный локальный просмотр append-only событий панели. Тела запросов не сохраняются; потенциальные секреты в значениях заменяются на [REDACTED].",
+        "parameters": [
+          {"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50}},
+          {"name": "cursor", "in": "query", "schema": {"type": "string"}}
+        ],
+        "responses": {
+          "200": {"description": "Страница аудита", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AuditPage"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "503": {"$ref": "#/components/responses/ServiceUnavailable"}
+        }
+      }
+    },
     "/api/v1/routes/test": {
       "post": {
         "operationId": "testRoute",
@@ -326,6 +532,13 @@
             }
           },
           {
+            "name": "storage",
+            "in": "query",
+            "required": false,
+            "schema": {"type": "string", "enum": ["memory", "sqlite"], "default": "memory"},
+            "description": "memory использует bounded window; sqlite выполняет поиск по durable retention"
+          },
+          {
             "name": "limit",
             "in": "query",
             "required": false,
@@ -363,6 +576,11 @@
             "name": "application_version",
             "in": "query",
             "schema": {"type": "string"}
+          },
+          {
+            "name": "analysis_revision",
+            "in": "query",
+            "schema": {"type": "integer", "minimum": 1}
           },
           {
             "name": "from",
@@ -428,7 +646,7 @@
             }
           }
         },
-        "description": "Сначала возвращаются новые обработанные записи. В списке отсутствуют decoded, raw и normalized данные. Курсор — ID сохранённого наблюдения; после его вытеснения возвращается 409."
+        "description": "Сначала возвращаются новые обработанные записи. В списке отсутствуют decoded, raw и normalized данные. storage=sqlite ищет по durable SQLite retention; курсор остаётся стабильным внутри retention."
       }
     },
     "/api/v1/observations/{id}": {
@@ -442,6 +660,11 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "storage",
+            "in": "query",
+            "schema": {"type": "string", "enum": ["memory", "sqlite"], "default": "memory"}
           }
         ],
         "responses": {
@@ -489,6 +712,12 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "storage",
+            "in": "query",
+            "description": "Источник наблюдения; sqlite позволяет повторно разобрать сохранённую историческую запись",
+            "schema": {"type": "string", "enum": ["memory", "sqlite"], "default": "memory"}
           }
         ],
         "responses": {
@@ -543,7 +772,31 @@
             }
           }
         },
-        "description": "Повторно разбирает сохранённый RAW ClientHello, добавляя новую analysis revision и не изменяя исходную запись. Доступно только для запуска с включённым raw capture."
+        "description": "Повторно разбирает сохранённый RAW ClientHello из выбранного хранилища, добавляя новую analysis revision и не изменяя исходную запись. Доступно только для запуска с включённым raw capture."
+      }
+    },
+    "/api/v1/reparse/sqlite": {
+      "post": {
+        "operationId": "reparseSQLitePage",
+        "description": "Повторно разбирает bounded page исходных SQLite-наблюдений с analysis_revision=1. Повторяйте запрос с next_cursor до завершения; derived revisions не включаются в выборку.",
+        "parameters": [
+          {"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 100}},
+          {"name": "cursor", "in": "query", "schema": {"type": "string"}},
+          {"name": "q", "in": "query", "schema": {"type": "string"}},
+          {"name": "device_id", "in": "query", "schema": {"type": "string"}},
+          {"name": "application", "in": "query", "schema": {"type": "string"}},
+          {"name": "application_id", "in": "query", "schema": {"type": "string"}},
+          {"name": "application_version", "in": "query", "schema": {"type": "string"}},
+          {"name": "from", "in": "query", "schema": {"type": "string", "format": "date-time"}},
+          {"name": "to", "in": "query", "schema": {"type": "string", "format": "date-time"}}
+        ],
+        "responses": {
+          "200": {"description": "Результат bounded reparse page", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReparsePageResult"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "503": {"$ref": "#/components/responses/ServiceUnavailable"}
+        }
       }
     },
     "/api/v1/fingerprints/diff": {
@@ -565,6 +818,12 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "storage",
+            "in": "query",
+            "description": "Источник обоих наблюдений",
+            "schema": {"type": "string", "enum": ["memory", "sqlite"], "default": "memory"}
           }
         ],
         "responses": {
@@ -589,7 +848,7 @@
             }
           },
           "404": {
-            "description": "Оба наблюдения должны находиться в окне памяти",
+            "description": "Оба наблюдения должны находиться в выбранном хранилище",
             "content": {
               "application/json": {
                 "schema": {
@@ -599,7 +858,99 @@
             }
           }
         },
-        "description": "Сравниваются два наблюдения. Проверка ожидаемого шаблона находится в поле verification исходящего наблюдения."
+        "description": "Сравнивает совместимые семейства: TLS ClientHello/ServerHello, HTTP/1, HTTP/2, TCP SYN/JA4T, DNS exchange и QUIC Initial. Для сенсорных семейств сравниваются только сохранённые fingerprint-поля, результат равенства имеет статус PARTIAL_MATCH. Flow endpoints, timestamps, HTTP request target и sequence/stream/correlation IDs исключены. Разные семейства возвращают UNKNOWN. Проверка ожидаемого шаблона находится в поле verification исходящего наблюдения."
+      }
+    },
+    "/api/v1/fingerprint-families": {
+      "get": {
+        "operationId": "fingerprintFamilies",
+        "description": "Автоматически группирует входящие CLIENT_IN TLS-наблюдения с разрешёнными device_id и идентификатором приложения. Читает сохранённую SQLite-историю постранично и объединяет новые события из памяти по ID. HTTP-наблюдения связываются только по точному connection_id. Возвращает также явные семейства профилей с одинаковым family_id.",
+        "parameters": [
+          {"name": "device_id", "in": "query", "schema": {"type": "string"}},
+          {"name": "application", "in": "query", "schema": {"type": "string"}},
+          {"name": "application_id", "in": "query", "schema": {"type": "string"}},
+          {"name": "application_version", "in": "query", "schema": {"type": "string"}},
+          {"name": "analysis_revision", "in": "query", "schema": {"type": "integer", "minimum": 1}},
+          {"name": "from", "in": "query", "schema": {"type": "string", "format": "date-time"}},
+          {"name": "to", "in": "query", "schema": {"type": "string", "format": "date-time"}}
+        ],
+        "responses": {
+          "200": {
+            "description": "Список автоматически выведенных семейств и вариантов",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["items", "profile_families", "scope"],
+                  "properties": {
+                    "scope": {"type": "string", "enum": ["sqlite_history_plus_recent", "recent_in_memory_observations"]},
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["id", "device_id", "evidence", "observation_count", "variants"],
+                        "properties": {
+                          "id": {"type": "string"},
+                          "device_id": {"type": "string"},
+                          "application_id": {"type": "string"},
+                          "application": {"type": "string"},
+                          "evidence": {"type": "string"},
+                          "observation_count": {"type": "integer"},
+                          "variants": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "required": ["ja3", "ja3_hash", "ja4", "observation_ids"],
+                              "properties": {
+                                "ja3": {"type": "string"},
+                                "ja3_hash": {"type": "string"},
+                                "ja4": {"type": "string"},
+                                "tls_state": {"type": "string", "enum": ["FULL", "RESUMED", "PSK"]},
+                                "profile_id": {"type": "string"},
+                                "profile_version": {"type": "integer", "minimum": 0},
+                                "profile_family_id": {"type": "string", "description": "Явная связь с profile_families по profile_id."},
+                                "http_fingerprints": {"type": "array", "items": {"type": "string"}},
+                                "observation_ids": {"type": "array", "items": {"type": "string"}}
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "profile_families": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["family_id", "evidence", "profiles"],
+                        "properties": {
+                          "family_id": {"type": "string"},
+                          "evidence": {"type": "string"},
+                          "profiles": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "required": ["profile_id", "name", "version"],
+                              "properties": {
+                                "profile_id": {"type": "string"},
+                                "name": {"type": "string"},
+                                "version": {"type": "integer"},
+                                "profile_type": {"type": "string"},
+                                "ja3": {"type": "string"},
+                                "ja4": {"type": "string"}
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "403": {"$ref": "#/components/responses/Forbidden"}
+        }
       }
     },
     "/api/v1/fingerprints/timeline": {
@@ -610,6 +961,7 @@
           {"name": "application", "in": "query", "schema": {"type": "string"}},
           {"name": "application_id", "in": "query", "schema": {"type": "string"}},
           {"name": "application_version", "in": "query", "schema": {"type": "string"}},
+          {"name": "analysis_revision", "in": "query", "schema": {"type": "integer", "minimum": 1}},
           {"name": "from", "in": "query", "schema": {"type": "string", "format": "date-time"}},
           {"name": "to", "in": "query", "schema": {"type": "string", "format": "date-time"}}
         ],
@@ -626,13 +978,17 @@
     "/api/v1/export/observations": {
       "get": {
         "operationId": "exportRetainedObservations",
-        "description": "Экспортирует только текущее окно памяти, начиная с новых записей. Raw-данные присутствуют только при включении во время запуска.",
+        "description": "По умолчанию экспортирует текущее окно памяти. storage=sqlite потоково экспортирует durable SQLite retention. Raw-данные присутствуют только при включении во время запуска.",
         "parameters": [
           {"name": "format", "in": "query", "schema": {"type": "string", "enum": ["jsonl", "csv"], "default": "jsonl"}},
+          {"name": "storage", "in": "query", "schema": {"type": "string", "enum": ["memory", "sqlite"], "default": "memory"}},
+          {"name": "q", "in": "query", "schema": {"type": "string"}},
+          {"name": "cursor", "in": "query", "schema": {"type": "string"}},
           {"name": "device_id", "in": "query", "schema": {"type": "string"}},
           {"name": "application", "in": "query", "schema": {"type": "string"}},
           {"name": "application_id", "in": "query", "schema": {"type": "string"}},
           {"name": "application_version", "in": "query", "schema": {"type": "string"}},
+          {"name": "analysis_revision", "in": "query", "schema": {"type": "integer", "minimum": 1}},
           {"name": "from", "in": "query", "schema": {"type": "string", "format": "date-time"}},
           {"name": "to", "in": "query", "schema": {"type": "string", "format": "date-time"}}
         ],
@@ -694,6 +1050,18 @@
         }
       }
     },
+    "/api/v1/replay-lab/run": {
+      "post": {
+        "operationId": "runReplayLab",
+        "description": "В отдельном TLS-соединении проверяет выбранный профиль на target endpoint. Для сохранённого профиля результат совместимости сохраняется; HTTP-запрос не отправляется, outbound fingerprints снимаются с wire.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReplayLabRun"}}}},
+        "responses": {
+          "200": {"description": "Результат handshake, actual fingerprints и diff", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReplayLabResult"}}}},
+          "400": {"description": "Некорректный профиль или параметры запуска"},
+          "404": {"description": "Профиль или исходное наблюдение не найдено"}
+        }
+      }
+    },
     "/api/v1/tls/profiles": {
       "get": {
         "operationId": "listTLSProfiles",
@@ -749,14 +1117,51 @@
     "/api/v1/tls/profiles/from-preset": {
       "post": {
         "operationId": "profileFromPreset",
-        "description": "Создаёт несохранённый редактируемый шаблон из uTLS-пресета.",
+        "description": "Создаёт несохранённый редактируемый шаблон из uTLS-пресета. family_id задаёт явное семейство профилей.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["name", "base_preset"],
+                "properties": {
+                  "name": {"type": "string"},
+                  "family_id": {"type": "string", "maxLength": 64, "pattern": "^[A-Za-z0-9._:-]*$"},
+                  "base_preset": {"type": "object", "additionalProperties": true},
+                  "host_patterns": {"type": "array", "items": {"type": "string"}}
+                }
+              }
+            }
+          }
+        },
         "responses": {"200": {"description": "Черновик", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TLSProfile"}}}}}
       }
     },
     "/api/v1/tls/profiles/from-observation": {
       "post": {
         "operationId": "profileFromObservation",
-        "description": "Создаёт черновик или сохраняет профиль из полного ClientHello в окне recorder.",
+        "description": "Создаёт черновик или сохраняет профиль из полного ClientHello в окне recorder. family_id задаёт явное семейство профилей.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["observation_id", "name", "base_preset"],
+                "properties": {
+                  "expected_version": {"type": "integer"},
+                  "observation_id": {"type": "string"},
+                  "name": {"type": "string"},
+                  "family_id": {"type": "string", "maxLength": 64, "pattern": "^[A-Za-z0-9._:-]*$"},
+                  "base_preset": {"type": "object", "additionalProperties": true},
+                  "host_patterns": {"type": "array", "items": {"type": "string"}},
+                  "save": {"type": "boolean"}
+                }
+              }
+            }
+          }
+        },
         "responses": {"200": {"description": "Черновик"}, "201": {"description": "Профиль сохранён"}, "404": {"description": "Наблюдение недоступно"}}
       }
     },
@@ -880,6 +1285,14 @@
     }
   },
   "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "opaque",
+        "description": "Bearer registry загружается из --web-panel-token-file при первом старте и сохраняется в общей SQLite (только SHA-256 секретов). Поддерживаются роли viewer, operator, investigator, admin, scopes и необязательный expires_at в RFC3339; ротация и отзыв применяются без перезапуска."
+      }
+    },
     "responses": {
       "BadRequest": {
         "description": "Некорректный запрос",
@@ -896,6 +1309,10 @@
       "NotFound": {
         "description": "Устройство не найдено",
         "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+      },
+      "ServiceUnavailable": {
+        "description": "Durable recorder storage недоступно",
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
       }
     },
     "schemas": {
@@ -910,6 +1327,174 @@
           "error"
         ]
       },
+      "RuntimeConfigUpdate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["expected_version"],
+        "properties": {
+          "expected_version": {"type": "integer", "minimum": 0},
+          "tlsFingerprint": {"type": "string"},
+          "upstream": {"type": "string"},
+          "proxyPort": {"type": "integer", "minimum": 1, "maximum": 65535},
+          "proxyProtocol": {"enum": ["mixed", "http", "socks5"]},
+          "proxyAuthEnabled": {"type": "boolean"},
+          "proxyUsername": {"type": "string"},
+          "proxyPassword": {"type": "string", "writeOnly": true}
+        }
+      },
+      "TokenIssue": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role"],
+        "properties": {
+          "id": {"type": "string", "maxLength": 64, "pattern": "^[A-Za-z0-9._:-]+$"},
+          "role": {"type": "string", "enum": ["viewer", "operator", "investigator", "admin"]},
+          "scopes": {"type": "array", "description": "Необязательно; по умолчанию scopes выбранной роли. Роль admin требует полный набор admin scopes.", "items": {"type": "string", "enum": ["read", "write", "raw", "export"]}},
+          "expires_at": {"type": "string", "description": "Необязательная дата RFC3339; пустая строка означает отсутствие срока."}
+        }
+      },
+      "TokenUpdate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role"],
+        "properties": {
+          "role": {"type": "string", "enum": ["viewer", "operator", "investigator", "admin"]},
+          "scopes": {"type": "array", "description": "Необязательно; по умолчанию scopes выбранной роли. Роль admin требует полный набор admin scopes.", "items": {"type": "string", "enum": ["read", "write", "raw", "export"]}},
+          "expires_at": {"type": "string", "description": "Новая дата RFC3339 или пустая строка для бессрочного токена."}
+        }
+      },
+      "TokenMetadata": {
+        "type": "object",
+        "required": ["id", "role", "scopes", "revoked", "created_at", "updated_at"],
+        "properties": {
+          "id": {"type": "string"}, "role": {"type": "string"},
+          "scopes": {"type": "array", "items": {"type": "string"}},
+          "expires_at": {"type": "string", "format": "date-time"},
+          "revoked": {"type": "boolean"},
+          "created_at": {"type": "string", "format": "date-time"},
+          "updated_at": {"type": "string", "format": "date-time"}
+        }
+      },
+      "TokenList": {
+        "type": "object",
+        "required": ["tokens"],
+        "properties": {"tokens": {"type": "array", "items": {"$ref": "#/components/schemas/TokenMetadata"}}}
+      },
+      "IssuedToken": {
+        "type": "object",
+        "required": ["token", "entry"],
+        "properties": {
+          "token": {"type": "string", "description": "Bearer-секрет, возвращаемый только один раз при создании или ротации; повторно прочитать его нельзя."},
+          "entry": {"$ref": "#/components/schemas/TokenMetadata"}
+        }
+      },
+      "RuntimeConfigResponse": {
+        "type": "object",
+        "properties": {
+          "runtime": {
+            "type": "object",
+            "properties": {
+              "configVersion": {"type": "integer", "minimum": 0},
+              "proxyListen": {"type": "string"},
+              "proxyPort": {"type": "integer"},
+              "proxyProtocol": {"type": "string"},
+              "tlsClient": {"type": "string"},
+              "tlsVersion": {"type": "string"},
+              "upstream": {"type": "string"},
+              "upstreamEnabled": {"type": "boolean"},
+              "proxyAuthEnabled": {"type": "boolean"},
+              "proxyUsername": {"type": "string"},
+              "mitmCaCertificateStatus": {"type": "string", "enum": ["UNAVAILABLE", "VALID", "EXPIRING", "EXPIRED", "NOT_YET_VALID"]},
+              "mitmCaCertificateNotBefore": {"type": "string", "format": "date-time"},
+              "mitmCaCertificateNotAfter": {"type": "string", "format": "date-time"},
+              "mitmCaCertificateDaysRemaining": {"type": "integer"},
+              "panelCertificateStatus": {"type": "string", "enum": ["UNAVAILABLE", "VALID", "EXPIRING", "EXPIRED", "NOT_YET_VALID"]},
+              "panelCertificateNotBefore": {"type": "string", "format": "date-time"},
+              "panelCertificateNotAfter": {"type": "string", "format": "date-time"},
+              "panelCertificateDaysRemaining": {"type": "integer"}
+            },
+            "required": ["configVersion"]
+          }
+        },
+        "required": ["runtime"]
+      },
+      "ConfigBackup": {
+        "type": "object",
+        "required": ["schema_version", "exported_at", "runtime", "devices", "tls_profiles", "routes", "upstream_tls"],
+        "properties": {
+          "schema_version": {"const": "ja3proxy-config-backup/1"},
+          "exported_at": {"type": "string", "format": "date-time"},
+          "runtime": {"type": "object"},
+          "devices": {"$ref": "#/components/schemas/DeviceRegistry"},
+          "tls_profiles": {"$ref": "#/components/schemas/TLSProfileLibrary"},
+          "routes": {"$ref": "#/components/schemas/RouteConfig"},
+          "route_config_version": {"type": "integer", "minimum": 0},
+          "upstream_tls": {"$ref": "#/components/schemas/UpstreamTLSConfig"},
+          "upstream_tls_config_version": {"type": "integer", "minimum": 0}
+        }
+      },
+      "AuditPage": {
+        "type": "object",
+        "required": ["items"],
+        "properties": {
+          "items": {"type": "array", "items": {"$ref": "#/components/schemas/AuditEvent"}},
+          "next_cursor": {"type": "string"}
+        }
+      },
+      "ConfigValidation": {
+        "type": "object",
+        "required": ["valid", "schema_version", "components"],
+        "properties": {
+          "valid": {"type": "boolean"},
+          "schema_version": {"type": "string"},
+          "components": {"type": "array", "items": {"type": "string"}},
+          "errors": {"type": "array", "items": {"type": "string"}}
+        }
+      },
+      "ConfigImportResult": {
+        "type": "object",
+        "required": ["applied"],
+        "properties": {
+          "applied": {"type": "array", "items": {"type": "string"}},
+          "skipped": {"type": "array", "items": {"type": "string"}},
+          "warnings": {"type": "array", "items": {"type": "string"}},
+          "config_versions": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}}
+        }
+      },
+      "AuditEvent": {
+        "type": "object",
+        "required": ["schema_version", "id", "timestamp", "actor", "action", "object", "result"],
+        "properties": {
+          "schema_version": {"const": "audit-event/1"},
+          "id": {"type": "string"},
+          "timestamp": {"type": "string", "format": "date-time"},
+          "actor": {"type": "string"},
+          "action": {"type": "string"},
+          "object": {"type": "string"},
+          "old_value": {"type": "object"},
+          "new_value": {"type": "object"},
+          "source_ip": {"type": "string"},
+          "result": {"type": "string", "enum": ["requested", "success", "rejected"]},
+          "prev_hash": {"type": "string", "description": "SHA-256 hash предыдущего события"},
+          "hash": {"type": "string", "description": "SHA-256 hash канонического события"}
+        }
+      },
+      "RouteConfig": {
+        "type": "object",
+        "required": ["rules"],
+        "properties": {
+          "default": {"type": "object"},
+          "rules": {"type": "array", "items": {"type": "object"}}
+        }
+      },
+      "UpstreamTLSConfig": {
+        "type": "object",
+        "required": ["default", "routes"],
+        "properties": {
+          "default": {"type": "object"},
+          "routes": {"type": "array", "items": {"type": "object"}}
+        }
+      },
       "RouteTestRequest": {
         "type": "object",
         "additionalProperties": false,
@@ -921,19 +1506,35 @@
           "port": {"type": "integer", "minimum": 0, "maximum": 65535},
           "device_id": {"type": "string"},
           "device_tags": {"type": "array", "items": {"type": "string"}},
-          "username": {"type": "string"}
+          "username": {"type": "string"},
+          "alpn": {"type": "array", "items": {"type": "string"}},
+          "tls_versions": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 65535}},
+          "ja3": {"type": "string"},
+          "ja3_hash": {"type": "string"},
+          "ja4": {"type": "string"}
         }
       },
       "RouteDecision": {
         "type": "object",
         "properties": {
           "config_version": {"type": "integer", "minimum": 0},
+          "evaluated_config_version": {"type": "integer", "minimum": 0},
           "phase": {"enum": ["PRE_TLS", "POST_CLIENTHELLO"]},
           "matched_rule_id": {"type": "string"},
           "matched_rule_priority": {"type": "integer"},
           "match_reason": {"type": "string"},
           "candidate_rule_ids": {"type": "array", "items": {"type": "string"}},
-          "action": {"type": "object", "additionalProperties": true}
+          "action": {
+            "type": "object",
+            "properties": {
+              "mode": {"type": "string"},
+              "upstream": {"type": "string"},
+              "tls_profile": {"type": "string"},
+              "match_policy": {"enum": ["allow", "allow_and_record", "passthrough", "block"]},
+              "capture_failure_policy": {"enum": ["continue_passthrough", "continue_without_recording", "block"]}
+            },
+            "additionalProperties": true
+          }
         },
         "required": ["config_version", "phase", "match_reason", "action"]
       },
@@ -941,9 +1542,14 @@
         "type": "object",
         "properties": {
           "config_version": {"type": "integer", "minimum": 0},
+          "evaluated_config_version": {"type": "integer", "minimum": 0},
+          "candidate_rule_ids": {"type": "array", "items": {"type": "string"}},
           "matched_rule_id": {"type": "string"},
           "matched_rule_priority": {"type": "integer"},
-          "match_reason": {"type": "string"}
+          "match_reason": {"type": "string"},
+          "action_mode": {"type": "string"},
+          "match_policy": {"type": "string"},
+          "capture_failure_policy": {"enum": ["continue_passthrough", "continue_without_recording", "block"]}
         }
       },
       "RoutingSnapshot": {
@@ -976,6 +1582,14 @@
             "type": "integer",
             "minimum": 0
           },
+          "critical_queue_depth": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "critical_spill_accepted": {
+            "type": "integer",
+            "minimum": 0
+          },
           "recent": {
             "type": "integer",
             "minimum": 0
@@ -986,6 +1600,36 @@
           },
           "recording_degraded": {
             "type": "boolean"
+          },
+          "dropped_by_class": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "lost_by_class": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "spool_bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "spool_events": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "spool_quarantined": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "spool_quota_failures": {
+            "type": "integer",
+            "minimum": 0
           }
         }
       },
@@ -1027,6 +1671,7 @@
         "properties": {
           "id": {"type": "string"},
           "name": {"type": "string"},
+          "family_id": {"type": "string", "maxLength": 64, "pattern": "^[A-Za-z0-9._:-]*$", "description": "Необязательная явная связь с другими TLS-профилями того же семейства."},
           "description": {"type": "string"},
           "proxy_username": {"type": "string"},
           "source_ips": {"type": "array", "items": {"type": "string", "format": "ipvanyaddress"}},
@@ -1201,6 +1846,17 @@
           }
         }
       },
+      "ReparsePageResult": {
+        "type": "object",
+        "required": ["scanned", "reparsed", "skipped", "failed"],
+        "properties": {
+          "scanned": {"type": "integer", "minimum": 0},
+          "reparsed": {"type": "integer", "minimum": 0},
+          "skipped": {"type": "integer", "minimum": 0},
+          "failed": {"type": "integer", "minimum": 0},
+          "next_cursor": {"type": "string"}
+        }
+      },
       "FingerprintTimelinePoint": {
         "type": "object",
         "required": ["observation_id", "captured_at", "ja3", "ja3_hash", "ja4", "changed"],
@@ -1220,6 +1876,249 @@
           "changed": {"type": "boolean"}
         }
       },
+      "ServerField": {
+        "type": "object",
+        "required": ["value", "source", "available"],
+        "properties": {
+          "value": {},
+          "source": {"enum": ["wire_server_hello", "decrypted_encrypted_extensions", "negotiated_state"]},
+          "available": {"type": "boolean"},
+          "reason": {"type": "string"}
+        }
+      },
+      "ServerHello": {
+        "type": "object",
+        "required": ["fields"],
+        "properties": {
+          "fields": {
+            "type": "object",
+            "required": ["encrypted_extensions"],
+            "properties": {
+              "encrypted_extensions": {
+                "$ref": "#/components/schemas/ServerField",
+                "description": "TLS 1.3 EncryptedExtensions. In PASSTHROUGH/OBSERVE_ONLY, an explicitly configured --tls-keylog-file may decrypt and merge this field into ServerHello; the key log and plaintext are never persisted. Without a matching authorized session secret: available=false, reason=encrypted_without_keys. For other versions: reason=not_applicable."
+              }
+            },
+            "additionalProperties": {"$ref": "#/components/schemas/ServerField"}
+          }
+        }
+      },
+      "ServerFingerprints": {
+        "type": "object",
+        "required": ["ja3s", "ja3s_hash", "ja3s_version", "ja4s", "ja4s_version"],
+        "properties": {
+          "ja3s": {"type": "string"},
+          "ja3s_hash": {"type": "string"},
+          "ja3s_version": {"type": "string"},
+          "ja4s": {"type": "string"},
+          "ja4s_version": {"type": "string"}
+        }
+      },
+      "NegotiatedState": {
+        "type": "object",
+        "description": "Состояние upstream TLS после handshake, завершённого самим proxy; секреты и raw ALPS не сохраняются.",
+        "required": ["protocol_version", "cipher_suite", "session_resumption", "handshake_complete"],
+        "properties": {
+          "protocol_version": {"type": "integer"},
+          "cipher_suite": {"type": "integer"},
+          "negotiated_protocol": {"type": "string"},
+          "server_name": {"type": "string"},
+          "handshake_type": {"enum": ["FULL", "RESUMED"], "description": "Итоговое состояние по факту TLS handshake; предложение PSK видно отдельно в ClientHello fingerprint."},
+          "session_resumption": {"type": "boolean"},
+          "handshake_complete": {"type": "boolean"},
+          "peer_application_settings_size": {"type": "integer", "minimum": 0}
+        }
+      },
+      "HTTP1Fingerprint": {
+        "type": "object",
+        "description": "HTTP1-NORM-2 privacy-safe header fingerprint from raw MITM application bytes. Bodies and trailer values are not fingerprinted; body-bearing messages are partial. Client requests may expose bounded, low-confidence, unverified product/version claims parsed from User-Agent; the raw header is never retained.",
+        "required": ["direction", "kind", "sequence", "completeness", "body_framing", "body_captured", "http_version", "header_order", "original_header_names", "headers"],
+        "properties": {
+          "direction": {"type": "string"},
+          "kind": {"enum": ["request", "response"]},
+          "sequence": {"type": "integer", "minimum": 1},
+          "completeness": {"enum": ["complete", "partial"]},
+          "body_framing": {"enum": ["none", "content_length", "chunked", "close_delimited", "upgrade", "unsupported_transfer_encoding"]},
+          "body_captured": {"type": "boolean", "const": false},
+          "trailer_status": {"enum": ["not_fingerprinted"]},
+          "method": {"type": "string"},
+          "request_target": {"type": "string"},
+          "http_version": {"enum": ["HTTP/1.0", "HTTP/1.1"]},
+          "status_code": {"type": "integer"},
+          "reason": {"type": "string"},
+          "header_order": {"type": "array", "items": {"type": "string"}},
+          "original_header_names": {"type": "array", "items": {"type": "string"}},
+          "headers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name", "value_sha256"],
+              "properties": {"name": {"type": "string"}, "value_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}
+            }
+          },
+          "application_version_evidence": {"type": "array", "items": {"$ref": "#/components/schemas/ApplicationVersionEvidence"}},
+          "content_length": {"type": "integer", "minimum": 0},
+          "transfer_encoding": {"type": "array", "items": {"type": "string"}}
+        }
+      },
+      "HTTP2Fingerprint": {
+        "type": "object",
+        "description": "Bounded H2-NORM-2 transport fingerprint from MITM HTTP/2 frames. Coverage is explicitly partial; frame payloads and decoded header values are not stored, except parsed low-confidence, unverified User-Agent product/version claims.",
+        "required": ["completeness", "direction", "preface", "settings", "settings_order", "frame_types", "availability", "hash"],
+        "properties": {
+          "completeness": {"type": "string", "enum": ["partial"]},
+          "direction": {"type": "string"},
+          "preface": {"type": "boolean"},
+          "settings": {"type": "array", "items": {"$ref": "#/components/schemas/HTTP2Setting"}},
+          "settings_order": {"type": "array", "items": {"type": "integer"}},
+          "window_updates": {"type": "array", "items": {"$ref": "#/components/schemas/HTTP2WindowUpdate"}},
+          "frame_types": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 255}},
+          "pseudo_header_order": {"type": "array", "items": {"type": "string"}},
+          "application_version_evidence": {"type": "array", "items": {"$ref": "#/components/schemas/ApplicationVersionEvidence"}},
+          "priorities": {"type": "array", "items": {"$ref": "#/components/schemas/HTTP2Priority"}},
+          "dynamic_table_size_updates": {"type": "array", "items": {"type": "integer", "minimum": 0}},
+          "availability": {"type": "array", "items": {"$ref": "#/components/schemas/HTTP2FieldAvailability"}},
+          "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      },
+      "ApplicationVersionEvidence": {
+        "type": "object",
+        "description": "Unverified product/version claim extracted from client User-Agent. Not an application assignment and must not be used alone for identity or policy.",
+        "required": ["product", "version", "source", "confidence", "status"],
+        "properties": {
+          "product": {"type": "string"},
+          "version": {"type": "string"},
+          "source": {"type": "string", "const": "http_user_agent"},
+          "confidence": {"type": "string", "const": "low"},
+          "status": {"type": "string", "const": "unverified"}
+        }
+      },
+      "HTTP2FieldAvailability": {
+        "type": "object",
+        "required": ["field", "status"],
+        "properties": {
+          "field": {"type": "string"},
+          "status": {"type": "string", "enum": ["observed", "not_observed", "not_recorded", "not_measured"]}
+        }
+      },
+      "HTTP2Priority": {
+        "type": "object",
+        "required": ["stream_id", "dependency", "exclusive", "weight", "frame_index"],
+        "properties": {
+          "stream_id": {"type": "integer", "minimum": 1},
+          "dependency": {"type": "integer", "minimum": 0},
+          "exclusive": {"type": "boolean"},
+          "weight": {"type": "integer", "minimum": 1, "maximum": 256},
+          "frame_index": {"type": "integer", "minimum": 1}
+        }
+      },
+      "HTTP2Setting": {
+        "type": "object",
+        "required": ["id", "value"],
+        "properties": {"id": {"type": "integer"}, "value": {"type": "integer"}}
+      },
+      "HTTP2WindowUpdate": {
+        "type": "object",
+        "required": ["stream_id", "increment"],
+        "properties": {"stream_id": {"type": "integer"}, "increment": {"type": "integer", "minimum": 1}}
+      },
+      "TCPSYN": {
+        "type": "object",
+        "required": ["ip_version", "source", "destination", "source_port", "destination_port", "window", "flags", "option_kinds", "ja4t", "ja4t_version"],
+        "properties": {
+          "ip_version": {"type": "integer", "enum": [4, 6]},
+          "source": {"type": "string"},
+          "destination": {"type": "string"},
+          "source_port": {"type": "integer", "minimum": 0, "maximum": 65535},
+          "destination_port": {"type": "integer", "minimum": 0, "maximum": 65535},
+          "window": {"type": "integer", "minimum": 0, "maximum": 65535},
+          "flags": {"type": "integer", "minimum": 0, "maximum": 255},
+          "option_kinds": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 255}},
+          "mss": {"type": "integer", "minimum": 0, "maximum": 65535},
+          "window_scale": {"type": "integer", "minimum": 0, "maximum": 255},
+          "sack_permitted": {"type": "boolean"},
+          "has_timestamp": {"type": "boolean"},
+          "ja4t": {"type": "string"},
+          "ja4t_version": {"type": "string", "const": "JA4T/1"}
+        }
+      },
+      "DNSQuestion": {
+        "type": "object",
+        "required": ["name", "type", "class"],
+        "properties": {
+          "name": {"type": "string"},
+          "type": {"type": "integer", "minimum": 0, "maximum": 65535},
+          "class": {"type": "integer", "minimum": 0, "maximum": 65535}
+        }
+      },
+      "DNSAddressAnswer": {
+        "type": "object",
+        "required": ["name", "address", "ttl"],
+        "properties": {
+          "name": {"type": "string"},
+          "address": {"type": "string", "format": "ip"},
+          "ttl": {"type": "integer", "minimum": 0}
+        }
+      },
+      "DNSCNAMEAnswer": {
+        "type": "object",
+        "required": ["name", "target", "ttl"],
+        "properties": {
+          "name": {"type": "string"},
+          "target": {"type": "string"},
+          "ttl": {"type": "integer", "minimum": 0}
+        }
+      },
+      "QUICTransportParameter": {
+        "type": "object",
+        "required": ["id", "position", "name", "kind", "length"],
+        "properties": {
+          "id": {"type": "integer", "minimum": 0},
+          "position": {"type": "integer", "minimum": 0},
+          "name": {"type": "string"},
+          "kind": {"type": "string", "enum": ["integer", "opaque", "flag"]},
+          "length": {"type": "integer", "minimum": 0},
+          "value": {"type": "integer", "minimum": 0},
+          "present": {"type": "boolean"}
+        },
+        "description": "Opaque values are represented by length only; raw parameter bytes are not retained."
+      },
+      "QUICInitial": {
+        "type": "object",
+        "required": ["version", "completion_packet_number", "crypto_bytes", "transport_parameters"],
+        "properties": {
+          "version": {"type": "integer", "enum": [1, 1798521807]},
+          "completion_packet_number": {"type": "integer", "minimum": 0},
+          "crypto_bytes": {"type": "integer", "minimum": 0},
+          "transport_parameters": {"type": "array", "items": {"$ref": "#/components/schemas/QUICTransportParameter"}}
+        },
+        "description": "Metadata from an authenticated QUIC v1/v2 client Initial; no packet or CRYPTO bytes are stored."
+      },
+      "DNSExchange": {
+        "type": "object",
+        "required": ["flow_id", "client_key", "transport", "id", "questions", "status"],
+        "properties": {
+          "flow_id": {"type": "string"},
+          "client_key": {"type": "string"},
+          "transport": {"type": "string", "enum": ["udp", "tcp"]},
+          "id": {"type": "integer", "minimum": 0, "maximum": 65535},
+          "questions": {"type": "array", "items": {"$ref": "#/components/schemas/DNSQuestion"}},
+          "addresses": {"type": "array", "items": {"$ref": "#/components/schemas/DNSAddressAnswer"}},
+          "cname_answers": {"type": "array", "items": {"$ref": "#/components/schemas/DNSCNAMEAnswer"}},
+          "query_at": {"type": "string", "format": "date-time"},
+          "response_at": {"type": "string", "format": "date-time"},
+          "status": {"type": "string", "enum": ["resolved", "ambiguous", "dns_error", "truncated", "unmatched_query", "unmatched_response"]}
+        }
+      },
+      "DNSCorrelation": {
+        "type": "object",
+        "required": ["status"],
+        "properties": {
+          "status": {"type": "string", "enum": ["matched", "ambiguous", "unmatched"]},
+          "names": {"type": "array", "items": {"type": "string"}},
+          "dns_flow_ids": {"type": "array", "items": {"type": "string"}}
+        }
+      },
       "Observation": {
         "type": "object",
         "properties": {
@@ -1230,13 +2129,14 @@
             "const": 1
           },
           "parser_version": {
-            "const": "1.0.0"
+            "type": "string",
+            "description": "ClientHello parser version or JA3S/1 for SERVER_IN."
           },
           "ja3_version": {
-            "const": "JA3/1"
+            "type": "string"
           },
           "ja4_version": {
-            "const": "FoxIO-JA4-TCP/2026-09-22"
+            "type": "string"
           },
           "tls_norm_version": {
             "const": "TLS-NORM-1"
@@ -1263,7 +2163,8 @@
           "capture_point": {
             "enum": [
               "CLIENT_IN",
-              "PROXY_OUT"
+              "PROXY_OUT",
+              "SERVER_IN"
             ]
           },
           "direction": {
@@ -1273,7 +2174,15 @@
             ]
           },
           "byte_source": {
-            "enum": ["client_socket_read", "upstream_socket_successful_write"]
+            "enum": ["client_socket_read", "upstream_socket_successful_write", "upstream_socket_read", "upstream_tls_negotiated_state", "upstream_tls_http1_read", "upstream_tls_http2_read"]
+          },
+          "handshake_event": {
+            "type": "string",
+            "description": "Для SERVER_IN: SERVER_HELLO, HELLO_RETRY_REQUEST или NEGOTIATED_STATE."
+          },
+          "handshake_sequence": {
+            "type": "integer",
+            "minimum": 1
           },
           "mode": {
             "enum": [
@@ -1284,6 +2193,28 @@
           },
           "destination": {
             "type": "string"
+          },
+          "destination_host": {
+            "type": "string",
+            "description": "Заявленный host назначения из CONNECT/SOCKS запроса."
+          },
+          "destination_ip": {
+            "type": "string",
+            "description": "Resolved IPv4/IPv6 адрес назначения, только если он достоверно известен proxy; не подменяется адресом upstream proxy."
+          },
+          "destination_port": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535
+          },
+          "connect_host": {
+            "type": "string"
+          },
+          "sni": {
+            "type": "string"
+          },
+          "authority_mismatch": {
+            "type": "boolean"
           },
           "source": {
             "type": "string"
@@ -1317,6 +2248,9 @@
           },
           "profile_id": {
             "type": "string"
+          },
+          "profile_type": {
+            "enum": ["PRESET", "OBSERVED", "CUSTOM", "RANDOMIZED"]
           },
           "profile_version": {
             "type": "integer"
@@ -1356,11 +2290,16 @@
           "completeness": {
             "enum": [
               "complete",
+              "partial",
               "not_tls",
               "truncated",
               "malformed",
-              "timeout"
+              "timeout",
+              "policy_conflict"
             ]
+          },
+          "error_stage": {
+            "enum": ["capture", "parse", "fingerprint", "forwarding", "policy"]
           },
           "error_code": {
             "type": "string"
@@ -1381,6 +2320,34 @@
           "fingerprints": {
             "$ref": "#/components/schemas/Fingerprints"
           },
+          "server_hello": {
+            "$ref": "#/components/schemas/ServerHello"
+          },
+          "tcp_syn": {
+            "$ref": "#/components/schemas/TCPSYN"
+          },
+          "dns": {
+            "$ref": "#/components/schemas/DNSExchange"
+          },
+          "quic": {
+            "$ref": "#/components/schemas/QUICInitial"
+          },
+          "dns_correlation": {
+            "$ref": "#/components/schemas/DNSCorrelation",
+            "description": "Recent A/AAAA DNS evidence for an observed TLS destination, when packet capture is enabled."
+          },
+          "server_fingerprints": {
+            "$ref": "#/components/schemas/ServerFingerprints"
+          },
+          "negotiated_state": {
+            "$ref": "#/components/schemas/NegotiatedState"
+          },
+          "http1": {
+            "$ref": "#/components/schemas/HTTP1Fingerprint"
+          },
+          "http2": {
+            "$ref": "#/components/schemas/HTTP2Fingerprint"
+          },
           "verification": {
             "$ref": "#/components/schemas/Verification"
           },
@@ -1391,7 +2358,19 @@
             "type": "string",
             "contentEncoding": "base64"
           },
+          "raw_client_hello_available": {
+            "type": "boolean",
+            "description": "Признак наличия исходных байтов ClientHello, пригодных для повторного разбора; сами байты могут быть скрыты в списке наблюдений"
+          },
           "raw_records": {
+            "type": "string",
+            "contentEncoding": "base64"
+          },
+          "raw_server_hello": {
+            "type": "string",
+            "contentEncoding": "base64"
+          },
+          "server_records": {
             "type": "string",
             "contentEncoding": "base64"
           }
@@ -1522,9 +2501,14 @@
       "Comparison": {
         "type": "object",
         "properties": {
+          "family": {
+            "type": "string",
+            "enum": ["tls_client_hello", "tls_server_hello", "http1", "http2", "tcp_syn", "dns_exchange", "quic_initial"]
+          },
           "status": {
             "enum": [
               "MATCH",
+              "PARTIAL_MATCH",
               "MISMATCH",
               "UNKNOWN"
             ]
@@ -1556,6 +2540,9 @@
           "actual_ja4": {"type": "string"},
           "actual_normalized_sha256": {"type": "string"},
           "diff_algorithm_version": {"type": "string"},
+          "mismatched_must_match": {"type": "array", "items": {"type": "string"}},
+          "mismatched_should_match": {"type": "array", "items": {"type": "string"}},
+          "violated_constraints": {"type": "array", "items": {"type": "string"}},
           "changes": {"type": "array", "items": {"$ref": "#/components/schemas/Change"}}
         },
         "required": ["schema_version", "status", "expected", "diff_algorithm_version", "changes"]
@@ -1572,6 +2559,58 @@
           "outbound_records_sha256": {"type": "string"}
         },
         "required": ["status"]
+      },
+      "ReplayLabRun": {
+        "type": "object",
+        "description": "Ровно один источник профиля: profile_id, template, либо profile_type PRESET/RANDOMIZED.",
+        "properties": {
+          "profile_id": {"type": "string"},
+          "profile_type": {"enum": ["PRESET", "RANDOMIZED"]},
+          "template": {"$ref": "#/components/schemas/TLSProfile"},
+          "preset_client": {"type": "string"},
+          "preset_version": {"type": "string"},
+          "randomized_alpn": {"enum": ["AUTO", "REQUIRED", "DISABLED"]},
+          "observation_id": {"type": "string"},
+          "target_host": {"type": "string"},
+          "target_port": {"type": "integer", "minimum": 1, "maximum": 65535, "default": 443},
+          "server_name": {"type": "string"},
+          "timeout_ms": {"type": "integer", "minimum": 100, "maximum": 60000, "default": 10000}
+        },
+        "required": ["target_host"]
+      },
+      "ReplayLabResult": {
+        "type": "object",
+        "description": "Expected/compiled/actual fingerprints, TLS ServerHello response and normalized diffs.",
+        "additionalProperties": true,
+        "properties": {
+          "status": {"enum": ["OK", "CONNECT_FAILED", "HANDSHAKE_FAILED", "COMPILE_FAILED", "CAPTURE_FAILED"]},
+          "current_engine_version": {"type": "string"},
+          "compatibility_status": {"enum": ["VALID", "VALID_WITH_DIFFERENCES", "INCOMPATIBLE"]},
+          "policy_verification": {"$ref": "#/components/schemas/ReplayLabPolicyVerification"},
+          "profile": {"type": "string"},
+          "profile_type": {"type": "string"},
+          "target": {"type": "string"},
+          "expected": {"type": "object"},
+          "compiled": {"type": "object"},
+          "actual": {"type": "object"},
+          "server_response": {"type": "object"},
+          "diff": {"type": "object", "additionalProperties": {"$ref": "#/components/schemas/Comparison"}},
+          "error": {"type": "string"},
+          "duration_ms": {"type": "integer"}
+        },
+        "required": ["status", "profile", "profile_type", "target", "compiled", "server_response", "diff"]
+      },
+      "ReplayLabPolicyVerification": {
+        "type": "object",
+        "properties": {
+          "status": {"enum": ["MATCH", "PARTIAL_MATCH", "MISMATCH", "UNKNOWN"]},
+          "reason": {"type": "string"},
+          "mismatched_must_match": {"type": "array", "items": {"type": "string"}},
+          "mismatched_should_match": {"type": "array", "items": {"type": "string"}},
+          "violated_constraints": {"type": "array", "items": {"type": "string"}},
+          "changes": {"type": "array", "items": {"$ref": "#/components/schemas/Change"}}
+        },
+        "required": ["status", "changes"]
       },
       "TLSProfileLibrary": {
         "type": "object",
@@ -1595,7 +2634,7 @@
       },
       "TLSProfile": {
         "type": "object",
-        "description": "Версионируемый шаблон ClientHello. Поля expected и replayability пересчитываются сервером.",
+        "description": "Версионируемый шаблон ClientHello. Для RANDOMIZED фактический fingerprint вычисляется по исходящему ClientHello, статический expected не задаётся.",
         "additionalProperties": true,
         "properties": {
           "schema_version": {"const": "tls-profile-template/1"},
@@ -1604,6 +2643,14 @@
           "version": {"type": "integer"},
           "based_on_version": {"type": "integer"},
           "enabled": {"type": "boolean"},
+          "profile_type": {"enum": ["PRESET", "OBSERVED", "CUSTOM", "RANDOMIZED"]},
+          "profile_mode": {"enum": ["STRICT", "ADAPTIVE"], "default": "ADAPTIVE", "description": "STRICT отклоняет конфликт ALPN/ALPS; ADAPTIVE фиксирует before/after/reason runtime-изменений."},
+          "randomized_alpn": {"enum": ["AUTO", "REQUIRED", "DISABLED"]},
+          "created_with_utls": {"type": "string"},
+          "current_runtime_utls": {"type": "string"},
+          "last_validated_with_utls": {"type": "string"},
+          "last_validated_at": {"type": "string", "format": "date-time"},
+          "compatibility_status": {"enum": ["VALID", "VALID_WITH_DIFFERENCES", "INCOMPATIBLE", "NOT_VALIDATED", "PROFILE_REVALIDATION_REQUIRED"]},
           "host_patterns": {"type": "array", "items": {"type": "string"}},
           "base_preset": {"type": "object", "additionalProperties": true},
           "fields": {
@@ -1626,6 +2673,11 @@
               "custom_alps": {
                 "type": "array",
                 "items": {"type": "string"}
+              },
+              "padding_length": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Зафиксированная длина TLS padding extension для детерминированного profile replay."
               }
             },
             "additionalProperties": true

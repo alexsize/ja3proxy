@@ -2,17 +2,17 @@
 <html lang="ru">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>JA3Proxy · TLS-профили и JA4</title><link rel="stylesheet" href="/profiles.css"></head>
 <body>
-<header><a href="/">JA3Proxy</a><a href="/recorder.html">Регистратор TLS</a><strong>TLS-профили и JA4</strong></header>
+<header><a href="/">JA3Proxy</a><a href="/recorder.html">Регистратор TLS</a><a href="/replay-lab.html">Replay Lab</a><a href="/tokens.html">Токены</a><strong>TLS-профили и JA4</strong></header>
 <main>
   <h1>Конструктор TLS-профилей</h1>
-  <p>JA4 вычисляется из materialized ClientHello. Изменяйте структурные поля, проверяйте ожидаемый JA4, сохраняйте версию и активируйте профиль для новых соединений.</p>
+  <p>Детерминированные JA4 вычисляются из materialized ClientHello. RANDOMIZED создаёт новый ClientHello при каждом соединении; фактические JA3/JA4 смотрите в исходящих наблюдениях регистратора.</p>
   <p class="notice">Random, session ID, GREASE, key shares и PSK остаются динамическими. Невоспроизводимые extensions явно помечаются как UNSUPPORTED и не могут быть активированы.</p>
   <p id="status" role="status">Загрузка…</p>
 
   <section>
     <h2>Сохранённые профили</h2>
     <p>Версия конфигурации: <strong id="config-version">0</strong>; активный профиль: <strong id="active-profile">не выбран</strong>.</p>
-    <div class="table-scroll"><table><thead><tr><th>Имя</th><th>Версия</th><th>База</th><th>Хосты</th><th>Ожидаемый JA4</th><th>Статус</th><th>Действия</th></tr></thead><tbody id="profiles"></tbody></table></div>
+    <div class="table-scroll"><table><thead><tr><th>Имя</th><th>Семейство</th><th>Версия</th><th>База</th><th>Хосты</th><th>Ожидаемый JA4</th><th>Воспроизводимость</th><th>uTLS / совместимость</th><th>Действия</th></tr></thead><tbody id="profiles"></tbody></table></div>
     <button id="deactivate" type="button">Отключить пользовательский профиль</button>
   </section>
 
@@ -21,12 +21,16 @@
     <form id="profile-form">
       <div class="grid">
         <label>Имя<input id="name" maxlength="128" required></label>
-        <label>Базовый пресет<select id="preset" required></select></label>
+        <label>Явное семейство профилей<input id="family-id" maxlength="64" pattern="[A-Za-z0-9._:-]*" aria-describedby="family-help"><small id="family-help">Одинаковый ID явно связывает варианты профиля. Оставьте пустым для автоматической группировки наблюдений.</small></label>
+        <label>Тип профиля<select id="profile-type"><option value="PRESET">PRESET — на основе uTLS-пресета</option><option value="OBSERVED">OBSERVED — на основе наблюдения</option><option value="CUSTOM" selected>CUSTOM — настраиваемый</option><option value="RANDOMIZED">RANDOMIZED — случайный ClientHello</option></select></label>
+        <label id="profile-mode-field">Режим профиля<select id="profile-mode"><option value="STRICT">STRICT — не менять ALPN/ALPS автоматически</option><option value="ADAPTIVE" selected>ADAPTIVE — адаптировать и записывать изменения</option></select></label>
+        <label id="preset-field">Базовый пресет<select id="preset" required></select></label>
+        <label id="randomized-alpn-field" hidden>ALPN в случайном ClientHello<select id="randomized-alpn"><option value="AUTO">Автоматически (может быть с ALPN или без)</option><option value="REQUIRED">Обязательно включить ALPN</option><option value="DISABLED">Не включать ALPN</option></select></label>
         <label class="wide">Хосты, по одному в строке; пусто — для всех<textarea id="hosts" rows="2" placeholder="*.example.com"></textarea></label>
       </div>
-      <div class="actions"><button id="from-preset" type="button">Заполнить из пресета</button><button id="from-observation" type="button" hidden>Заполнить из наблюдения</button></div>
+      <div class="actions deterministic-only"><button id="from-preset" type="button">Заполнить из пресета</button><button id="from-observation" type="button" hidden>Заполнить из наблюдения</button></div>
 
-      <div class="fields">
+      <div class="fields deterministic-only">
         <label>Cipher suites, JSON-массив uint16<textarea id="ciphers" rows="4" required></textarea></label>
         <label>Порядок extensions, JSON-массив uint16<textarea id="extensions" rows="4" required></textarea></label>
         <label>ALPN, JSON-массив строк<textarea id="alpn" rows="3" required></textarea></label>
@@ -43,7 +47,7 @@
 		<label class="wide">Constraints, JSON-массив объектов path/operator/value(s)<textarea id="constraints" rows="4" required></textarea></label>
       </div>
       <label class="check"><input id="enabled" type="checkbox" checked> Профиль разрешено активировать</label>
-      <div class="actions"><button id="preview" type="button">Рассчитать ожидаемый JA4</button><button type="submit">Сохранить новую версию</button><button id="reset" type="button">Новый профиль</button></div>
+      <div class="actions"><button id="preview" type="button">Проверить профиль</button><button type="submit">Сохранить новую версию</button><button id="reset" type="button">Новый профиль</button></div>
     </form>
   </section>
 
@@ -53,5 +57,5 @@
     <pre id="preview-json">Сначала загрузите пресет или наблюдение.</pre>
   </section>
 </main>
-<script src="/profiles.js" defer></script>
+<script src="/auth.js" defer></script><script src="/profiles.js" defer></script>
 </body></html>

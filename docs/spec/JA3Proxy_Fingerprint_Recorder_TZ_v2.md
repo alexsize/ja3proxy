@@ -153,7 +153,7 @@ Client ─────►│ Listener                                          �
 
                 ┌───────────────┴────────────────┐
                 │                                │
-        PostgreSQL / SQLite               Packet Sensor
+        SQLite                            Packet Sensor
                                              │
                                       TCP / DNS / QUIC
 ```
@@ -1109,6 +1109,18 @@ reason          # encrypted_without_keys, truncated, not_present, ...
 
 В PASSTHROUGH без session secrets ALPN и часть параметров могут быть недоступны. UI не должен отображать отсутствие наблюдения как отсутствие extension. HelloRetryRequest сохраняется как отдельное handshake event, связанное с последующим ServerHello.
 
+TLS 1.3 server-side observation также MUST содержать
+`server_hello.fields.encrypted_extensions` в общем формате поля. Если для
+соединения не предоставлены разрешённые session secrets, поле имеет
+`available=false`, `reason=encrypted_without_keys`; это означает, что содержимое
+зашифровано и неизвестно, а не что расширений нет. Для TLS-версий, где
+EncryptedExtensions неприменим, причина — `not_applicable`. Источник текущей
+недоступности — `wire_server_hello`; после разрешённого расшифрования должен
+указываться `decrypted_encrypted_extensions`. В реализации proxy такое
+расшифрование разрешается только при явном `--tls-keylog-file` в режимах
+`PASSTHROUGH`/`OBSERVE_ONLY`; без файла пассивный capture не является основанием
+утверждать, что handshake расшифрован. Key-log и plaintext не сохраняются.
+
 ---
 
 ## 20. Fingerprint HTTP/1.1
@@ -1650,23 +1662,15 @@ HTTP/3 payload                 NO by default
 
 ## 42. Основная БД
 
-Для полноценного режима:
+Единственный backend хранения recorder и control-plane в этом проекте —
+SQLite. Он используется и в single-node production, и в development mode.
+Другие СУБД проектом не поддерживаются и в CLI не публикуются.
+
+Основные параметры:
 
 ```text
-PostgreSQL
-```
-
-SQLite оставить:
-
-```text
-single-node / development mode
-```
-
-Рекомендуемые режимы:
-
-```text
---storage sqlite
---storage postgres
+--capture-sqlite state/recorder.sqlite
+--audit-sqlite state/audit.sqlite
 ```
 
 ---
@@ -1703,7 +1707,7 @@ audit_log
 runtime_events
 ```
 
-Все таблицы с protocol-derived данными MUST содержать `schema_version`, а algorithm-derived данные — также `algorithm_version`. Миграции PostgreSQL и SQLite имеют один logical version и проверяются на пустой БД и на предыдущей поддерживаемой версии.
+Все таблицы с protocol-derived данными MUST содержать `schema_version`, а algorithm-derived данные — также `algorithm_version`. Миграции SQLite имеют один logical version и проверяются на пустой БД и на предыдущей поддерживаемой версии.
 
 Минимальные инварианты:
 
@@ -2496,7 +2500,7 @@ Buffered queue
   ↓
 Batch writer
   ↓
-PostgreSQL
+SQLite
 ```
 
 Значения batch size и flush interval должны быть конфигурируемыми.
@@ -2515,7 +2519,7 @@ OPTIONAL   payload samples, packet dumps, duplicated raw samples
 
 ## 77. Отказ БД
 
-При временной недоступности PostgreSQL proxy должен по возможности продолжать обслуживать соединения.
+При временной недоступности SQLite proxy должен по возможности продолжать обслуживать соединения.
 
 Использовать:
 
@@ -2722,8 +2726,8 @@ Go
 
 Рекомендуемые компоненты:
 - Go;
-- PostgreSQL;
-- pgx;
+- SQLite;
+- `modernc.org/sqlite`;
 - database migrations.
 
 ---
@@ -2790,7 +2794,6 @@ internal/
 
   storage/
     sqlite/
-    postgres/
 
   control/
     api/
@@ -3102,7 +3105,7 @@ golden corpus, fragmentation tests, fuzz tests
 independent outbound wire verification
 ```
 
-Не входит: PostgreSQL, web UI, users/auth, automatic families, HTTP fingerprints, packet sensor, DNS, QUIC.
+Не входит: web UI, users/auth, automatic families, HTTP fingerprints, packet sensor, DNS, QUIC.
 
 ### 103.2. MVP-1 — постоянное хранение
 
@@ -3137,7 +3140,7 @@ route tester
 ### 103.4. Release 1 — промышленный центр управления
 
 ```text
-PostgreSQL
+SQLite
 users, roles, API tokens
 HTTPS/non-loopback web security
 config versioning + optimistic concurrency + rollback
@@ -3374,7 +3377,7 @@ Alerts
 
 Web control center
 
-PostgreSQL
+SQLite
 
 Audit
 

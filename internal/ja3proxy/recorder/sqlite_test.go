@@ -4,9 +4,46 @@ import (
 	"database/sql"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/capture/tlshello"
 )
+
+func TestSQLiteBackupCreatesStandaloneSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "recorder.db")
+	backup := filepath.Join(dir, "backup.db")
+	r, err := New(Options{SQLitePath: path, SQLiteRetention: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if !r.TryCapture(Meta{ConnectionID: "backup"}, sample()) {
+		t.Fatal("enqueue")
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && len(r.Snapshot()) == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	if len(r.Snapshot()) != 1 {
+		t.Fatal("observation was not processed")
+	}
+	if err := r.BackupSQLite(backup); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", backup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM observations`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("backup observation count = %d, want 1", count)
+	}
+}
 
 func TestSQLitePersistenceReopenAndRetention(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "recorder.db")
@@ -148,8 +185,8 @@ INSERT INTO recorder_schema_migrations(version, applied_at) VALUES (1, '2026-09-
 	if err := db.QueryRow(`SELECT COUNT(*) FROM recorder_schema_migrations`).Scan(&migrations); err != nil {
 		t.Fatal(err)
 	}
-	if migrations != 2 {
-		t.Fatalf("migrations = %d, want 2", migrations)
+	if migrations != 4 {
+		t.Fatalf("migrations = %d, want 4", migrations)
 	}
 	var identityColumns int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('observations') WHERE name IN ('identity_source', 'identity_value', 'confidence', 'resolved_device_id')`).Scan(&identityColumns); err != nil {
@@ -157,5 +194,64 @@ INSERT INTO recorder_schema_migrations(version, applied_at) VALUES (1, '2026-09-
 	}
 	if identityColumns != 4 {
 		t.Fatalf("identity columns = %d, want 4", identityColumns)
+	}
+	var evidenceColumns int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('observations') WHERE name IN ('destination_host', 'destination_ip', 'destination_port', 'error_stage')`).Scan(&evidenceColumns); err != nil {
+		t.Fatal(err)
+	}
+	if evidenceColumns != 4 {
+		t.Fatalf("evidence columns = %d, want 4", evidenceColumns)
+	}
+	var applicationColumns int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('observations') WHERE name IN ('application', 'application_id', 'application_version')`).Scan(&applicationColumns); err != nil {
+		t.Fatal(err)
+	}
+	if applicationColumns != 3 {
+		t.Fatalf("application columns = %d, want 3", applicationColumns)
+	}
+}
+
+func TestSQLiteHistoricalQueryUsesStableCursorAndFilters(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.db")
+	r, err := New(Options{Raw: true, RecentLimit: 1, SQLitePath: path, SQLiteRetention: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if !r.TryCapture(Meta{
+			ConnectionID:       "history-" + string(rune('0'+i)),
+			Application:        "Example",
+			ApplicationID:      "example",
+			ApplicationVersion: "1.2.0",
+		}, sample()) {
+			t.Fatal("enqueue")
+		}
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	historical, err := New(Options{Raw: true, RecentLimit: 1, SQLitePath: path, SQLiteRetention: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer historical.Close()
+
+	page, err := historical.QueryStored(StoredQuery{Limit: 2, ApplicationID: "example", Search: "history-"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 2 || page.NextCursor == "" {
+		t.Fatalf("first historical page = %+v", page)
+	}
+	next, err := historical.QueryStored(StoredQuery{Limit: 2, ApplicationID: "example", Search: "history-", Cursor: page.NextCursor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(next.Items) != 1 || next.Items[0].ConnectionID == page.Items[0].ConnectionID || next.NextCursor != "" {
+		t.Fatalf("second historical page = %+v", next)
+	}
+	stored, err := historical.Stored(page.Items[0].ID)
+	if err != nil || stored.ID != page.Items[0].ID {
+		t.Fatalf("stored observation = %+v, err=%v", stored, err)
 	}
 }

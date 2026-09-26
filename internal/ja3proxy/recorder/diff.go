@@ -7,6 +7,11 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	dnscapture "github.com/lylemi/ja3proxy/internal/ja3proxy/capture/dns"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/capture/http1"
+	http2capture "github.com/lylemi/ja3proxy/internal/ja3proxy/capture/http2"
+	quiccapture "github.com/lylemi/ja3proxy/internal/ja3proxy/capture/quic"
 )
 
 const (
@@ -23,6 +28,7 @@ type Change struct {
 	After  any    `json:"after,omitempty"`
 }
 type Comparison struct {
+	Family  string   `json:"family,omitempty"`
 	Status  string   `json:"status"`
 	Reason  string   `json:"reason,omitempty"`
 	Changes []Change `json:"changes"`
@@ -30,23 +36,229 @@ type Comparison struct {
 
 func Compare(a, b Observation) Comparison {
 	out := Comparison{Status: "UNKNOWN", Changes: []Change{}}
-	if a.Completeness != "complete" || b.Completeness != "complete" || a.Fingerprints == nil || b.Fingerprints == nil {
-		out.Reason = "incomplete_capture"
+	if a.Fingerprints != nil || b.Fingerprints != nil {
+		out.Family = "tls_client_hello"
+		if a.Fingerprints == nil || b.Fingerprints == nil {
+			out.Reason = "incompatible_fingerprint_family"
+			return out
+		}
+		if a.Completeness != "complete" || b.Completeness != "complete" {
+			out.Reason = "incomplete_capture"
+			return out
+		}
+		if a.Fingerprints.NormalizationVersion != b.Fingerprints.NormalizationVersion {
+			out.Reason = "incompatible_normalization_version"
+			return out
+		}
+		return compareJSON(out, a.Fingerprints.Normalized, b.Fingerprints.Normalized, false)
+	}
+	if a.ServerFingerprints != nil || b.ServerFingerprints != nil {
+		out.Family = "tls_server_hello"
+		if a.ServerFingerprints == nil || b.ServerFingerprints == nil {
+			out.Reason = "incompatible_fingerprint_family"
+			return out
+		}
+		left := struct{ JA3S, JA3SVersion, JA4S, JA4SVersion string }{a.ServerFingerprints.JA3S, a.ServerFingerprints.JA3SVersion, a.ServerFingerprints.JA4S, a.ServerFingerprints.JA4SVersion}
+		right := struct{ JA3S, JA3SVersion, JA4S, JA4SVersion string }{b.ServerFingerprints.JA3S, b.ServerFingerprints.JA3SVersion, b.ServerFingerprints.JA4S, b.ServerFingerprints.JA4SVersion}
+		return compareJSON(out, marshalJSON(left), marshalJSON(right), false)
+	}
+	left, leftName := observationFingerprint(a)
+	right, rightName := observationFingerprint(b)
+	if leftName == "" || rightName == "" {
+		out.Reason = "unsupported_fingerprint_family"
 		return out
 	}
-	if a.Fingerprints.NormalizationVersion != b.Fingerprints.NormalizationVersion {
-		out.Reason = "incompatible_normalization_version"
+	if leftName != rightName {
+		out.Reason = "incompatible_fingerprint_family"
 		return out
 	}
-	var av, bv any
-	if json.Unmarshal(a.Fingerprints.Normalized, &av) != nil || json.Unmarshal(b.Fingerprints.Normalized, &bv) != nil {
+	if !hasFingerprintData(a, leftName) || !hasFingerprintData(b, rightName) {
+		out.Family = leftName
+		out.Reason = "insufficient_fingerprint_data"
+		return out
+	}
+	out.Family = leftName
+	return compareJSON(out, marshalJSON(left), marshalJSON(right), true)
+}
+
+func hasFingerprintData(o Observation, family string) bool {
+	switch family {
+	case "http1":
+		return o.HTTP1.HTTPVersion != "" && (o.HTTP1.Method != "" || o.HTTP1.StatusCode != 0)
+	case "http2":
+		return o.HTTP2.Hash != ""
+	case "tcp_syn":
+		return o.TCPSYN.JA4T != ""
+	case "dns_exchange":
+		return o.DNS.Status != "" && len(o.DNS.Questions) > 0
+	case "quic_initial":
+		return o.QUIC.Version != 0
+	default:
+		return false
+	}
+}
+
+// observationFingerprint intentionally omits flow endpoints, timestamps,
+// sequence IDs and other correlation data that are not fingerprint features.
+func observationFingerprint(o Observation) (any, string) {
+	switch {
+	case o.HTTP1 != nil:
+		value := struct {
+			Direction        string            `json:"direction"`
+			Kind             string            `json:"kind"`
+			Completeness     string            `json:"completeness"`
+			BodyFraming      string            `json:"body_framing"`
+			BodyCaptured     bool              `json:"body_captured"`
+			TrailerStatus    string            `json:"trailer_status,omitempty"`
+			Method           string            `json:"method,omitempty"`
+			HTTPVersion      string            `json:"http_version"`
+			StatusCode       int               `json:"status_code,omitempty"`
+			HeaderOrder      []string          `json:"header_order"`
+			HeaderNames      []string          `json:"original_header_names"`
+			Headers          []http1.Header    `json:"headers"`
+			TransferEncoding []string          `json:"transfer_encoding,omitempty"`
+		}{o.HTTP1.Direction, o.HTTP1.Kind, o.HTTP1.Completeness, o.HTTP1.BodyFraming, o.HTTP1.BodyCaptured, o.HTTP1.TrailerStatus, o.HTTP1.Method, o.HTTP1.HTTPVersion, o.HTTP1.StatusCode, o.HTTP1.HeaderOrder, o.HTTP1.OriginalHeaderNames, o.HTTP1.Headers, o.HTTP1.TransferEncoding}
+		return value, "http1"
+	case o.HTTP2 != nil:
+		value := struct {
+			Completeness      string                 `json:"completeness"`
+			Direction         string                 `json:"direction"`
+			Preface           bool                   `json:"preface"`
+			Settings          []http2capture.Setting `json:"settings"`
+			SettingsOrder     []uint16               `json:"settings_order"`
+			WindowUpdates     []uint32               `json:"window_update_increments"`
+			Priorities        []http2Priority        `json:"priorities"`
+			DynamicTableSizes []uint32               `json:"dynamic_table_size_updates"`
+			FrameTypes        []uint8                `json:"frame_types"`
+			PseudoHeaderOrder []string               `json:"pseudo_header_order"`
+			Availability      []http2capture.FieldAvailability `json:"availability"`
+		}{o.HTTP2.Completeness, o.HTTP2.Direction, o.HTTP2.Preface, o.HTTP2.Settings, o.HTTP2.SettingsOrder, http2WindowUpdates(o.HTTP2.WindowUpdates), http2Priorities(o.HTTP2.Priorities), o.HTTP2.DynamicTableSizes, o.HTTP2.FrameTypes, o.HTTP2.PseudoHeaderOrder, o.HTTP2.Availability}
+		return value, "http2"
+	case o.TCPSYN != nil:
+		return struct {
+			JA4T        string `json:"ja4t"`
+			JA4TVersion string `json:"ja4t_version"`
+		}{o.TCPSYN.JA4T, o.TCPSYN.JA4TVersion}, "tcp_syn"
+	case o.DNS != nil:
+		return struct {
+			Transport string                     `json:"transport"`
+			Status    string                     `json:"status"`
+			Questions []dnsQuestion               `json:"questions"`
+			Addresses []dnsAddressAnswer          `json:"addresses,omitempty"`
+			Aliases   []dnsCNAMEAnswer             `json:"aliases,omitempty"`
+		}{o.DNS.Transport, o.DNS.Status, dnsQuestions(o.DNS.Questions), dnsAddresses(o.DNS.Addresses), dnsAliases(o.DNS.Aliases)}, "dns_exchange"
+	case o.QUIC != nil:
+		return struct {
+			Version             uint32                       `json:"version"`
+			TransportParameters []quicTransportParameter     `json:"transport_parameters"`
+		}{o.QUIC.Version, quicParameters(o.QUIC.TransportParameters)}, "quic_initial"
+	default:
+		return nil, ""
+	}
+}
+
+type dnsQuestion struct {
+	Name  string `json:"name"`
+	Type  uint16 `json:"type"`
+	Class uint16 `json:"class"`
+}
+
+type dnsAddressAnswer struct {
+	Name    string `json:"name"`
+	Address string `json:"address"`
+	TTL     uint32 `json:"ttl"`
+}
+
+type dnsCNAMEAnswer struct {
+	Name   string `json:"name"`
+	Target string `json:"target"`
+	TTL    uint32 `json:"ttl"`
+}
+
+type quicTransportParameter struct {
+	ID       uint64  `json:"id"`
+	Position int     `json:"position"`
+	Kind     string  `json:"kind"`
+	Length   int     `json:"length"`
+	Value    *uint64 `json:"value,omitempty"`
+	Present  bool    `json:"present,omitempty"`
+}
+
+type http2Priority struct {
+	Exclusive bool   `json:"exclusive"`
+	Weight    uint16 `json:"weight"`
+}
+
+func http2WindowUpdates(values []http2capture.WindowUpdate) []uint32 {
+	result := make([]uint32, len(values))
+	for i, value := range values {
+		result[i] = value.Increment
+	}
+	return result
+}
+
+func http2Priorities(values []http2capture.Priority) []http2Priority {
+	result := make([]http2Priority, len(values))
+	for i, value := range values {
+		result[i] = http2Priority{value.Exclusive, value.Weight}
+	}
+	return result
+}
+
+func dnsQuestions(values []dnscapture.Question) []dnsQuestion {
+	result := make([]dnsQuestion, len(values))
+	for i, value := range values {
+		result[i] = dnsQuestion{value.Name, value.Type, value.Class}
+	}
+	return result
+}
+
+func dnsAddresses(values []dnscapture.AddressAnswer) []dnsAddressAnswer {
+	result := make([]dnsAddressAnswer, len(values))
+	for i, value := range values {
+		result[i] = dnsAddressAnswer{value.Name, value.Address.String(), value.TTL}
+	}
+	return result
+}
+
+func dnsAliases(values []dnscapture.CNAMEAnswer) []dnsCNAMEAnswer {
+	result := make([]dnsCNAMEAnswer, len(values))
+	for i, value := range values {
+		result[i] = dnsCNAMEAnswer{value.Name, value.Target, value.TTL}
+	}
+	return result
+}
+
+func quicParameters(values []quiccapture.TransportParameter) []quicTransportParameter {
+	result := make([]quicTransportParameter, len(values))
+	for i, value := range values {
+		result[i] = quicTransportParameter{value.ID, value.Position, value.Kind, value.Length, value.Value, value.Present}
+	}
+	return result
+}
+
+func marshalJSON(value any) []byte {
+	encoded, _ := json.Marshal(value)
+	return encoded
+}
+
+func compareJSON(out Comparison, left, right []byte, partial bool) Comparison {
+	if partial {
+		out.Reason = "captured_fingerprint_fields_only"
+	}
+	var a, b any
+	if json.Unmarshal(left, &a) != nil || json.Unmarshal(right, &b) != nil {
 		out.Reason = "invalid_normalized_data"
 		return out
 	}
-	diffValue("", av, bv, &out.Changes)
-	out.Status = "MATCH"
+	diffValue("", a, b, &out.Changes)
 	if len(out.Changes) > 0 {
 		out.Status = "MISMATCH"
+		return out
+	}
+	out.Status = "MATCH"
+	if partial {
+		out.Status = "PARTIAL_MATCH"
 	}
 	return out
 }
@@ -88,28 +300,37 @@ func VerifyExpected(expected FingerprintExpected, actual Observation) *Verificat
 	for _, constraint := range expected.Constraints {
 		actualConstraintValue, exists := valueAtPointer(actualValue, constraint.Path)
 		if !constraintMatches(constraint, actualConstraintValue, exists) {
-			verification.Status = "MISMATCH"
-			verification.Reason = "constraint_violation"
-			return verification
+			verification.ViolatedConstraints = append(verification.ViolatedConstraints, constraint.Path)
 		}
 	}
 	for _, path := range expected.MustMatch {
 		left, leftOK := valueAtPointer(expectedValue, path)
 		right, rightOK := valueAtPointer(actualValue, path)
 		if !leftOK || !rightOK || !reflect.DeepEqual(left, right) {
-			verification.Status = "MISMATCH"
-			verification.Reason = "must_match_difference"
-			return verification
+			verification.MismatchedMustMatch = append(verification.MismatchedMustMatch, path)
 		}
 	}
 	for _, path := range expected.ShouldMatch {
 		left, leftOK := valueAtPointer(expectedValue, path)
 		right, rightOK := valueAtPointer(actualValue, path)
 		if !leftOK || !rightOK || !reflect.DeepEqual(left, right) {
-			verification.Status = "PARTIAL_MATCH"
-			verification.Reason = "should_match_difference"
-			return verification
+			verification.MismatchedShouldMatch = append(verification.MismatchedShouldMatch, path)
 		}
+	}
+	if len(verification.ViolatedConstraints) > 0 {
+		verification.Status = "MISMATCH"
+		verification.Reason = "constraint_violation"
+		return verification
+	}
+	if len(verification.MismatchedMustMatch) > 0 {
+		verification.Status = "MISMATCH"
+		verification.Reason = "must_match_difference"
+		return verification
+	}
+	if len(verification.MismatchedShouldMatch) > 0 {
+		verification.Status = "PARTIAL_MATCH"
+		verification.Reason = "should_match_difference"
+		return verification
 	}
 	verification.Status = "MATCH"
 	return verification

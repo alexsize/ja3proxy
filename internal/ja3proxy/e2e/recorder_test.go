@@ -3,14 +3,18 @@ package e2e
 import (
 	"bytes"
 	"crypto/tls"
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/capture/tlshello"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/dialer"
 	httpproxy "github.com/lylemi/ja3proxy/internal/ja3proxy/proxy"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/recorder"
@@ -18,6 +22,15 @@ import (
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/upstreamtls"
 	utls "github.com/refraction-networking/utls"
 )
+
+type utlsWireBaseline struct {
+	SchemaVersion    string `json:"schema_version"`
+	UTLSVersion      string `json:"utls_version"`
+	JA3              string `json:"ja3"`
+	JA3Hash          string `json:"ja3_hash"`
+	JA4              string `json:"ja4"`
+	NormalizedSHA256 string `json:"normalized_sha256"`
+}
 
 func serveMixedRecorderProxy(t *testing.T, p *httpproxy.Proxy) string {
 	t.Helper()
@@ -112,6 +125,20 @@ func TestRecorderOutboundWireThroughProxyMatrix(t *testing.T) {
 					if out.Fingerprints.JA3 != wire.ja3 || out.Fingerprints.JA3Hash != wire.ja3Fingerprint {
 						t.Fatalf("JA3 differs: recorder %q (%s), server %q (%s)", out.Fingerprints.JA3, out.Fingerprints.JA3Hash, wire.ja3, wire.ja3Fingerprint)
 					}
+					if downstream == "http" && upstream == "direct" && mode == "MITM_REISSUE" {
+						assertUTLSWireBaseline(t, out.Fingerprints)
+					}
+					reparsedHello, err := tlshello.Parse(out.Raw)
+					if err != nil {
+						t.Fatalf("reparse captured outbound ClientHello: %v", err)
+					}
+					reparsedFingerprints, err := tlshello.Calculate(reparsedHello, out.Raw, out.Records)
+					if err != nil {
+						t.Fatalf("recalculate captured outbound fingerprints: %v", err)
+					}
+					if out.Fingerprints.JA4 != reparsedFingerprints.JA4 || out.Fingerprints.NormalizedSHA256 != reparsedFingerprints.NormalizedSHA256 || !bytes.Equal(out.Fingerprints.Normalized, reparsedFingerprints.Normalized) {
+						t.Fatalf("fingerprint does not match captured wire bytes: stored=%+v reparsed=%+v", out.Fingerprints, reparsedFingerprints)
+					}
 					if mode != "MITM_REISSUE" {
 						if out.Profile != "" || !bytes.Equal(in.Raw, out.Raw) || !bytes.Equal(in.Records, out.Records) {
 							t.Fatal("passthrough changed or incorrectly labelled")
@@ -129,6 +156,51 @@ func TestRecorderOutboundWireThroughProxyMatrix(t *testing.T) {
 			}
 		}
 	}
+}
+
+func assertUTLSWireBaseline(t *testing.T, actual *tlshello.Fingerprints) {
+	t.Helper()
+	if actual == nil {
+		t.Fatal("outbound wire fingerprints are missing")
+	}
+	baselinePath := filepath.Join("testdata", "utls-wire-baseline.json")
+	baselineBytes, err := os.ReadFile(baselinePath)
+	if err != nil {
+		t.Fatalf("read uTLS wire baseline %s: %v", baselinePath, err)
+	}
+	var expected utlsWireBaseline
+	if err := json.Unmarshal(baselineBytes, &expected); err != nil {
+		t.Fatalf("decode uTLS wire baseline: %v", err)
+	}
+	actualBaseline := utlsWireBaseline{
+		SchemaVersion:    "ja3proxy-utls-wire-baseline/1",
+		UTLSVersion:      linkedUTLSVersion(t),
+		JA3:              actual.JA3,
+		JA3Hash:          actual.JA3Hash,
+		JA4:              actual.JA4,
+		NormalizedSHA256: actual.NormalizedSHA256,
+	}
+	if expected != actualBaseline {
+		wantJSON, _ := json.MarshalIndent(expected, "    ", "  ")
+		gotJSON, _ := json.MarshalIndent(actualBaseline, "    ", "  ")
+		t.Errorf("uTLS outbound wire baseline drift:\n  want:\n    %s\n   got:\n    %s", wantJSON, gotJSON)
+	}
+}
+
+func linkedUTLSVersion(t *testing.T) string {
+	t.Helper()
+	goMod, err := os.ReadFile(filepath.Join("..", "..", "..", "go.mod"))
+	if err != nil {
+		t.Fatalf("read go.mod to verify uTLS pin: %v", err)
+	}
+	for _, line := range strings.Split(string(goMod), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && fields[0] == "github.com/refraction-networking/utls" {
+			return fields[1]
+		}
+	}
+	t.Fatal("uTLS dependency missing from go.mod")
+	return ""
 }
 
 func TestRecorderKeepsHelloWhenClientRejectsCA(t *testing.T) {
@@ -241,7 +313,8 @@ func TestCustomTLSProfileProducesExpectedJA4AndVerification(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	template.Fields.ALPN = []string{"http/1.1"}
+	template.ProfileMode = tlsprofile.ProfileModeAdaptive
+	template.Fields.ALPN = []string{"h2", "http/1.1"}
 	created, library, err := store.Create(template, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -311,4 +384,68 @@ func TestCustomTLSProfileProducesExpectedJA4AndVerification(t *testing.T) {
 	if outbound.Verification.Expected.JA4 != outbound.Fingerprints.JA4 || outbound.Fingerprints.JA3Hash != wire.ja3Fingerprint {
 		t.Fatalf("expected/actual mismatch: %+v", outbound.Verification)
 	}
+	mutationFound := false
+	for _, mutation := range outbound.RuntimeMutations {
+		if mutation.Field == "ALPN" && mutation.Reason != "" && mutation.Before != nil && mutation.After != nil {
+			mutationFound = true
+		}
+	}
+	if !mutationFound {
+		t.Fatalf("adaptive ALPN mutation missing from outbound observation: %+v", outbound.RuntimeMutations)
+	}
+}
+
+func TestStrictProfileProtocolConflictIsReported(t *testing.T) {
+	store, err := tlsprofile.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	template, err := tlsprofile.TemplateFromPreset("Strict h2", "Chrome", "120")
+	if err != nil {
+		t.Fatal(err)
+	}
+	template.ProfileMode = tlsprofile.ProfileModeStrict
+	template.Fields.ALPN = []string{"h2"}
+	template.Fields.ALPNPolicy = tlsprofile.ALPNPolicyProfile
+	created, library, err := store.Create(template, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Activate(created.ID, library.ConfigVersion); err != nil {
+		t.Fatal(err)
+	}
+	r, err := recorder.New(recorder.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	handler := newTestTunnelHandler(t, utls.HelloFirefox_63)
+	handler.Recorder = r
+	handler.TLSProfiles = store
+	upstream, err := dialer.NewUpstreamDialer("", 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyAddr := serveMixedRecorderProxy(t, httpproxy.NewProxy(upstream.Dial, handler.Connect, upstream.Transport).WithTLSInspection(true))
+	client := newProxyHTTPClient(t, "http://"+proxyAddr, &tls.Config{InsecureSkipVerify: true, NextProtos: []string{"http/1.1"}})
+	target := newLocalHTTPSTarget(t)
+	response, requestErr := client.Get(target)
+	if response != nil {
+		response.Body.Close()
+	}
+	if requestErr == nil {
+		t.Fatal("STRICT profile unexpectedly adapted incompatible h2 ALPN")
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, observation := range r.Snapshot() {
+		if observation.ErrorCode == "PROFILE_PROTOCOL_CONFLICT" {
+			if observation.Completeness != "policy_conflict" || observation.ErrorStage != "policy" || observation.ProfileID != created.ID {
+				t.Fatalf("incorrect conflict observation: %+v", observation)
+			}
+			return
+		}
+	}
+	t.Fatalf("PROFILE_PROTOCOL_CONFLICT was not reported: %+v", r.Snapshot())
 }

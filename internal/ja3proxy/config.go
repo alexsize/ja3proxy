@@ -2,10 +2,19 @@ package ja3proxy
 
 type RunningConfig struct {
 	CaptureTLS             bool
+	CaptureTCPInterface    string
+	ListCaptureInterfaces  bool
 	CaptureRaw             bool
+	TLSKeyLogFile          string
 	CaptureJSONL           string
 	CaptureSQLite          string
 	CaptureSQLiteRetention int
+	StateSQLite            string
+	CaptureSpool           string
+	CaptureSpoolKey        string
+	CaptureSpoolMaxBytes   int64
+	AuditLog               string
+	AuditSQLite            string
 	DeviceMapFile          string
 	TLSMode                string
 	TLSTemplateFile        string
@@ -16,6 +25,7 @@ type RunningConfig struct {
 	Port                   string
 	TLSVersion             string
 	TLSClient              string
+	TLSFingerprintExplicit bool
 	ListFingerprints       bool
 	FingerprintConfig      string
 	UpstreamTLSConfig      string
@@ -25,7 +35,12 @@ type RunningConfig struct {
 	Upstream               string
 	ProxyUsername          string
 	ProxyPassword          string
+	ProxyUsernameFile      string
+	ProxyPasswordFile      string
 	TUI                    bool
 	WebPanel               string
+	WebPanelTokenFile      string
+	WebPanelCert           string
+	WebPanelKey            string
 	ProxyProtocol          string
 }

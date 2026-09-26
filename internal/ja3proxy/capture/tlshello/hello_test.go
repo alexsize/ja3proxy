@@ -234,6 +234,78 @@ func TestRecordingConnShortWrites(t *testing.T) {
 	}
 }
 
+func TestRecordingConnCapturesSecondClientHello(t *testing.T) {
+	wire := append(record(fixture(nil)), record(fixture(nil))...)
+	under := &stubConn{}
+	captures := make([]Capture, 0, 2)
+	c := Wrap(under, false, Limits{}, func(v Capture) { captures = append(captures, v) })
+	if n, err := c.Write(wire); err != nil || n != len(wire) {
+		t.Fatalf("write = %d/%v", n, err)
+	}
+	c.Close()
+	if len(captures) != 2 {
+		t.Fatalf("captures = %d, want 2", len(captures))
+	}
+	for index, capture := range captures {
+		if capture.Status != "complete" || capture.HandshakeSequence != index+1 || !bytes.Equal(capture.Raw, fixture(nil)) {
+			t.Fatalf("capture %d = %+v", index, capture)
+		}
+	}
+}
+
+func TestRecordingConnCapturesSecondClientHelloAfterCompatibilityCCS(t *testing.T) {
+	first := record(fixture(nil))
+	ccs := []byte{20, 3, 3, 0, 1, 1}
+	second := record(fixture(nil))
+	wire := append(append(append([]byte(nil), first...), ccs...), second...)
+	for split := len(first); split <= len(first)+len(ccs)+5; split++ {
+		under := &stubConn{}
+		var captures []Capture
+		conn := Wrap(under, false, Limits{}, func(capture Capture) { captures = append(captures, capture) })
+		if _, err := conn.Write(wire[:split]); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := conn.Write(wire[split:]); err != nil {
+			t.Fatal(err)
+		}
+		_ = conn.Close()
+		if len(captures) != 2 || captures[0].Status != "complete" || captures[1].Status != "complete" || captures[1].HandshakeSequence != 2 {
+			t.Fatalf("split %d: captures = %+v", split, captures)
+		}
+	}
+}
+
+func TestRecordingConnDoesNotInventClientHelloAfterCompatibilityCCS(t *testing.T) {
+	first := record(fixture(nil))
+	ccs := []byte{20, 3, 3, 0, 1, 1}
+	for _, suffix := range [][]byte{
+		ccs,
+		append(append([]byte(nil), ccs...), 23, 3, 3, 0, 1, 0),
+		{22, 3, 3, 0, 4, 11, 0, 0, 0}, // A different TLS handshake message.
+	} {
+		under := &stubConn{}
+		var captures []Capture
+		conn := Wrap(under, false, Limits{}, func(capture Capture) { captures = append(captures, capture) })
+		if _, err := conn.Write(append(append([]byte(nil), first...), suffix...)); err != nil {
+			t.Fatal(err)
+		}
+		_ = conn.Close()
+		if len(captures) != 1 || captures[0].Status != "complete" {
+			t.Fatalf("suffix %v: captures = %+v", suffix, captures)
+		}
+	}
+	under := &stubConn{input: bytes.NewReader(append(append([]byte(nil), first...), ccs...))}
+	var readCaptures []Capture
+	conn := Wrap(under, true, Limits{}, func(capture Capture) { readCaptures = append(readCaptures, capture) })
+	if _, err := io.ReadAll(conn); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.Close()
+	if len(readCaptures) != 1 || readCaptures[0].Status != "complete" {
+		t.Fatalf("read/EOF captures = %+v", readCaptures)
+	}
+}
+
 func TestSniffReplayAndTimeout(t *testing.T) {
 	for _, wire := range [][]byte{record(fixture(nil)), []byte("hello world"), []byte{22, 3}} {
 		base := &stubConn{input: bytes.NewReader(wire)}

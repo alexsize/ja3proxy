@@ -3,17 +3,21 @@ package upstreamtls
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"sync"
 
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/fingerprint"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/state"
 )
 
 const upstreamTLSProtocolUTLS = "utls"
 
 const ProtocolUTLS = upstreamTLSProtocolUTLS
+
+var ErrVersionConflict = errors.New("upstream TLS configuration version conflict")
 
 type UpstreamTLSProfile struct {
 	Protocol string `json:"protocol"`
@@ -47,6 +51,23 @@ type UpstreamTLSProfileStore struct {
 	mu      sync.RWMutex
 	current *UpstreamTLSConfig
 	version uint64
+	stateDB *state.SQLiteStore
+}
+
+const stateSchemaVersion = "upstream-tls-config/1"
+
+// Snapshot returns a detached immutable configuration snapshot and its
+// publication version. The boolean is false until a configuration is loaded.
+func (s *UpstreamTLSProfileStore) Snapshot() (UpstreamTLSConfig, uint64, bool) {
+	if s == nil {
+		return UpstreamTLSConfig{}, 0, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.current == nil {
+		return UpstreamTLSConfig{}, s.version, false
+	}
+	return cloneUpstreamTLSConfig(*s.current), s.version, true
 }
 
 func (s *UpstreamTLSProfileStore) Get(host string) (UpstreamTLSProfile, bool) {
@@ -84,11 +105,63 @@ func (s *UpstreamTLSProfileStore) Set(config UpstreamTLSConfig) {
 }
 
 func (s *UpstreamTLSProfileStore) SetValidated(config UpstreamTLSConfig) error {
-	if err := validateUpstreamTLSConfig(config); err != nil {
+	if err := Validate(config); err != nil {
 		return err
 	}
-	s.Set(config)
+	if s == nil {
+		return fmt.Errorf("upstream TLS profile store is unavailable")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	clone := cloneUpstreamTLSConfig(config)
+	if s.stateDB != nil {
+		payload, err := json.Marshal(clone)
+		if err != nil {
+			return fmt.Errorf("encode upstream TLS configuration: %w", err)
+		}
+		if err := s.stateDB.SaveSnapshot("upstream_tls", stateSchemaVersion, s.version+1, payload); err != nil {
+			return fmt.Errorf("persist upstream TLS configuration in SQLite: %w", err)
+		}
+	}
+	s.current = &clone
+	s.version++
 	return nil
+}
+
+// ReplaceValidated installs an upstream TLS snapshot after an optimistic
+// version check and advances the local publication version.
+func (s *UpstreamTLSProfileStore) ReplaceValidated(config UpstreamTLSConfig, expectedVersion uint64) error {
+	if s == nil {
+		return fmt.Errorf("upstream TLS profile store is unavailable")
+	}
+	if config.Default != (UpstreamTLSProfile{}) || len(config.Routes) > 0 {
+		if err := Validate(config); err != nil {
+			return err
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.version != expectedVersion {
+		return ErrVersionConflict
+	}
+	clone := cloneUpstreamTLSConfig(config)
+	if s.stateDB != nil {
+		payload, err := json.Marshal(clone)
+		if err != nil {
+			return fmt.Errorf("encode upstream TLS configuration: %w", err)
+		}
+		if err := s.stateDB.SaveSnapshot("upstream_tls", stateSchemaVersion, s.version+1, payload); err != nil {
+			return fmt.Errorf("persist upstream TLS configuration in SQLite: %w", err)
+		}
+	}
+	s.current = &clone
+	s.version++
+	return nil
+}
+
+// Validate checks an upstream TLS configuration without changing a store.
+func Validate(config UpstreamTLSConfig) error {
+	return validateUpstreamTLSConfig(config)
 }
 
 func (s *UpstreamTLSProfileStore) ApplyFile(path string) error {
@@ -97,6 +170,47 @@ func (s *UpstreamTLSProfileStore) ApplyFile(path string) error {
 		return err
 	}
 	return s.SetValidated(config)
+}
+
+// RestoreWithState prefers the SQLite snapshot and imports a legacy JSON
+// configuration only when no snapshot exists yet.
+func (s *UpstreamTLSProfileStore) RestoreWithState(path string, stateDB *state.SQLiteStore) error {
+	if s == nil {
+		return fmt.Errorf("upstream TLS profile store is unavailable")
+	}
+	s.mu.Lock()
+	s.stateDB = stateDB
+	s.mu.Unlock()
+	if stateDB != nil {
+		document, found, err := stateDB.Load("upstream_tls")
+		if err != nil {
+			return err
+		}
+		if found {
+			if document.SchemaVersion != stateSchemaVersion {
+				return fmt.Errorf("unsupported sqlite upstream TLS schema %q", document.SchemaVersion)
+			}
+			var config UpstreamTLSConfig
+			if err := json.Unmarshal(document.Payload, &config); err != nil {
+				return fmt.Errorf("decode sqlite upstream TLS configuration: %w", err)
+			}
+			if config.Default != (UpstreamTLSProfile{}) || len(config.Routes) > 0 {
+				if err := Validate(config); err != nil {
+					return err
+				}
+			}
+			s.mu.Lock()
+			clone := cloneUpstreamTLSConfig(config)
+			s.current = &clone
+			s.version = document.Revision
+			s.mu.Unlock()
+			return nil
+		}
+	}
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+	return s.ApplyFile(path)
 }
 
 func loadUpstreamTLSConfigFile(path string) (UpstreamTLSConfig, error) {

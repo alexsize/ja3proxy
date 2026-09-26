@@ -14,6 +14,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/recorder"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/state"
 )
 
 const maxLibraryLogBytes = 16 << 20
@@ -21,12 +24,65 @@ const maxLibraryLogBytes = 16 << 20
 type Store struct {
 	mu      sync.RWMutex
 	path    string
+	stateDB *state.SQLiteStore
 	library Library
 	history map[string][]Template
 }
 
 func Open(path string) (*Store, error) {
-	store := &Store{path: path, library: Library{SchemaVersion: SchemaVersion, Templates: []Template{}}, history: map[string][]Template{}}
+	return OpenWithState(path, nil)
+}
+
+// OpenWithState loads the current profile library and immutable history from
+// SQLite, importing the legacy JSONL snapshots on first use.
+func OpenWithState(path string, stateDB *state.SQLiteStore) (*Store, error) {
+	store := &Store{path: path, stateDB: stateDB, library: Library{SchemaVersion: SchemaVersion, Templates: []Template{}}, history: map[string][]Template{}}
+	if stateDB != nil {
+		document, found, err := stateDB.Load("tls_profiles")
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			if document.SchemaVersion != SchemaVersion {
+				return nil, fmt.Errorf("unsupported sqlite TLS profile schema %q", document.SchemaVersion)
+			}
+			history, err := stateDB.History("tls_profiles")
+			if err != nil {
+				return nil, err
+			}
+			for _, payload := range history {
+				var snapshot Library
+				if err := json.Unmarshal(payload, &snapshot); err != nil {
+					return nil, fmt.Errorf("decode sqlite TLS profile history: %w", err)
+				}
+				if snapshot.SchemaVersion != SchemaVersion {
+					return nil, fmt.Errorf("unsupported sqlite TLS profile history schema %q", snapshot.SchemaVersion)
+				}
+				if err := normalizeLegacyALPS(&snapshot); err != nil {
+					return nil, err
+				}
+				for _, template := range snapshot.Templates {
+					store.recordHistoryLocked(template)
+				}
+			}
+			if err := json.Unmarshal(document.Payload, &store.library); err != nil {
+				return nil, fmt.Errorf("decode sqlite TLS profile library: %w", err)
+			}
+			if store.library.SchemaVersion != SchemaVersion {
+				return nil, fmt.Errorf("unsupported sqlite TLS profile library schema %q", store.library.SchemaVersion)
+			}
+			if store.library.ConfigVersion != document.Revision {
+				return nil, errors.New("sqlite TLS profile revision does not match its payload")
+			}
+			if err := normalizeLegacyALPS(&store.library); err != nil {
+				return nil, err
+			}
+			for _, template := range store.library.Templates {
+				store.recordHistoryLocked(template)
+			}
+			return store, nil
+		}
+	}
 	if path == "" {
 		return store, nil
 	}
@@ -44,6 +100,7 @@ func Open(path string) (*Store, error) {
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 64<<10), 4<<20)
 	var latest Library
+	var snapshots []state.Document
 	for scanner.Scan() {
 		var candidate Library
 		if err := json.Unmarshal(scanner.Bytes(), &candidate); err != nil {
@@ -52,10 +109,15 @@ func Open(path string) (*Store, error) {
 		if candidate.SchemaVersion != SchemaVersion {
 			return nil, fmt.Errorf("неподдерживаемая схема TLS-профилей %q", candidate.SchemaVersion)
 		}
+		if err := normalizeLegacyALPS(&candidate); err != nil {
+			return nil, err
+		}
 		for _, template := range candidate.Templates {
 			store.recordHistoryLocked(template)
 		}
 		latest = candidate
+		payload := append([]byte(nil), scanner.Bytes()...)
+		snapshots = append(snapshots, state.Document{SchemaVersion: SchemaVersion, Revision: candidate.ConfigVersion, Payload: payload})
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, err
@@ -63,7 +125,44 @@ func Open(path string) (*Store, error) {
 	if latest.SchemaVersion != "" {
 		store.library = latest
 	}
+	if stateDB != nil && len(snapshots) > 0 {
+		if err := stateDB.SaveSnapshots("tls_profiles", SchemaVersion, snapshots); err != nil {
+			return nil, fmt.Errorf("migrate TLS profiles to SQLite: %w", err)
+		}
+	}
 	return store, nil
+}
+
+// Older profile creation stored ALPS protocol bytes as hex strings, unlike
+// ALPN. Decode only when the decoded value is an offered ALPN protocol; this
+// leaves legitimate hex-looking protocol names untouched. Source snapshots
+// remain immutable, while the loaded template and its expected fingerprint
+// are repaired for current runtime use.
+func normalizeLegacyALPS(library *Library) error {
+	for i, template := range library.Templates {
+		template.Fields.ALPS = append([]string(nil), template.Fields.ALPS...)
+		changed := false
+		for j, protocol := range template.Fields.ALPS {
+			if slices.Contains(template.Fields.ALPN, protocol) {
+				continue
+			}
+			decoded, err := hex.DecodeString(protocol)
+			if err != nil || !slices.Contains(template.Fields.ALPN, string(decoded)) {
+				continue
+			}
+			template.Fields.ALPS[j] = string(decoded)
+			changed = true
+		}
+		if !changed {
+			continue
+		}
+		preview, err := Preview(template)
+		if err != nil {
+			return fmt.Errorf("normalize legacy ALPS in TLS profile %q: %w", template.ID, err)
+		}
+		library.Templates[i] = preview
+	}
+	return nil
 }
 
 func (s *Store) History(id string) []Template {
@@ -90,7 +189,73 @@ func (s *Store) Snapshot() Library {
 	data, _ := json.Marshal(s.library)
 	var out Library
 	_ = json.Unmarshal(data, &out)
+	for i := range out.Templates {
+		out.Templates[i].CurrentRuntimeUTLS = recorder.TLSEngineUTLSVersion
+		out.Templates[i].CompatibilityStatus = EngineCompatibility(out.Templates[i])
+	}
 	return out
+}
+
+// Replace atomically installs a validated profile library after an optimistic
+// version check. The imported config version is not reused; the local version
+// advances to preserve local CAS semantics.
+func (s *Store) Replace(library Library, expectedVersion uint64) (Library, error) {
+	if s == nil {
+		return Library{}, errors.New("библиотека TLS-профилей недоступна")
+	}
+	if library.SchemaVersion != SchemaVersion {
+		return Library{}, fmt.Errorf("неподдерживаемая схема TLS-профилей %q", library.SchemaVersion)
+	}
+	if len(library.Templates) > 100 {
+		return Library{}, errors.New("достигнут лимит 100 TLS-профилей")
+	}
+	seen := make(map[string]struct{}, len(library.Templates))
+	for _, template := range library.Templates {
+		if template.ID == "" || template.SchemaVersion != SchemaVersion {
+			return Library{}, fmt.Errorf("TLS-профиль должен иметь id и схему %q", SchemaVersion)
+		}
+		if _, exists := seen[template.ID]; exists {
+			return Library{}, fmt.Errorf("дублирующийся TLS-профиль %q", template.ID)
+		}
+		seen[template.ID] = struct{}{}
+		if err := validateTemplate(template); err != nil {
+			return Library{}, fmt.Errorf("TLS-профиль %q: %w", template.ID, err)
+		}
+	}
+	validActive := func(id string) bool {
+		for _, template := range library.Templates {
+			if template.ID == id {
+				return template.Enabled && template.Replayability.Status != "UNSUPPORTED" && compatibilityAllowsUse(template)
+			}
+		}
+		return false
+	}
+	if library.ActiveID != "" && !validActive(library.ActiveID) {
+		return Library{}, errors.New("active_id отсутствует, выключен или невоспроизводим")
+	}
+	for _, id := range library.ActiveIDs {
+		if !validActive(id) {
+			return Library{}, fmt.Errorf("active_id %q отсутствует, выключен или невоспроизводим", id)
+		}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.library.ConfigVersion != expectedVersion {
+		return Library{}, ErrVersionConflict
+	}
+	candidate := library
+	candidate.Templates = append([]Template(nil), library.Templates...)
+	candidate.ActiveIDs = append([]string(nil), library.ActiveIDs...)
+	candidate.ConfigVersion = s.library.ConfigVersion + 1
+	if err := s.append(candidate); err != nil {
+		return Library{}, err
+	}
+	s.library = candidate
+	for _, template := range candidate.Templates {
+		s.recordHistoryLocked(template)
+	}
+	return candidate, nil
 }
 
 func (s *Store) Get(id string) (Template, bool) {
@@ -109,7 +274,7 @@ func (s *Store) Get(id string) (Template, bool) {
 func (s *Store) ResolveByID(id string) (Template, uint64, bool) {
 	library := s.Snapshot()
 	for _, template := range library.Templates {
-		if template.ID != id || !template.Enabled || template.Replayability.Status == "UNSUPPORTED" {
+		if template.ID != id || !template.Enabled || template.Replayability.Status == "UNSUPPORTED" || !compatibilityAllowsUse(template) {
 			continue
 		}
 		return template, library.ConfigVersion, true
@@ -136,7 +301,7 @@ func (s *Store) ResolveWithVersion(host string) (Template, uint64, bool) {
 	bestOrder := len(activeIDs)
 	for order, activeID := range activeIDs {
 		for _, template := range library.Templates {
-			if template.ID != activeID || !template.Enabled || template.Replayability.Status == "UNSUPPORTED" {
+			if template.ID != activeID || !template.Enabled || template.Replayability.Status == "UNSUPPORTED" || !compatibilityAllowsUse(template) {
 				continue
 			}
 			score := templateHostScore(template, host)
@@ -190,6 +355,9 @@ func (s *Store) Create(template Template, expectedConfigVersion uint64) (Templat
 		template.ID = id
 		template.SchemaVersion = SchemaVersion
 		template.Version = 1
+		template.CreatedWithUTLS = recorder.TLSEngineUTLSVersion
+		template.CurrentRuntimeUTLS = recorder.TLSEngineUTLSVersion
+		template.CompatibilityStatus = CompatibilityNotValidated
 		template.CreatedAt = now
 		template.UpdatedAt = now
 		preview, err := Preview(template)
@@ -214,6 +382,11 @@ func (s *Store) Update(id string, template Template, expectedConfigVersion uint6
 		template.BasedOnVersion = previous.Version
 		template.CreatedAt = previous.CreatedAt
 		template.UpdatedAt = time.Now().UTC()
+		template.CreatedWithUTLS = previous.CreatedWithUTLS
+		template.CurrentRuntimeUTLS = recorder.TLSEngineUTLSVersion
+		template.LastValidatedWithUTLS = ""
+		template.CompatibilityStatus = CompatibilityNotValidated
+		template.LastValidatedAt = time.Time{}
 		preview, err := Preview(template)
 		if err != nil {
 			return Template{}, err
@@ -280,8 +453,8 @@ func (s *Store) Activate(id string, expectedConfigVersion uint64) (Library, erro
 		}
 		for _, template := range library.Templates {
 			if template.ID == id {
-				if !template.Enabled || template.Replayability.Status == "UNSUPPORTED" {
-					return Template{}, errors.New("профиль выключен или невоспроизводим")
+				if !template.Enabled || template.Replayability.Status == "UNSUPPORTED" || !compatibilityAllowsUse(template) {
+					return Template{}, errors.New("профиль выключен, невоспроизводим или требует проверки совместимости")
 				}
 				library.ActiveID = id
 				library.ActiveIDs = nil
@@ -312,8 +485,8 @@ func (s *Store) ActivateMany(ids []string, expectedConfigVersion uint64) (Librar
 			found := false
 			for _, template := range library.Templates {
 				if template.ID == id {
-					if !template.Enabled || template.Replayability.Status == "UNSUPPORTED" {
-						return errors.New("профиль выключен или невоспроизводим")
+					if !template.Enabled || template.Replayability.Status == "UNSUPPORTED" || !compatibilityAllowsUse(template) {
+						return errors.New("профиль выключен, невоспроизводим или требует проверки совместимости")
 					}
 					found = true
 					break
@@ -331,6 +504,40 @@ func (s *Store) ActivateMany(ids []string, expectedConfigVersion uint64) (Librar
 		}
 		return nil
 	})
+}
+
+// RecordCompatibility persists the Replay Lab result if the profile was not
+// edited while the network handshake was in progress.
+func (s *Store) RecordCompatibility(id string, profileVersion uint64, status string) (Template, Library, error) {
+	if s == nil {
+		return Template{}, Library{}, errors.New("библиотека TLS-профилей недоступна")
+	}
+	if status != CompatibilityValid && status != CompatibilityValidWithDifferences && status != CompatibilityIncompatible {
+		return Template{}, Library{}, errors.New("недопустимый результат проверки совместимости")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	index := slices.IndexFunc(s.library.Templates, func(candidate Template) bool { return candidate.ID == id })
+	if index < 0 {
+		return Template{}, s.library, os.ErrNotExist
+	}
+	if s.library.Templates[index].Version != profileVersion {
+		return Template{}, s.library, ErrVersionConflict
+	}
+	candidate := s.library
+	candidate.Templates = append([]Template(nil), s.library.Templates...)
+	updated := candidate.Templates[index]
+	updated.CompatibilityStatus = status
+	updated.CurrentRuntimeUTLS = recorder.TLSEngineUTLSVersion
+	updated.LastValidatedWithUTLS = recorder.TLSEngineUTLSVersion
+	updated.LastValidatedAt = time.Now().UTC()
+	candidate.Templates[index] = updated
+	candidate.ConfigVersion++
+	if err := s.append(candidate); err != nil {
+		return Template{}, s.library, err
+	}
+	s.library = candidate
+	return updated, candidate, nil
 }
 
 func (s *Store) mutateLibrary(expectedVersion uint64, apply func(*Library) error) (Library, error) {
@@ -394,6 +601,19 @@ func (s *Store) recordHistoryLocked(template Template) {
 }
 
 func (s *Store) append(library Library) error {
+	if s.stateDB != nil {
+		data, err := json.Marshal(library)
+		if err != nil {
+			return err
+		}
+		if len(data) > 4<<20 {
+			return errors.New("snapshot TLS-профилей превышает 4 МиБ")
+		}
+		if err := s.stateDB.SaveSnapshot("tls_profiles", SchemaVersion, library.ConfigVersion, data); err != nil {
+			return fmt.Errorf("persist TLS profiles in SQLite: %w", err)
+		}
+		return nil
+	}
 	if s.path == "" {
 		return nil
 	}

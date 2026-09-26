@@ -69,7 +69,16 @@ func buildFingerprintTimeline(observations []recorder.Observation) []fingerprint
 
 func writeFingerprintCSV(w http.ResponseWriter, observations []recorder.Observation) {
 	writer := csv.NewWriter(w)
+	writeFingerprintCSVHeader(writer)
+	writeFingerprintCSVRows(writer, observations)
+	writer.Flush()
+}
+
+func writeFingerprintCSVHeader(writer *csv.Writer) {
 	_ = writer.Write([]string{"observation_id", "captured_at", "device_id", "application", "application_id", "application_version", "destination", "ja3", "ja3_hash", "ja4", "profile_id", "profile_version", "verification_status"})
+}
+
+func writeFingerprintCSVRows(writer *csv.Writer, observations []recorder.Observation) {
 	for _, observation := range observations {
 		if observation.Fingerprints == nil {
 			continue
@@ -85,5 +94,4 @@ func writeFingerprintCSV(w http.ResponseWriter, observations []recorder.Observat
 			observation.ProfileID, strconv.FormatUint(observation.ProfileVersion, 10), verification,
 		})
 	}
-	writer.Flush()
 }

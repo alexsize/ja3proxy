@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/traffic"
 )
 
 func TestHandleTunnelingDialErrorReturnsServiceUnavailable(t *testing.T) {
@@ -162,6 +164,64 @@ func TestHandleTunnelingSuccessDialsHijacksAndConnects(t *testing.T) {
 	}
 	if call.clientConn != clientConn {
 		t.Fatalf("connect clientConn = %p, want %p", call.clientConn, clientConn)
+	}
+}
+
+func TestHandleTunnelingSessionHandlerDefersDial(t *testing.T) {
+	clientConn, clientPeer := net.Pipe()
+	defer clientConn.Close()
+	defer clientPeer.Close()
+
+	dialCalled := make(chan struct{}, 1)
+	connectCalled := make(chan net.Conn, 1)
+	proxy := NewProxy(func(network, addr string) (net.Conn, error) {
+		dialCalled <- struct{}{}
+		return nil, errors.New("dial must be deferred")
+	}, nil, nil).WithTunnelConnectRequestAndSession(func(_ TunnelRequest, destConn net.Conn, clientConn net.Conn, _ *traffic.TrafficSessionHandle) {
+		connectCalled <- destConn
+		_ = clientConn.Close()
+	})
+
+	rec := &hijackResponseRecorder{ResponseRecorder: httptest.NewRecorder(), conn: clientConn}
+	req := httptest.NewRequest(http.MethodConnect, "http://example.com:443", nil)
+	req.Host = "example.com:443"
+	go proxy.ServeHTTP(rec, req)
+
+	response := make([]byte, len(connectEstablishedResponse))
+	if _, err := io.ReadFull(clientPeer, response); err != nil {
+		t.Fatalf("read CONNECT response: %v", err)
+	}
+	select {
+	case destConn := <-connectCalled:
+		if destConn != nil {
+			t.Fatal("session handler received a pre-opened destination")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for deferred connect handler")
+	}
+	select {
+	case <-dialCalled:
+		t.Fatal("destination was dialed before session handler")
+	default:
+	}
+}
+
+func TestHandleTunnelingRouteBlockRejectsBeforeDial(t *testing.T) {
+	dialCalled := false
+	proxy := NewProxy(func(network, addr string) (net.Conn, error) {
+		dialCalled = true
+		return nil, errors.New("dial must not run")
+	}, nil, nil).WithTunnelBlockRequest(func(TunnelRequest) bool { return true })
+	req := httptest.NewRequest(http.MethodConnect, "http://blocked.example.com:443", nil)
+	req.Host = "blocked.example.com:443"
+	rec := httptest.NewRecorder()
+
+	proxy.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("route block status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+	if dialCalled {
+		t.Fatal("route block dialed destination")
 	}
 }
 

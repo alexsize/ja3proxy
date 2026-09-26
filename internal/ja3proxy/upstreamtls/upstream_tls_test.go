@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/state"
 )
 
 func TestLoadUpstreamTLSConfigFile(t *testing.T) {
@@ -123,6 +125,75 @@ func TestUpstreamTLSStoreVersionsAreImmutableSnapshots(t *testing.T) {
 	got, nextVersion, ok := store.GetWithVersion("api.example.com")
 	if !ok || nextVersion != 2 || got.Client != "Safari" || got.Version != "17.0" {
 		t.Fatalf("updated snapshot = %+v, version=%d, ok=%v; want Safari 17.0, version 2", got, nextVersion, ok)
+	}
+}
+
+func TestUpstreamTLSStoreRestoresAndPersistsSQLiteSnapshot(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "control.db")
+	database, err := state.OpenSQLite(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &UpstreamTLSProfileStore{}
+	if err := store.RestoreWithState("", database); err != nil {
+		t.Fatal(err)
+	}
+	config := UpstreamTLSConfig{Default: UpstreamTLSProfile{Protocol: "utls", Client: "Chrome", Version: "120"}}
+	if err := store.SetValidated(config); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	database, err = state.OpenSQLite(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	restored := &UpstreamTLSProfileStore{}
+	if err := restored.RestoreWithState("", database); err != nil {
+		t.Fatal(err)
+	}
+	got, version, found := restored.Snapshot()
+	if !found || version != 1 || got.Default != config.Default {
+		t.Fatalf("restored upstream TLS snapshot = %+v, version %d, found %v", got, version, found)
+	}
+}
+
+func TestRestoreWithStateImportsLegacyUpstreamTLSFileOnce(t *testing.T) {
+	dir := t.TempDir()
+	legacyPath := filepath.Join(dir, "upstream-tls.json")
+	databasePath := filepath.Join(dir, "state.db")
+	legacy := []byte(`{"default":{"protocol":"utls","client":"Chrome","version":"120"},"routes":[{"host":"*.legacy.example","protocol":"utls","client":"Firefox","version":"105"}]}`)
+	if err := os.WriteFile(legacyPath, legacy, 0600); err != nil {
+		t.Fatal(err)
+	}
+	database, err := state.OpenSQLite(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &UpstreamTLSProfileStore{}
+	if err := store.RestoreWithState(legacyPath, database); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyPath, []byte("invalid"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	database, err = state.OpenSQLite(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	restored := &UpstreamTLSProfileStore{}
+	if err := restored.RestoreWithState(legacyPath, database); err != nil {
+		t.Fatalf("SQLite snapshot should be primary after import: %v", err)
+	}
+	config, revision, found := restored.Snapshot()
+	if !found || revision != 1 || config.Default.Client != "Chrome" || len(config.Routes) != 1 || config.Routes[0].Client != "Firefox" {
+		t.Fatalf("restored imported upstream TLS config = %+v, revision=%d, found=%v", config, revision, found)
 	}
 }
 

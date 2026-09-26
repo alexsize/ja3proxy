@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/logutil"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/state"
 	utls "github.com/refraction-networking/utls"
 )
 
@@ -20,9 +21,13 @@ type TLSFingerprint struct {
 }
 
 type TLSFingerprintStore struct {
-	mu      sync.RWMutex
-	current *TLSFingerprint
+	mu            sync.RWMutex
+	current       *TLSFingerprint
+	stateDB       *state.SQLiteStore
+	stateRevision uint64
 }
+
+const stateSchemaVersion = "tls-fingerprint/1"
 
 func (s *TLSFingerprintStore) Get() (TLSFingerprint, bool) {
 	s.mu.RLock()
@@ -71,8 +76,58 @@ func (s *TLSFingerprintStore) SetValidated(fingerprint TLSFingerprint) error {
 		return err
 	}
 
-	s.Set(fingerprint)
+	fingerprint = normalizeTLSFingerprint(fingerprint)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.stateDB != nil {
+		payload, err := json.Marshal(fingerprint)
+		if err != nil {
+			return fmt.Errorf("encode TLS fingerprint state: %w", err)
+		}
+		revision := s.stateRevision + 1
+		if err := s.stateDB.Save("tls_fingerprint", stateSchemaVersion, revision, payload); err != nil {
+			return fmt.Errorf("persist TLS fingerprint in SQLite: %w", err)
+		}
+		s.stateRevision = revision
+	}
+	s.current = &fingerprint
 	return nil
+}
+
+// BindState makes the SQLite snapshot the default source for the global TLS
+// fingerprint. An explicitly configured file or CLI value may still override it.
+func (s *TLSFingerprintStore) BindState(stateDB *state.SQLiteStore) (bool, error) {
+	if s == nil {
+		return false, fmt.Errorf("TLS fingerprint store is unavailable")
+	}
+	if stateDB == nil {
+		return false, nil
+	}
+	document, found, err := stateDB.Load("tls_fingerprint")
+	if err != nil {
+		return false, err
+	}
+	var fingerprint TLSFingerprint
+	if found {
+		if document.SchemaVersion != stateSchemaVersion {
+			return false, fmt.Errorf("unsupported sqlite TLS fingerprint schema %q", document.SchemaVersion)
+		}
+		if err := json.Unmarshal(document.Payload, &fingerprint); err != nil {
+			return false, fmt.Errorf("decode sqlite TLS fingerprint: %w", err)
+		}
+		if err := validateTLSFingerprint(fingerprint); err != nil {
+			return false, fmt.Errorf("validate sqlite TLS fingerprint: %w", err)
+		}
+		fingerprint = normalizeTLSFingerprint(fingerprint)
+	}
+	s.mu.Lock()
+	s.stateDB = stateDB
+	if found {
+		s.current = &fingerprint
+		s.stateRevision = document.Revision
+	}
+	s.mu.Unlock()
+	return found, nil
 }
 
 func (s *TLSFingerprintStore) Reset() {

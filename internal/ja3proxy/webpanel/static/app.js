@@ -4,13 +4,14 @@ const elements = Object.fromEntries([
   "total-download", "uptime", "sessions", "events", "error-toast",
   "config-form", "tls-fingerprint", "proxy-protocol-choice", "traffic-page", "settings-page",
   "upstream-choice", "upstream-field", "upstream-input", "config-note", "proxy-port",
-  "proxy-auth-choice", "proxy-username-field", "proxy-username", "proxy-password-field", "proxy-password"
+  "proxy-auth-choice", "proxy-username-field", "proxy-username", "proxy-password-field", "proxy-password", "mitm-ca-validity", "panel-cert-validity"
 ].map(id => [id, document.getElementById(id)]));
 
 let previous = null;
 let filter = "all";
 let configInitialized = false;
 let configuredProxyAuthEnabled = false;
+let runtimeConfigVersion = 0;
 let lastEventsSignature = "";
 let lastRouteSignature = "";
 let refreshPromise = null;
@@ -156,7 +157,8 @@ function setSelectOptions(select, options, selected) {
 }
 
 function syncConfig(runtime, force = false) {
-  if (configInitialized && !force) return;
+	runtimeConfigVersion = Number(runtime.configVersion) || 0;
+	if (configInitialized && !force) return;
 
   const currentFingerprint = `${runtime.tlsClient || "Golang"}@${runtime.tlsVersion || "0"}`;
   const fingerprints = [...new Set([currentFingerprint, ...(runtime.tlsFingerprints || [])])];
@@ -188,6 +190,18 @@ function syncConfig(runtime, force = false) {
 function render(data) {
   const traffic = data.traffic;
   const runtime = data.runtime;
+  const caStatus = runtime.mitmCaCertificateStatus || "UNAVAILABLE";
+  const caLabels = { VALID: "Действителен", EXPIRING: "Скоро истекает", EXPIRED: "Истёк", NOT_YET_VALID: "Ещё не действует", UNAVAILABLE: "Не загружен" };
+  const expiresAt = runtime.mitmCaCertificateNotAfter ? new Date(runtime.mitmCaCertificateNotAfter).toLocaleString() : "срок не определён";
+  const remaining = runtime.mitmCaCertificateDaysRemaining;
+  elements["mitm-ca-validity"].textContent = `${caLabels[caStatus] || caStatus} · до ${expiresAt}${remaining === undefined ? "" : ` · ${remaining} дн.`}`;
+  elements["mitm-ca-validity"].className = ["EXPIRED", "EXPIRING", "NOT_YET_VALID"].includes(caStatus) ? "ca-validity-warning" : "ca-validity";
+  const panelStatus = runtime.panelCertificateStatus || "UNAVAILABLE";
+  const panelLabels = { VALID: "Действителен", EXPIRING: "Скоро истекает", EXPIRED: "Истёк", NOT_YET_VALID: "Ещё не действует", UNAVAILABLE: "Не настроен или не прочитан" };
+  const panelExpiresAt = runtime.panelCertificateNotAfter ? new Date(runtime.panelCertificateNotAfter).toLocaleString() : "срок не определён";
+  const panelRemaining = runtime.panelCertificateDaysRemaining;
+  elements["panel-cert-validity"].textContent = `${panelLabels[panelStatus] || panelStatus} · до ${panelExpiresAt}${panelRemaining === undefined ? "" : ` · ${panelRemaining} дн.`}`;
+  elements["panel-cert-validity"].className = ["EXPIRED", "EXPIRING", "NOT_YET_VALID"].includes(panelStatus) ? "ca-validity-warning" : "ca-validity";
   const now = new Date(traffic.capturedAt);
   let uploadRate = 0;
   let downloadRate = 0;
@@ -213,7 +227,7 @@ function render(data) {
 
 async function refreshState() {
   try {
-    const response = await fetch("/api/state", { cache: "no-store" });
+    const response = await ja3proxyFetch("/api/state", { cache: "no-store" });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     render(await response.json());
     elements.connection.className = "connection live";
@@ -292,6 +306,7 @@ elements["config-form"].addEventListener("submit", async event => {
   event.preventDefault();
   const submit = event.submitter;
   const payload = {};
+  payload.expected_version = runtimeConfigVersion;
   const proxyPort = Number(elements["proxy-port"].value);
   if (!Number.isInteger(proxyPort) || proxyPort < 1 || proxyPort > 65535) {
     elements["config-note"].textContent = "Введите порт прокси от 1 до 65535.";
@@ -347,7 +362,7 @@ elements["config-form"].addEventListener("submit", async event => {
   elements["config-note"].className = "config-note";
   elements["config-note"].textContent = "Применение…";
   try {
-    const response = await fetch("/api/config", {
+    const response = await ja3proxyFetch("/api/config", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)

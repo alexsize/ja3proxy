@@ -20,6 +20,7 @@
     </nav>
     <a href="/recorder.html">Регистратор TLS</a>
     <a href="/profiles.html">TLS-профили и JA4</a>
+    <a href="/replay-lab.html">Replay Lab</a>
     <span class="connection" id="connection"><i></i>Подключение</span>
   </header>
 
@@ -83,6 +84,14 @@
         <h1>Настройка маршрута</h1>
         <span>Сохранённые изменения применяются к новым соединениям. Открытые туннели продолжают работать по прежнему маршруту.</span>
       </header>
+      <section class="setting-group" aria-labelledby="ca-validity-heading">
+        <header class="setting-heading"><span>CA</span><strong id="ca-validity-heading">Срок действия MITM CA</strong><small>Состояние корневого сертификата, используемого для TLS-перехвата.</small></header>
+        <p id="mitm-ca-validity" role="status">Проверка сертификата…</p>
+      </section>
+      <section class="setting-group" aria-labelledby="panel-cert-validity-heading">
+        <header class="setting-heading"><span>TLS</span><strong id="panel-cert-validity-heading">Срок действия сертификата панели</strong><small>Срок действия HTTPS-сертификата веб-панели.</small></header>
+        <p id="panel-cert-validity" role="status">Проверка сертификата…</p>
+      </section>
 
       <form id="config-form" class="settings-form">
         <section class="setting-group" aria-labelledby="listener-settings">
@@ -161,6 +170,7 @@
   </main>
 
   <div class="error-toast" id="error-toast" role="status" aria-live="polite"><strong>Связь с панелью потеряна</strong><span>Повторное подключение…</span></div>
+  <script src="/auth.js" defer></script>
   <script src="/app.js" defer></script>
 </body>
 </html>

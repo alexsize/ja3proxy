@@ -12,20 +12,24 @@ import (
 
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/capture/tlshello"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/fingerprint"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/recorder"
 	utls "github.com/refraction-networking/utls"
 )
 
 type Materialized struct {
-	Spec          *utls.ClientHelloSpec
-	Raw           []byte
-	Hello         *tlshello.Hello
-	Expected      Expected
-	Replayability Replayability
+	Spec             *utls.ClientHelloSpec
+	RandomizedID     *utls.ClientHelloID
+	Raw              []byte
+	Hello            *tlshello.Hello
+	Expected         Expected
+	Replayability    Replayability
+	RuntimeMutations []recorder.RuntimeMutation
 }
 
 func TemplateFromPreset(name string, presetClient string, presetVersion string) (Template, error) {
 	template := Template{
 		SchemaVersion: SchemaVersion,
+		ProfileType:   ProfileTypePreset,
 		Name:          name,
 		Enabled:       true,
 		BasePreset:    fingerprint.TLSFingerprint{Client: presetClient, Version: presetVersion},
@@ -39,11 +43,50 @@ func TemplateFromPreset(name string, presetClient string, presetVersion string) 
 	if err != nil {
 		return Template{}, err
 	}
+	// uTLS may emit an empty ALPS extension in a preset, while the template
+	// materializer omits it when there are no ALPS protocols. Store the fields
+	// that the template can actually reproduce, including extension order.
+	if len(fields.ALPS) == 0 {
+		fields.ExtensionOrder = slices.DeleteFunc(fields.ExtensionOrder, func(id uint16) bool {
+			return id == 17513 || id == 17613
+		})
+	}
 	template.Fields = fields
 	return Preview(template)
 }
 
+// TemplateFromRandomized creates a uTLS profile generated anew for each connection.
+func TemplateFromRandomized(name, alpnMode string) (Template, error) {
+	if alpnMode == "" {
+		alpnMode = RandomizedALPNAuto
+	}
+	return Preview(Template{
+		SchemaVersion:  SchemaVersion,
+		ProfileType:    ProfileTypeRandomized,
+		RandomizedALPN: alpnMode,
+		Name:           name,
+		Enabled:        true,
+	})
+}
+
 func Preview(template Template) (Template, error) {
+	if template.ProfileType == "" {
+		template.ProfileType = ProfileTypeCustom
+	}
+	if template.ProfileMode == "" {
+		template.ProfileMode = ProfileModeAdaptive
+	}
+	if template.ProfileType == ProfileTypeRandomized && template.RandomizedALPN == "" {
+		template.RandomizedALPN = RandomizedALPNAuto
+	}
+	if template.ProfileType == ProfileTypeRandomized {
+		template.BasePreset = fingerprint.TLSFingerprint{}
+		template.Fields = StaticFields{}
+		template.Policy = MatchPolicy{}
+		template.SourceObservationID = ""
+		template.Source = nil
+		template.Expected = nil
+	}
 	if template.Policy.MustMatch == nil {
 		template.Policy = DefaultMatchPolicy()
 	}
@@ -63,6 +106,14 @@ func Preview(template Template) (Template, error) {
 		template.Expected = nil
 		return template, nil
 	}
+	if materialized.RandomizedID != nil {
+		template.Expected = nil
+		template.Replayability = Replayability{
+			Status:   "NON_DETERMINISTIC",
+			Warnings: []string{"ClientHello генерируется заново для каждого соединения; фактические JA3/JA4 доступны только в записи исходящего ClientHello"},
+		}
+		return template, nil
+	}
 	template.Replayability = assessObservedSource(template, materialized.Expected)
 	template.Expected = &materialized.Expected
 	return template, nil
@@ -71,6 +122,28 @@ func Preview(template Template) (Template, error) {
 func Materialize(template Template, serverName string) (Materialized, error) {
 	if err := validateTemplate(template); err != nil {
 		return Materialized{}, err
+	}
+	if template.ProfileType == ProfileTypeRandomized {
+		var helloID utls.ClientHelloID
+		switch template.RandomizedALPN {
+		case "", RandomizedALPNAuto:
+			helloID = utls.HelloRandomized
+		case RandomizedALPNRequired:
+			helloID = utls.HelloRandomizedALPN
+		case RandomizedALPNDisabled:
+			helloID = utls.HelloRandomizedNoALPN
+		default:
+			return Materialized{}, fmt.Errorf("неподдерживаемый randomized_alpn %q", template.RandomizedALPN)
+		}
+		// Keep uTLS from drawing the hybrid ML-KEM group that this dependency
+		// version cannot use as its first local key exchange.
+		weights := utls.DefaultWeights
+		weights.CurveIDs_Append_X25519 = 0
+		helloID.Weights = &weights
+		return Materialized{RandomizedID: &helloID, Replayability: Replayability{
+			Status:   "NON_DETERMINISTIC",
+			Warnings: []string{"фактический отпечаток зависит от генерации ClientHello при подключении"},
+		}}, nil
 	}
 	effective := template
 	alpn, err := effectiveALPN(template, nil)
@@ -100,6 +173,10 @@ func Materialize(template Template, serverName string) (Materialized, error) {
 	if err != nil {
 		return Materialized{}, fmt.Errorf("разбор materialized ClientHello: %w", err)
 	}
+	mutations, err := auditMaterializedFields(effective, hello)
+	if err != nil {
+		return Materialized{}, err
+	}
 	record := make([]byte, 5+len(raw))
 	record[0] = 22
 	binary.BigEndian.PutUint16(record[1:3], hello.LegacyVersion)
@@ -127,7 +204,7 @@ func Materialize(template Template, serverName string) (Materialized, error) {
 		return Materialized{}, err
 	}
 	warnings := []string{"random, session ID, GREASE и key shares создаются uTLS динамически"}
-	return Materialized{Spec: &replaySpec, Raw: raw, Hello: hello, Expected: expected, Replayability: Replayability{Status: "REPLAYABLE_WITH_DYNAMIC_FIELDS", Warnings: warnings}}, nil
+	return Materialized{Spec: &replaySpec, Raw: raw, Hello: hello, Expected: expected, Replayability: Replayability{Status: "REPLAYABLE_WITH_DYNAMIC_FIELDS", Warnings: warnings}, RuntimeMutations: mutations}, nil
 }
 
 func buildTemplateSpec(template Template, serverName string) (utls.ClientHelloSpec, error) {
@@ -167,6 +244,14 @@ func buildTemplateSpec(template Template, serverName string) (utls.ClientHelloSp
 			continue
 		}
 		applyEditableFields(extension, template.Fields)
+		if padding, ok := extension.(*utls.UtlsPaddingExtension); ok && template.Fields.PaddingLength > 0 {
+			// uTLS otherwise recalculates BoringSSL padding from random session
+			// fields. A compiled profile must retain the observed padding
+			// presence, length and position across preview and wire replay.
+			padding.PaddingLen = template.Fields.PaddingLength
+			padding.WillPad = true
+			padding.GetPaddingLen = nil
+		}
 		ordered = append(ordered, extension)
 	}
 	if len(unsupported) > 0 {

@@ -7,31 +7,48 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/capture/tlshello"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/fingerprint"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/recorder"
 )
 
 const (
-	SchemaVersion          = "tls-profile-template/1"
-	MaterializerVersion    = "utls-template-materializer/1"
-	VerificationVersion    = "tls-profile-verification/1"
-	GREASEPlaceholder      = uint16(0x0a0a)
-	DefaultTemplateLogPath = "profiles/tls-templates.jsonl"
-	ALPNPolicyProfile      = "PROFILE"
-	ALPNPolicyDownstream   = "DOWNSTREAM"
-	ALPNPolicyIntersection = "INTERSECTION"
-	ALPNPolicyCustom       = "CUSTOM"
-	ALPSPolicyProfile      = "PROFILE"
-	ALPSPolicyDownstream   = "DOWNSTREAM"
-	ALPSPolicyIntersection = "INTERSECTION"
-	ALPSPolicyCustom       = "CUSTOM"
+	SchemaVersion                     = "tls-profile-template/1"
+	MaterializerVersion               = "utls-template-materializer/1"
+	VerificationVersion               = "tls-profile-verification/1"
+	GREASEPlaceholder                 = uint16(0x0a0a)
+	DefaultTemplateLogPath            = "profiles/tls-templates.jsonl"
+	ALPNPolicyProfile                 = "PROFILE"
+	ALPNPolicyDownstream              = "DOWNSTREAM"
+	ALPNPolicyIntersection            = "INTERSECTION"
+	ALPNPolicyCustom                  = "CUSTOM"
+	ALPSPolicyProfile                 = "PROFILE"
+	ALPSPolicyDownstream              = "DOWNSTREAM"
+	ALPSPolicyIntersection            = "INTERSECTION"
+	ALPSPolicyCustom                  = "CUSTOM"
+	ProfileTypePreset                 = "PRESET"
+	ProfileTypeObserved               = "OBSERVED"
+	ProfileTypeCustom                 = "CUSTOM"
+	ProfileTypeRandomized             = "RANDOMIZED"
+	RandomizedALPNAuto                = "AUTO"
+	RandomizedALPNRequired            = "REQUIRED"
+	RandomizedALPNDisabled            = "DISABLED"
+	CompatibilityValid                = "VALID"
+	CompatibilityValidWithDifferences = "VALID_WITH_DIFFERENCES"
+	CompatibilityIncompatible         = "INCOMPATIBLE"
+	CompatibilityNotValidated         = "NOT_VALIDATED"
+	CompatibilityRevalidationRequired = "PROFILE_REVALIDATION_REQUIRED"
+	ProfileModeStrict                 = "STRICT"
+	ProfileModeAdaptive               = "ADAPTIVE"
 )
 
 var ErrVersionConflict = errors.New("tls profile configuration version conflict")
+var ErrProtocolConflict = errors.New("PROFILE_PROTOCOL_CONFLICT")
 
 type StaticFields struct {
 	CipherSuites        []uint16 `json:"cipher_suites"`
@@ -42,6 +59,7 @@ type StaticFields struct {
 	ALPS                []string `json:"alps,omitempty"`
 	ALPSPolicy          string   `json:"alps_policy,omitempty"`
 	CustomALPS          []string `json:"custom_alps,omitempty"`
+	PaddingLength       int      `json:"padding_length,omitempty"`
 	SupportedVersions   []uint16 `json:"supported_versions"`
 	SupportedGroups     []uint16 `json:"supported_groups"`
 	SignatureAlgorithms []uint16 `json:"signature_algorithms"`
@@ -99,22 +117,59 @@ type ObservedSource struct {
 }
 
 type Template struct {
-	SchemaVersion       string                     `json:"schema_version"`
-	ID                  string                     `json:"id"`
-	Name                string                     `json:"name"`
-	Version             uint64                     `json:"version"`
-	BasedOnVersion      uint64                     `json:"based_on_version,omitempty"`
-	Enabled             bool                       `json:"enabled"`
-	HostPatterns        []string                   `json:"host_patterns"`
-	BasePreset          fingerprint.TLSFingerprint `json:"base_preset"`
-	Fields              StaticFields               `json:"fields"`
-	Policy              MatchPolicy                `json:"policy"`
-	SourceObservationID string                     `json:"source_observation_id,omitempty"`
-	Source              *ObservedSource            `json:"source,omitempty"`
-	Expected            *Expected                  `json:"expected,omitempty"`
-	Replayability       Replayability              `json:"replayability"`
-	CreatedAt           time.Time                  `json:"created_at"`
-	UpdatedAt           time.Time                  `json:"updated_at"`
+	SchemaVersion         string                     `json:"schema_version"`
+	ProfileType           string                     `json:"profile_type,omitempty"`
+	ProfileMode           string                     `json:"profile_mode,omitempty"`
+	RandomizedALPN        string                     `json:"randomized_alpn,omitempty"`
+	ID                    string                     `json:"id"`
+	Name                  string                     `json:"name"`
+	FamilyID              string                     `json:"family_id,omitempty"`
+	Version               uint64                     `json:"version"`
+	BasedOnVersion        uint64                     `json:"based_on_version,omitempty"`
+	Enabled               bool                       `json:"enabled"`
+	HostPatterns          []string                   `json:"host_patterns"`
+	BasePreset            fingerprint.TLSFingerprint `json:"base_preset"`
+	Fields                StaticFields               `json:"fields"`
+	Policy                MatchPolicy                `json:"policy"`
+	SourceObservationID   string                     `json:"source_observation_id,omitempty"`
+	Source                *ObservedSource            `json:"source,omitempty"`
+	Expected              *Expected                  `json:"expected,omitempty"`
+	Replayability         Replayability              `json:"replayability"`
+	CreatedWithUTLS       string                     `json:"created_with_utls,omitempty"`
+	CurrentRuntimeUTLS    string                     `json:"current_runtime_utls,omitempty"`
+	LastValidatedWithUTLS string                     `json:"last_validated_with_utls,omitempty"`
+	CompatibilityStatus   string                     `json:"compatibility_status,omitempty"`
+	LastValidatedAt       time.Time                  `json:"last_validated_at,omitempty"`
+	CreatedAt             time.Time                  `json:"created_at"`
+	UpdatedAt             time.Time                  `json:"updated_at"`
+}
+
+// EngineCompatibility returns the current compatibility state without mutating
+// a persisted profile. The last validated engine is the comparison baseline
+// after a successful replay; before the first replay, creation engine is used.
+func EngineCompatibility(template Template) string {
+	baseline := template.LastValidatedWithUTLS
+	if baseline == "" {
+		baseline = template.CreatedWithUTLS
+	}
+	if baseline == "" {
+		return CompatibilityNotValidated
+	}
+	if baseline != recorder.TLSEngineUTLSVersion {
+		return CompatibilityRevalidationRequired
+	}
+	if template.CompatibilityStatus == CompatibilityIncompatible || template.CompatibilityStatus == CompatibilityValid || template.CompatibilityStatus == CompatibilityValidWithDifferences {
+		return template.CompatibilityStatus
+	}
+	return CompatibilityNotValidated
+}
+
+func compatibilityAllowsUse(template Template) bool {
+	status := EngineCompatibility(template)
+	if template.CreatedWithUTLS == "" && template.LastValidatedWithUTLS == "" {
+		return false
+	}
+	return status != CompatibilityRevalidationRequired && status != CompatibilityIncompatible
 }
 
 type Library struct {
@@ -137,6 +192,14 @@ func FieldsFromHello(h *tlshello.Hello) (StaticFields, error) {
 		}
 		alpn = append(alpn, string(decoded))
 	}
+	alps := make([]string, 0, len(h.ALPS))
+	for _, value := range h.ALPS {
+		decoded, err := hex.DecodeString(value)
+		if err != nil {
+			return StaticFields{}, fmt.Errorf("некорректный ALPS: %w", err)
+		}
+		alps = append(alps, string(decoded))
+	}
 	extensions := make([]uint16, len(h.Extensions))
 	for i, extension := range h.Extensions {
 		extensions[i] = normalizeGREASE(extension.ID)
@@ -158,29 +221,136 @@ func FieldsFromHello(h *tlshello.Hello) (StaticFields, error) {
 		ExtensionOrder:      extensions,
 		ALPN:                alpn,
 		ALPNPolicy:          ALPNPolicyIntersection,
-		ALPS:                append([]string(nil), h.ALPS...),
+		ALPS:                alps,
 		ALPSPolicy:          ALPSPolicyIntersection,
+		PaddingLength:       paddingLength(h),
 		SupportedVersions:   versions,
 		SupportedGroups:     groups,
 		SignatureAlgorithms: append([]uint16(nil), h.SignatureAlgorithms...),
 	}, nil
 }
 
+func paddingLength(h *tlshello.Hello) int {
+	if h == nil {
+		return 0
+	}
+	for _, extension := range h.Extensions {
+		if extension.ID == 21 {
+			return extension.Length
+		}
+	}
+	return 0
+}
+
 // ConstrainALPN returns a connection-specific copy of a template according to
 // its explicit ALPN policy. An empty policy keeps the historical intersection
 // behavior for profiles created before policy support was added.
 func ConstrainALPN(template Template, offered []string) (Template, error) {
+	effective, _, err := ConstrainALPNAudited(template, offered)
+	return effective, err
+}
+
+// ConstrainALPNAudited creates a connection-specific template and describes
+// every ALPN/ALPS change required to make it compatible with the downstream.
+func ConstrainALPNAudited(template Template, offered []string) (Template, []recorder.RuntimeMutation, error) {
+	mode := strings.ToUpper(strings.TrimSpace(template.ProfileMode))
+	if mode == "" {
+		mode = ProfileModeAdaptive // Preserve behavior of templates predating profile_mode.
+	}
 	alpn, err := effectiveALPN(template, offered)
 	if err != nil {
-		return Template{}, err
+		if mode == ProfileModeStrict {
+			return Template{}, nil, fmt.Errorf("%w: %v", ErrProtocolConflict, err)
+		}
+		return Template{}, nil, err
 	}
 	alps, err := effectiveALPS(template, offered, alpn)
 	if err != nil {
-		return Template{}, err
+		if mode == ProfileModeStrict {
+			return Template{}, nil, fmt.Errorf("%w: %v", ErrProtocolConflict, err)
+		}
+		return Template{}, nil, err
+	}
+	if mode != ProfileModeStrict && mode != ProfileModeAdaptive {
+		return Template{}, nil, fmt.Errorf("unsupported profile_mode %q", template.ProfileMode)
+	}
+	if mode == ProfileModeStrict {
+		for _, protocol := range template.Fields.ALPN {
+			if !slices.Contains(offered, protocol) {
+				return Template{}, nil, fmt.Errorf("%w: downstream не поддерживает ALPN %q из профиля", ErrProtocolConflict, protocol)
+			}
+		}
+	}
+	mutations := []recorder.RuntimeMutation{}
+	if !reflect.DeepEqual(template.Fields.ALPN, alpn) {
+		if mode == ProfileModeStrict {
+			return Template{}, nil, fmt.Errorf("%w: ALPN профиля несовместим с downstream", ErrProtocolConflict)
+		}
+		mutations = append(mutations, recorder.RuntimeMutation{Type: "PROFILE_RUNTIME_MUTATION", Field: "ALPN", Before: append([]string{}, template.Fields.ALPN...), After: append([]string{}, alpn...), Reason: "downstream protocol compatibility"})
+	}
+	if !reflect.DeepEqual(template.Fields.ALPS, alps) {
+		if mode == ProfileModeStrict {
+			return Template{}, nil, fmt.Errorf("%w: ALPS профиля несовместим с ALPN/downstream", ErrProtocolConflict)
+		}
+		mutations = append(mutations, recorder.RuntimeMutation{Type: "PROFILE_RUNTIME_MUTATION", Field: "ALPS", Before: append([]string{}, template.Fields.ALPS...), After: append([]string{}, alps...), Reason: "downstream protocol compatibility"})
 	}
 	template.Fields.ALPN = alpn
 	template.Fields.ALPS = alps
-	return template, nil
+	return template, mutations, nil
+}
+
+// auditMaterializedFields compares the requested static fields with the
+// ClientHello actually assembled by uTLS. Dynamic bytes such as random,
+// key shares and GREASE values are excluded by FieldsFromHello.
+func auditMaterializedFields(template Template, hello *tlshello.Hello) ([]recorder.RuntimeMutation, error) {
+	actual, err := FieldsFromHello(hello)
+	if err != nil {
+		return nil, err
+	}
+	mutations := []recorder.RuntimeMutation{}
+	compare := func(field string, before, after []string) error {
+		if slices.Equal(before, after) {
+			return nil
+		}
+		if template.ProfileMode == ProfileModeStrict {
+			return fmt.Errorf("%w: uTLS изменил поле %s при сборке ClientHello", ErrProtocolConflict, field)
+		}
+		mutations = append(mutations, recorder.RuntimeMutation{
+			Type: "PROFILE_RUNTIME_MUTATION", Field: field,
+			Before: append([]string{}, before...), After: append([]string{}, after...),
+			Reason: "uTLS materialization",
+		})
+		return nil
+	}
+	uint16Strings := func(values []uint16) []string {
+		out := make([]string, len(values))
+		for i, value := range values {
+			out[i] = strconv.FormatUint(uint64(value), 10)
+		}
+		return out
+	}
+	for _, field := range []struct {
+		name          string
+		before, after []string
+	}{
+		{"CIPHER_SUITES", uint16Strings(template.Fields.CipherSuites), uint16Strings(actual.CipherSuites)},
+		{"EXTENSIONS", uint16Strings(template.Fields.ExtensionOrder), uint16Strings(actual.ExtensionOrder)},
+		{"ALPN", template.Fields.ALPN, actual.ALPN},
+		{"ALPS", template.Fields.ALPS, actual.ALPS},
+		{"SUPPORTED_VERSIONS", uint16Strings(template.Fields.SupportedVersions), uint16Strings(actual.SupportedVersions)},
+		{"SUPPORTED_GROUPS", uint16Strings(template.Fields.SupportedGroups), uint16Strings(actual.SupportedGroups)},
+		{"SIGNATURE_ALGORITHMS", uint16Strings(template.Fields.SignatureAlgorithms), uint16Strings(actual.SignatureAlgorithms)},
+	} {
+		if err := compare(field.name, field.before, field.after); err != nil {
+			return nil, err
+		}
+	}
+	if template.Fields.PaddingLength > 0 {
+		if err := compare("PADDING", []string{strconv.Itoa(template.Fields.PaddingLength)}, []string{strconv.Itoa(actual.PaddingLength)}); err != nil {
+			return nil, err
+		}
+	}
+	return mutations, nil
 }
 
 func effectiveALPN(template Template, offered []string) ([]string, error) {
@@ -300,6 +470,51 @@ func validateTemplate(template Template) error {
 	}
 	if len(template.Name) > 128 {
 		return errors.New("имя профиля длиннее 128 символов")
+	}
+	if template.FamilyID != strings.TrimSpace(template.FamilyID) || len(template.FamilyID) > 64 {
+		return errors.New("family_id должен быть без пробелов по краям и не длиннее 64 символов")
+	}
+	for _, character := range template.FamilyID {
+		if !(character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || strings.ContainsRune("._:-", character)) {
+			return errors.New("family_id допускает только латинские буквы, цифры, точку, дефис, двоеточие и подчёркивание")
+		}
+	}
+	if template.ProfileType == "" {
+		template.ProfileType = ProfileTypeCustom
+	}
+	if template.ProfileMode == "" {
+		template.ProfileMode = ProfileModeAdaptive
+	}
+	switch template.ProfileMode {
+	case ProfileModeStrict, ProfileModeAdaptive:
+	default:
+		return fmt.Errorf("неподдерживаемый profile_mode %q", template.ProfileMode)
+	}
+	switch template.ProfileType {
+	case ProfileTypePreset, ProfileTypeObserved, ProfileTypeCustom:
+	case ProfileTypeRandomized:
+		if template.ProfileMode == ProfileModeStrict {
+			return fmt.Errorf("%w: STRICT недоступен для RANDOMIZED ClientHello с непредсказуемыми extensions", ErrProtocolConflict)
+		}
+		if template.RandomizedALPN == "" {
+			template.RandomizedALPN = RandomizedALPNAuto
+		}
+		switch template.RandomizedALPN {
+		case RandomizedALPNAuto, RandomizedALPNRequired, RandomizedALPNDisabled:
+		default:
+			return fmt.Errorf("неподдерживаемый randomized_alpn %q", template.RandomizedALPN)
+		}
+		if len(template.HostPatterns) > 64 {
+			return errors.New("слишком много host patterns")
+		}
+		for _, pattern := range template.HostPatterns {
+			if err := validateHostPattern(pattern); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("неподдерживаемый profile_type %q", template.ProfileType)
 	}
 	if err := fingerprint.ValidateTLSFingerprint(template.BasePreset); err != nil {
 		return fmt.Errorf("базовый пресет: %w", err)

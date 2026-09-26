@@ -3,6 +3,7 @@
 Нормативное техническое задание:
 
 - [Полное ТЗ на TLS Recorder и центр управления, версия 3](JA3Proxy_Fingerprint_Recorder_TZ_v3.md)
+- [Единый приоритетный backlog реализации](JA3Proxy_Fingerprint_Recorder_TZ_v3.md#10-дополнение-единый-приоритетный-backlog-реализации)
 - [Основное ТЗ версии 2 — историческая основа](JA3Proxy_Fingerprint_Recorder_TZ_v2.md)
 - [Нормативное приложение A — архитектура и профили uTLS](JA3Proxy_uTLS_TZ_Additions.md)
 - [Текущее состояние recorder, ограничения и проверки](RECORDER_IMPLEMENTATION.md)

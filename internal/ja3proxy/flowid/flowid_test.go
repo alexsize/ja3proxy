@@ -3,6 +3,9 @@ package flowid
 import (
 	"net"
 	"testing"
+	"time"
+
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/capture/tlshello"
 )
 
 type testWrapper struct{ net.Conn }
@@ -42,5 +45,24 @@ func TestProxyUsernameSurvivesTransparentWrappers(t *testing.T) {
 	}
 	if got := WithProxyUsername(withUsername, "other"); got != withUsername {
 		t.Fatal("replaced existing proxy username")
+	}
+}
+
+func TestIdentitySurvivesTLSHelloReplayWrapper(t *testing.T) {
+	left, right := net.Pipe()
+	defer left.Close()
+	defer right.Close()
+
+	identified := WithProxyUsername(Wrap(left), "device-user")
+	go func() { _, _ = right.Write([]byte("x")) }()
+	replayed, _, err := tlshello.Sniff(identified, time.Second, tlshello.DefaultLimits())
+	if err != nil {
+		t.Fatalf("Sniff() error = %v", err)
+	}
+	if got := From(replayed); got != From(identified) {
+		t.Fatalf("replayed connection ID = %q, want %q", got, From(identified))
+	}
+	if got := ProxyUsernameFrom(replayed); got != "device-user" {
+		t.Fatalf("replayed proxy username = %q, want device-user", got)
 	}
 }

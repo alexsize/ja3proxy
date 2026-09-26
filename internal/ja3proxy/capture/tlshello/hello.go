@@ -152,6 +152,19 @@ func Parse(raw []byte) (*Hello, error) {
 	return h, nil
 }
 
+// ClientRandom returns the 32-byte ClientHello random for in-memory
+// correlation with a user-provided TLS key log. It must not be persisted.
+func ClientRandom(raw []byte) ([]byte, error) {
+	if len(raw) < 38 || raw[0] != 1 {
+		return nil, ErrMalformed
+	}
+	length := int(raw[1])<<16 | int(raw[2])<<8 | int(raw[3])
+	if length != len(raw)-4 {
+		return nil, ErrMalformed
+	}
+	return append([]byte(nil), raw[6:38]...), nil
+}
+
 func decodeExtension(h *Hello, e *Extension) error {
 	c := cursor{b: e.Data}
 	switch e.ID {

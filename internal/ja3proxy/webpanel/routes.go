@@ -13,14 +13,19 @@ import (
 )
 
 type routeTestRequest struct {
-	Phase      routing.Phase `json:"phase"`
-	Host       string        `json:"host"`
-	SNI        string        `json:"sni"`
-	IP         string        `json:"ip"`
-	Port       int           `json:"port"`
-	DeviceID   string        `json:"device_id"`
-	DeviceTags []string      `json:"device_tags"`
-	Username   string        `json:"username"`
+	Phase       routing.Phase `json:"phase"`
+	Host        string        `json:"host"`
+	SNI         string        `json:"sni"`
+	IP          string        `json:"ip"`
+	Port        int           `json:"port"`
+	DeviceID    string        `json:"device_id"`
+	DeviceTags  []string      `json:"device_tags"`
+	Username    string        `json:"username"`
+	ALPN        []string      `json:"alpn"`
+	TLSVersions []uint16      `json:"tls_versions"`
+	JA3         string        `json:"ja3"`
+	JA3Hash     string        `json:"ja3_hash"`
+	JA4         string        `json:"ja4"`
 }
 
 func (panel Server) routeTest(w http.ResponseWriter, request *http.Request) {
@@ -64,6 +69,7 @@ func (panel Server) routeTest(w http.ResponseWriter, request *http.Request) {
 	decision := panel.Routes.Resolve(input.Phase, routing.Request{
 		Host: input.Host, SNI: input.SNI, IP: ip, Port: input.Port,
 		DeviceID: input.DeviceID, DeviceTags: input.DeviceTags, Username: input.Username,
+		ALPN: input.ALPN, TLSVersions: input.TLSVersions, JA3: input.JA3, JA3Hash: input.JA3Hash, JA4: input.JA4,
 	})
 	if err := json.NewEncoder(w).Encode(decision); err != nil {
 		return

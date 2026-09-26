@@ -4,12 +4,15 @@ package routing
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/netip"
 	"os"
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/state"
 )
 
 type Phase string
@@ -17,22 +20,32 @@ type Phase string
 const (
 	PhasePreTLS          Phase = "PRE_TLS"
 	PhasePostClientHello Phase = "POST_CLIENTHELLO"
+
+	CaptureFailureContinuePassthrough      = "continue_passthrough"
+	CaptureFailureContinueWithoutRecording = "continue_without_recording"
+	CaptureFailureBlock                    = "block"
 )
 
 type Action struct {
-	Mode        string `json:"mode,omitempty"`
-	Upstream    string `json:"upstream,omitempty"`
-	TLSProfile  string `json:"tls_profile,omitempty"`
-	MatchPolicy string `json:"match_policy,omitempty"`
+	Mode                 string `json:"mode,omitempty"`
+	Upstream             string `json:"upstream,omitempty"`
+	TLSProfile           string `json:"tls_profile,omitempty"`
+	MatchPolicy          string `json:"match_policy,omitempty"`
+	CaptureFailurePolicy string `json:"capture_failure_policy,omitempty"`
 }
 
 type Match struct {
-	Host      string `json:"host,omitempty"`
-	CIDR      string `json:"cidr,omitempty"`
-	Port      int    `json:"port,omitempty"`
-	DeviceID  string `json:"device_id,omitempty"`
-	DeviceTag string `json:"device_tag,omitempty"`
-	Username  string `json:"username,omitempty"`
+	Host        string   `json:"host,omitempty"`
+	CIDR        string   `json:"cidr,omitempty"`
+	Port        int      `json:"port,omitempty"`
+	DeviceID    string   `json:"device_id,omitempty"`
+	DeviceTag   string   `json:"device_tag,omitempty"`
+	Username    string   `json:"username,omitempty"`
+	ALPN        []string `json:"alpn,omitempty"`
+	TLSVersions []uint16 `json:"tls_versions,omitempty"`
+	JA3         string   `json:"ja3,omitempty"`
+	JA3Hash     string   `json:"ja3_hash,omitempty"`
+	JA4         string   `json:"ja4,omitempty"`
 }
 
 type Rule struct {
@@ -51,13 +64,18 @@ type Config struct {
 }
 
 type Request struct {
-	Host       string
-	SNI        string
-	IP         netip.Addr
-	Port       int
-	DeviceID   string
-	DeviceTags []string
-	Username   string
+	Host        string
+	SNI         string
+	IP          netip.Addr
+	Port        int
+	DeviceID    string
+	DeviceTags  []string
+	Username    string
+	ALPN        []string
+	TLSVersions []uint16
+	JA3         string
+	JA3Hash     string
+	JA4         string
 }
 
 type Decision struct {
@@ -74,7 +92,12 @@ type Store struct {
 	mu      sync.RWMutex
 	current *Config
 	version uint64
+	stateDB *state.SQLiteStore
 }
+
+var ErrVersionConflict = errors.New("route configuration version conflict")
+
+const stateSchemaVersion = "routing-config/1"
 
 func LoadFile(path string) (Config, error) {
 	data, err := os.ReadFile(path)
@@ -98,6 +121,42 @@ func (s *Store) ApplyFile(path string) error {
 	return s.SetValidated(config)
 }
 
+// RestoreWithState prefers the SQLite snapshot and imports a legacy JSON
+// configuration only when no snapshot exists yet.
+func (s *Store) RestoreWithState(path string, stateDB *state.SQLiteStore) error {
+	s.mu.Lock()
+	s.stateDB = stateDB
+	s.mu.Unlock()
+	if stateDB != nil {
+		document, found, err := stateDB.Load("routes")
+		if err != nil {
+			return err
+		}
+		if found {
+			if document.SchemaVersion != stateSchemaVersion {
+				return fmt.Errorf("unsupported sqlite route configuration schema %q", document.SchemaVersion)
+			}
+			var config Config
+			if err := json.Unmarshal(document.Payload, &config); err != nil {
+				return fmt.Errorf("decode sqlite route configuration: %w", err)
+			}
+			if err := Validate(config); err != nil {
+				return err
+			}
+			s.mu.Lock()
+			clone := cloneConfig(config)
+			s.current = &clone
+			s.version = document.Revision
+			s.mu.Unlock()
+			return nil
+		}
+	}
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+	return s.ApplyFile(path)
+}
+
 func (s *Store) SetValidated(config Config) error {
 	if err := Validate(config); err != nil {
 		return err
@@ -105,6 +164,41 @@ func (s *Store) SetValidated(config Config) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	clone := cloneConfig(config)
+	if s.stateDB != nil {
+		payload, err := json.Marshal(clone)
+		if err != nil {
+			return fmt.Errorf("encode route configuration: %w", err)
+		}
+		if err := s.stateDB.SaveSnapshot("routes", stateSchemaVersion, s.version+1, payload); err != nil {
+			return fmt.Errorf("persist route configuration in SQLite: %w", err)
+		}
+	}
+	s.current = &clone
+	s.version++
+	return nil
+}
+
+// ReplaceValidated installs a validated route snapshot after an optimistic
+// version check and advances the local publication version.
+func (s *Store) ReplaceValidated(config Config, expectedVersion uint64) error {
+	if err := Validate(config); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.version != expectedVersion {
+		return ErrVersionConflict
+	}
+	clone := cloneConfig(config)
+	if s.stateDB != nil {
+		payload, err := json.Marshal(clone)
+		if err != nil {
+			return fmt.Errorf("encode route configuration: %w", err)
+		}
+		if err := s.stateDB.SaveSnapshot("routes", stateSchemaVersion, s.version+1, payload); err != nil {
+			return fmt.Errorf("persist route configuration in SQLite: %w", err)
+		}
+	}
 	s.current = &clone
 	s.version++
 	return nil
@@ -125,7 +219,13 @@ func (s *Store) Resolve(phase Phase, request Request) Decision {
 	if s.current == nil {
 		return Decision{ConfigVersion: s.version, Phase: phase, MatchReason: "no_config"}
 	}
-	return resolve(*s.current, s.version, phase, request)
+	return ResolveSnapshot(*s.current, s.version, phase, request)
+}
+
+// ResolveSnapshot evaluates a caller-owned immutable configuration snapshot.
+// It lets all route phases of one connection use the same published version.
+func ResolveSnapshot(config Config, version uint64, phase Phase, request Request) Decision {
+	return resolve(config, version, phase, request)
 }
 
 // HasPhase reports whether the current immutable snapshot contains an enabled
@@ -187,10 +287,32 @@ func Validate(config Config) error {
 func validateAction(id string, action Action) error {
 	switch strings.ToUpper(strings.TrimSpace(action.Mode)) {
 	case "", "ALLOW_AND_RECORD", "MITM_REISSUE", "PASSTHROUGH", "OBSERVE_ONLY", "BLOCK":
-		return nil
+		// mode is valid
 	default:
 		return fmt.Errorf("route rule %q: unsupported action mode %q", id, action.Mode)
 	}
+	switch strings.ToLower(strings.TrimSpace(action.MatchPolicy)) {
+	case "", "allow", "allow_and_record", "passthrough", "block":
+		// match policy is valid
+	default:
+		return fmt.Errorf("route rule %q: unsupported match_policy %q", id, action.MatchPolicy)
+	}
+	// Keep capture failure behavior explicit and bounded. Empty means the
+	// backwards-compatible safe default: preserve the TCP stream.
+	switch NormalizeCaptureFailurePolicy(action.CaptureFailurePolicy) {
+	case CaptureFailureContinuePassthrough, CaptureFailureContinueWithoutRecording, CaptureFailureBlock:
+		return nil
+	default:
+		return fmt.Errorf("route rule %q: unsupported capture_failure_policy %q", id, action.CaptureFailurePolicy)
+	}
+}
+
+func NormalizeCaptureFailurePolicy(policy string) string {
+	policy = strings.ToLower(strings.TrimSpace(policy))
+	if policy == "" {
+		return CaptureFailureContinuePassthrough
+	}
+	return policy
 }
 
 func validateMatch(id string, match Match) error {
@@ -209,6 +331,14 @@ func validateMatch(id string, match Match) error {
 	}
 	if match.Port < 0 || match.Port > 65535 {
 		return fmt.Errorf("route rule %q: port must be between 1 and 65535", id)
+	}
+	if len(match.ALPN) > 32 || len(match.TLSVersions) > 16 {
+		return fmt.Errorf("route rule %q: too many TLS metadata match values", id)
+	}
+	for _, protocol := range match.ALPN {
+		if strings.TrimSpace(protocol) == "" || len(protocol) > 255 {
+			return fmt.Errorf("route rule %q: each ALPN match must have length 1..255", id)
+		}
 	}
 	return nil
 }
@@ -273,7 +403,22 @@ func matches(match Match, phase Phase, request Request) bool {
 	if match.DeviceTag != "" && !contains(request.DeviceTags, match.DeviceTag) {
 		return false
 	}
-	return match.Username == "" || match.Username == request.Username
+	if match.Username != "" && match.Username != request.Username {
+		return false
+	}
+	if len(match.ALPN) > 0 && !anyOverlap(match.ALPN, request.ALPN) {
+		return false
+	}
+	if len(match.TLSVersions) > 0 && !anyUint16Overlap(match.TLSVersions, request.TLSVersions) {
+		return false
+	}
+	if match.JA3 != "" && match.JA3 != request.JA3 {
+		return false
+	}
+	if match.JA3Hash != "" && match.JA3Hash != request.JA3Hash {
+		return false
+	}
+	return match.JA4 == "" || match.JA4 == request.JA4
 }
 
 func specificity(match Match, phase Phase, request Request) int {
@@ -312,11 +457,26 @@ func staticSpecificity(match Match) int {
 	if match.Username != "" {
 		count++
 	}
+	if len(match.ALPN) > 0 {
+		count++
+	}
+	if len(match.TLSVersions) > 0 {
+		count++
+	}
+	if match.JA3 != "" {
+		count++
+	}
+	if match.JA3Hash != "" {
+		count++
+	}
+	if match.JA4 != "" {
+		count++
+	}
 	return count
 }
 
 func matchReason(match Match, phase Phase, request Request) string {
-	reasons := make([]string, 0, 6)
+	reasons := make([]string, 0, 11)
 	if match.Host != "" {
 		host := request.Host
 		if phase == PhasePostClientHello && request.SNI != "" {
@@ -343,6 +503,21 @@ func matchReason(match Match, phase Phase, request Request) string {
 	if match.Username != "" {
 		reasons = append(reasons, "username")
 	}
+	if len(match.ALPN) > 0 {
+		reasons = append(reasons, "alpn")
+	}
+	if len(match.TLSVersions) > 0 {
+		reasons = append(reasons, "tls_versions")
+	}
+	if match.JA3 != "" {
+		reasons = append(reasons, "ja3")
+	}
+	if match.JA3Hash != "" {
+		reasons = append(reasons, "ja3_hash")
+	}
+	if match.JA4 != "" {
+		reasons = append(reasons, "ja4")
+	}
 	return strings.Join(reasons, "+")
 }
 
@@ -366,7 +541,47 @@ func matchesCanOverlap(left, right Match) bool {
 	if left.DeviceTag != "" && right.DeviceTag != "" && left.DeviceTag != right.DeviceTag {
 		return false
 	}
-	return left.Username == "" || right.Username == "" || left.Username == right.Username
+	if left.Username != "" && right.Username != "" && left.Username != right.Username {
+		return false
+	}
+	if !stringSlicesCanOverlap(left.ALPN, right.ALPN) || !uint16SlicesCanOverlap(left.TLSVersions, right.TLSVersions) {
+		return false
+	}
+	if left.JA3 != "" && right.JA3 != "" && left.JA3 != right.JA3 {
+		return false
+	}
+	if left.JA3Hash != "" && right.JA3Hash != "" && left.JA3Hash != right.JA3Hash {
+		return false
+	}
+	return left.JA4 == "" || right.JA4 == "" || left.JA4 == right.JA4
+}
+
+func anyOverlap(wanted, offered []string) bool {
+	for _, value := range wanted {
+		if contains(offered, value) {
+			return true
+		}
+	}
+	return false
+}
+
+func anyUint16Overlap(wanted, offered []uint16) bool {
+	for _, value := range wanted {
+		for _, candidate := range offered {
+			if value == candidate {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func stringSlicesCanOverlap(left, right []string) bool {
+	return len(left) == 0 || len(right) == 0 || anyOverlap(left, right)
+}
+
+func uint16SlicesCanOverlap(left, right []uint16) bool {
+	return len(left) == 0 || len(right) == 0 || anyUint16Overlap(left, right)
 }
 
 func hostPatternsOverlap(left, right string) bool {
@@ -429,6 +644,11 @@ func contains(values []string, wanted string) bool {
 
 func cloneConfig(config Config) Config {
 	clone := config
-	clone.Rules = append([]Rule(nil), config.Rules...)
+	clone.Rules = make([]Rule, len(config.Rules))
+	for i, rule := range config.Rules {
+		clone.Rules[i] = rule
+		clone.Rules[i].Match.ALPN = append([]string(nil), rule.Match.ALPN...)
+		clone.Rules[i].Match.TLSVersions = append([]uint16(nil), rule.Match.TLSVersions...)
+	}
 	return clone
 }

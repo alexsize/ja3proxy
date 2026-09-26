@@ -2,6 +2,7 @@ package webpanel
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,6 +14,7 @@ type observationFilter struct {
 	Application        string
 	ApplicationID      string
 	ApplicationVersion string
+	AnalysisRevision   int
 	From               *time.Time
 	To                 *time.Time
 }
@@ -23,6 +25,14 @@ func parseObservationFilter(w http.ResponseWriter, r *http.Request) (observation
 		Application:        strings.TrimSpace(r.URL.Query().Get("application")),
 		ApplicationID:      strings.TrimSpace(r.URL.Query().Get("application_id")),
 		ApplicationVersion: strings.TrimSpace(r.URL.Query().Get("application_version")),
+	}
+	if value := strings.TrimSpace(r.URL.Query().Get("analysis_revision")); value != "" {
+		revision, err := strconv.Atoi(value)
+		if err != nil || revision < 1 {
+			writeAPIError(w, http.StatusBadRequest, "analysis_revision must be a positive integer")
+			return observationFilter{}, false
+		}
+		filter.AnalysisRevision = revision
 	}
 	for name, destination := range map[string]**time.Time{"from": &filter.From, "to": &filter.To} {
 		value := strings.TrimSpace(r.URL.Query().Get(name))
@@ -44,6 +54,9 @@ func parseObservationFilter(w http.ResponseWriter, r *http.Request) (observation
 }
 
 func (filter observationFilter) matches(observation recorder.Observation) bool {
+	if filter.AnalysisRevision > 0 && observation.AnalysisRevision != filter.AnalysisRevision {
+		return false
+	}
 	if filter.DeviceID != "" && observation.ResolvedDeviceID != filter.DeviceID {
 		return false
 	}
@@ -63,6 +76,21 @@ func (filter observationFilter) matches(observation recorder.Observation) bool {
 		return false
 	}
 	return true
+}
+
+func storedObservationQuery(filter observationFilter, request *http.Request, limit int) recorder.StoredQuery {
+	return recorder.StoredQuery{
+		Limit:              limit,
+		Cursor:             strings.TrimSpace(request.URL.Query().Get("cursor")),
+		Search:             strings.TrimSpace(request.URL.Query().Get("q")),
+		DeviceID:           filter.DeviceID,
+		Application:        filter.Application,
+		ApplicationID:      filter.ApplicationID,
+		ApplicationVersion: filter.ApplicationVersion,
+		AnalysisRevision:   filter.AnalysisRevision,
+		From:               filter.From,
+		To:                 filter.To,
+	}
 }
 
 func filteredObservations(observations []recorder.Observation, filter observationFilter) []recorder.Observation {

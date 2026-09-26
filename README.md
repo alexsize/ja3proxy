@@ -24,11 +24,21 @@ JA3Proxy — локальный HTTP/SOCKS5-прокси на Go для конт
 - HTTP- или SOCKS5-прокси следующего уровня;
 - аутентификация клиентов HTTP Basic и SOCKS5 username/password;
 - терминальная панель и встроенная локальная веб-панель;
-- запись входящего `CLIENT_IN` и исходящего `PROXY_OUT` ClientHello;
-- вычисление JA3, JA4 и нормализованного TLS-NORM-1;
+- запись входящего `CLIENT_IN`, исходящего `PROXY_OUT` ClientHello и
+  upstream `SERVER_IN` ServerHello;
+- для MITM — согласованное upstream TLS-состояние (`negotiated_state`) с ALPN,
+  cipher, version и resumption без секретов;
+- для MITM — privacy-safe HTTP/1.x fingerprint с сохранением порядка и
+  регистра заголовков без записи их значений;
+- для MITM — пассивный H2-NORM-1 fingerprint по preface, SETTINGS,
+  WINDOW_UPDATE, приоритетам, HPACK dynamic-table size updates, типам фреймов
+  и pseudo-header order;
+- вычисление JA3, JA4, JA3S, JA4S и нормализованного TLS-NORM-1;
 - режимы `MITM_REISSUE`, `PASSTHROUGH`, `OBSERVE_ONLY` и `BLOCK`;
 - ограниченная по памяти неблокирующая очередь и необязательный JSONL-экспорт;
 - локальный API поиска, просмотра, сравнения и экспорта наблюдений.
+- loopback web-панель работает по HTTP без обязательной авторизации; non-loopback
+  доступ требует Bearer-аутентификацию и HTTPS.
 
 ## Быстрый запуск
 
@@ -143,9 +153,10 @@ Raw-данные могут содержать идентификаторы се
 TLS-профиль:
   --tls-fingerprint string        глобальный пресет uTLS, например chrome@120
   --tls-fingerprint-file string   JSON-файл глобального профиля с автообновлением
-  --tls-profile-file string       JSON-файл маршрутизации TLS-профилей по хостам
-  --route-config-file string      JSON-таблица двухфазных маршрутов
-  --tls-template-file string      журнал редактируемых TLS-профилей
+  --tls-profile-file string       разовый импорт прежних upstream TLS-профилей из JSON
+  --route-config-file string      разовый импорт прежних маршрутов из JSON
+  --tls-template-file string      разовый импорт прежнего JSONL-журнала профилей
+  --state-sqlite string           единая SQLite-база состояния (по умолчанию state/ja3proxy.db)
   --list-tls-fingerprints         вывести поддерживаемые пресеты и завершить работу
 
 Прокси:
@@ -154,9 +165,18 @@ TLS-профиль:
   --upstream-proxy string         следующий HTTP- или SOCKS5-прокси
 
 Recorder и диагностика:
-  --capture-tls                   включить ограниченную запись ClientHello
+  --capture-tls                   включить запись ClientHello в памяти и общей SQLite-базе
   --capture-raw                   сохранять чувствительные raw TLS-данные
   --capture-jsonl string          создать новый JSONL-файл, лимит 256 МиБ
+  --capture-sqlite string         переопределить общий SQLite-путь наблюдений (по умолчанию --state-sqlite)
+  --capture-spool string          зашифрованный bounded spool при сбое SQLite
+  --capture-spool-key string      файл 32-байтного ключа recorder spool
+  --capture-spool-max-bytes int   максимальный размер recorder spool
+  --audit-log string              разовый импорт прежнего JSONL-аудита в общую базу
+  --audit-sqlite string           путь общей SQLite-базы аудита
+  --web-panel-token-file string   файл bearer-токена для API веб-панели
+  --web-panel-cert string         сертификат HTTPS веб-панели для non-loopback
+  --web-panel-key string          закрытый ключ HTTPS веб-панели для non-loopback
   --tls-mode string               режим обработки TLS
   --log-level string              debug, info, warn или error
   --dump-traffic                  записывать содержимое трафика в журнал
@@ -252,8 +272,9 @@ Recorder и диагностика:
 supported versions/groups и signature algorithms. Перед сохранением сервер
 материализует ClientHello и показывает ожидаемые JA3, JA4 и TLS-NORM.
 
-Сохранённые версии пишутся append-only в файл `--tls-template-file`
-(`profiles/tls-templates.jsonl` по умолчанию). Изменение требует актуальной
+Сохранённые версии TLS-профилей хранятся в общей SQLite-базе
+(`state/ja3proxy.db` по умолчанию); `--tls-template-file` служит только для
+разового импорта прежнего JSONL-журнала. Изменение требует актуальной
 версии конфигурации: устаревшая вкладка получает `409`, а не перезаписывает
 чужие изменения. Активный шаблон применяется только к новым соединениям и
 имеет приоритет над обычным `--tls-fingerprint`/`--tls-profile-file` для
@@ -267,12 +288,34 @@ JA4 нельзя задавать произвольной строкой: он 
 не может быть активирован. ALPN активного шаблона на каждом соединении
 ограничивается протоколами, предложенными входящим клиентом.
 
+Тип профиля `RANDOMIZED` запускает генератор uTLS отдельно от статических
+шаблонов. Режим ALPN выбирает `AUTO`, `REQUIRED` или `DISABLED`; профиль не
+получает фиктивный ожидаемый отпечаток. Фактические JA3/JA4 и TLS-NORM
+вычисляются регистратором по отправленному `PROXY_OUT` ClientHello. Для
+`AUTO`/`REQUIRED`, когда клиент не предложил ALPN, прокси передаёт генератору
+`h2` и `http/1.1`. Из случайного выбора исключён только гибридный ML-KEM
+key-share: текущая версия uTLS не может использовать его как первый локальный
+key exchange. Остальные поддерживаемые поля продолжают генерироваться случайно.
+
 Профиль из наблюдения сохраняет исходные JA3/JA4/TLS-NORM и до публикации
 проверяет, действительно ли базовый пресет воспроизводит обязательные поля.
 Дополнительные constraints поддерживают `present`, `equals` и `one_of`.
 История версий неизменяема; откат создаёт новую версию. В PASSTHROUGH и
 OBSERVE_ONLY recorder отдельно показывает `FORWARDED_UNCHANGED` либо
 `UNVERIFIED`, а не выдаёт передачу за применённый профиль.
+
+### Replay Lab
+
+Страница `/replay-lab.html` запускает отдельный TLS handshake на указанном
+тестовом endpoint с сохранённым профилем, uTLS-пресетом или RANDOMIZED. Можно
+выбрать захваченное наблюдение как expected fingerprint. Результат показывает
+compiled и фактический outbound ClientHello, ServerHello/TLS negotiated state
+и diff между эталоном, compiled и actual. Replay Lab не отправляет HTTP-запрос
+и не участвует в production routing; проверка сертификата сервера отключена,
+поэтому используйте доверенные тестовые endpoints. API: `POST /api/v1/replay-lab/run`.
+В том же разделе Compatibility Matrix последовательно проверяет выбранные
+сохранённые профили на одном тестовом endpoint и показывает TLS, ALPN, статус,
+фактический JA4 и diff. Каждый прогон — отдельное лабораторное TLS-соединение.
 Единый `connection_id` назначается transport flow сразу после `Accept`, до
 распознавания HTTP/SOCKS5/TLS, и связывает входящее и исходящее наблюдения.
 
@@ -295,12 +338,17 @@ HTTP CONNECT с аутентификацией:
 
 Для загрузки двухфазных правил используйте `--route-config-file routes.json`.
 Маршруты поддерживают фазы `PRE_TLS` и `POST_CLIENTHELLO`, exact/wildcard host,
-CIDR, порт, device/device tag и proxy username. Проверить решение без открытия
-соединения можно через `POST /api/v1/routes/test`. В `action` можно указать
-`mode`, `upstream` и `tls_profile`: `upstream` выбирает SOCKS5/HTTP upstream
-для нового HTTP CONNECT или SOCKS5-туннеля; для POST_CLIENTHELLO выбор
-выполняется после SNI. `tls_profile` закрепляет ID
-профиля TLS для MITM.
+CIDR, порт, device/device tag и proxy username. POST_CLIENTHELLO дополнительно
+может сопоставлять ALPN, offered TLS versions, JA3, JA3 hash и JA4. Проверить
+решение без открытия соединения можно через `POST /api/v1/routes/test`. В
+`action` можно указать `mode`, `upstream`, `tls_profile` и `match_policy`
+(`allow`, `allow_and_record`, `passthrough` или `block`). `upstream` выбирает
+SOCKS5/HTTP upstream для нового HTTP CONNECT или SOCKS5-туннеля; выбор POST
+выполняется после bounded ClientHello. `tls_profile` закрепляет ID профиля TLS
+для MITM.
+При ошибке bounded ClientHello правило может задать
+`capture_failure_policy`: `continue_passthrough` (по умолчанию),
+`continue_without_recording` или `block`.
 При запуске ссылки на upstream и TLS-профили проверяются заранее; неактивный
 или неподдерживаемый профиль, а также некорректный upstream отклоняют конфигурацию.
 
@@ -327,10 +375,33 @@ SOCKS5-клиенты — username/password по RFC 1929. Не передава
 туннели. Если TLS-профиль управляется файлом, веб-панель не подменяет этот
 источник конфигурации.
 
-При включённом TLS Recorder панель обязана слушать loopback-адрес. API recorder
-дополнительно проверяет адрес клиента, заголовок `Host` и `Origin` для защиты от
-удалённого доступа и DNS rebinding. В текущем этапе у панели нет пользователей
-и ролей, поэтому не выставляйте её непосредственно в общедоступную сеть.
+Изменение runtime-настроек через панель использует optimistic concurrency:
+запрос `PUT /api/config` обязан передать `expected_version` из
+`GET /api/state.runtime.configVersion`. При устаревшей версии сервер возвращает
+`409` и не применяет изменение.
+
+Панель по умолчанию работает на loopback без обязательных авторизации и HTTPS.
+Для non-loopback доступа нужны Bearer-токен и HTTPS-сертификат. Для первого
+администратора задайте JSON `--web-panel-token-file` с записью `role: "admin"`
+и scopes (либо оставьте scopes пустыми, тогда применятся права роли). При
+первом запуске реестр импортируется в общую SQLite `--state-sqlite`; дальше
+SQLite является источником истины, а секреты хранятся только в виде SHA-256.
+Поддерживаются роли `viewer`, `operator`, `investigator`, `admin` и scopes
+`read`, `write`, `raw`, `export`.
+
+В панели доступно `/tokens.html`: выпуск, изменение роли/scopes, немедленный
+отзыв и ротация без перезапуска. Новый секрет показывается только в ответе
+создания/ротации; сохраните его сразу. На loopback страница доступна без
+Bearer-токена. Удалённое управление требует HTTPS и роль admin; последний
+активный admin-токен нельзя отозвать или понизить.
+Изменения реестра аудируются; если audit store недоступен, операции создания,
+изменения, отзыва и ротации отклоняются.
+
+Пример bootstrap-файла:
+
+```json
+{"tokens":[{"id":"bootstrap-admin","token":"<случайный секрет не короче 16 символов>","role":"admin"}]}
+```
 
 ## Сертификаты
 
@@ -377,13 +448,17 @@ docs/spec/                          ТЗ, контракты и состояни
 ## Ограничения текущего этапа
 
 - наблюдения хранятся в ограниченном окне памяти;
-- постоянное SQL-хранилище ещё не реализовано;
+- опциональное постоянное SQLite-хранилище поддерживает retention, поиск и экспорт;
+- при явной настройке encrypted spool наблюдения временно буферизуются при сбое
+  SQLite и повторяются после перезапуска;
 - JSONL не шифруется;
-- recorder API локальный и пока не имеет RBAC;
-- upstream TLS-маршруты поддерживают явную priority, exact/wildcard host
-  matching и детерминированное разрешение конфликтов; общий двухфазный route
-  manager и runtime snapshots ещё не реализованы;
-- анализируется первый ClientHello соединения.
+- token registry принимает начальные роли и scopes из token-file, затем
+  сохраняется в общей SQLite как хеши и управляется через `/tokens.html`;
+- upstream TLS-маршруты и общий двухфазный route manager поддерживают явную
+  priority, exact/wildcard host matching и immutable runtime snapshots;
+- анализируется первый ClientHello; последующие complete ClientHello
+  поддерживаются в passthrough/observe, но второй ClientHello после HRR в MITM
+  ограничен стандартным TLS-сервером.
 
 ## Диагностика
 

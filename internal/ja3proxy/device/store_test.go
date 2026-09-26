@@ -6,11 +6,13 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/state"
 )
 
 func TestOpenAndResolveDeviceMappings(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "devices.json")
-	data := []byte(`{"schema_version":"device-registry/1","config_version":3,"devices":[{"id":"iphone-017","name":"iPhone 017","proxy_username":"iphone017","source_ips":["192.0.2.10"],"enabled":true},{"id":"disabled","name":"Disabled","proxy_username":"iphone017","enabled":false},{"id":"lab-ip","name":"Lab IP","source_ips":["192.0.2.11"],"enabled":true}]}`)
+	data := []byte(`{"schema_version":"device-registry/1","config_version":3,"devices":[{"id":"iphone-017","name":"iPhone 017","proxy_username":"iphone017","source_ips":["192.0.2.10"],"tags":["mobile","ios"],"enabled":true},{"id":"disabled","name":"Disabled","proxy_username":"iphone017","enabled":false},{"id":"lab-ip","name":"Lab IP","source_ips":["192.0.2.11"],"enabled":true}]}`)
 	if err := os.WriteFile(path, data, 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -18,11 +20,51 @@ func TestOpenAndResolveDeviceMappings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := store.Resolve("iphone017", "192.0.2.99"); got.DeviceID != "iphone-017" || got.Ambiguous {
+	if got := store.Resolve("iphone017", "192.0.2.99"); got.DeviceID != "iphone-017" || got.Ambiguous || len(got.DeviceTags) != 2 || got.DeviceTags[0] != "mobile" {
 		t.Fatalf("username resolution = %+v", got)
 	}
 	if got := store.Resolve("unknown", "192.0.2.11"); got.DeviceID != "lab-ip" || got.Ambiguous {
 		t.Fatalf("IP resolution = %+v", got)
+	}
+}
+
+func TestOpenWithStateImportsLegacyAndUsesSQLiteAsPrimary(t *testing.T) {
+	dir := t.TempDir()
+	legacyPath := filepath.Join(dir, "devices.json")
+	databasePath := filepath.Join(dir, "state.db")
+	legacy := []byte(`{"schema_version":"device-registry/1","config_version":4,"devices":[{"id":"legacy","name":"Legacy device","enabled":true}]}`)
+	if err := os.WriteFile(legacyPath, legacy, 0600); err != nil {
+		t.Fatal(err)
+	}
+	database, err := state.OpenSQLite(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenWithState(legacyPath, database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.Snapshot().ConfigVersion != 4 || len(store.Snapshot().Devices) != 1 {
+		t.Fatalf("imported registry = %+v", store.Snapshot())
+	}
+	if err := os.WriteFile(legacyPath, []byte("not valid JSON"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	database, err = state.OpenSQLite(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	store, err = OpenWithState(legacyPath, database)
+	if err != nil {
+		t.Fatalf("SQLite snapshot should be primary after import: %v", err)
+	}
+	if got := store.Snapshot().Devices[0].ID; got != "legacy" {
+		t.Fatalf("restored device ID = %q", got)
 	}
 }
 

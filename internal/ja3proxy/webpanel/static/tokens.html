@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="ru">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>JA3Proxy · Токены доступа</title><link rel="stylesheet" href="/profiles.css"></head>
+<body>
+<header><a href="/">JA3Proxy</a><a href="/recorder.html">Регистратор TLS</a><a href="/profiles.html">TLS-профили и JA4</a><a href="/replay-lab.html">Replay Lab</a><strong>Токены доступа</strong></header>
+<main>
+  <h1>Пользователи и токены API</h1>
+  <p>Управление ролями bearer-токенов. Секрет показывается только при создании или ротации; в SQLite хранится его SHA-256, а не исходное значение.</p>
+  <p>На loopback управление доступно без авторизации. Для удалённого управления используйте bearer-токен с ролью admin через HTTPS.</p>
+  <p id="token-status" role="status">Загрузка…</p>
+  <section>
+    <h2>Выпустить токен</h2>
+    <form id="issue-token">
+      <label for="token-id">ID (необязательно)</label><input id="token-id" maxlength="64" pattern="[A-Za-z0-9._:-]+" autocomplete="off">
+      <label for="token-role">Роль</label><select id="token-role"><option value="viewer">Наблюдатель — чтение</option><option value="operator">Оператор — чтение и изменение</option><option value="investigator">Исследователь — чтение, raw и экспорт</option><option value="admin">Администратор — полный доступ</option></select>
+      <label for="token-expiry">Истекает (необязательно)</label><input id="token-expiry" type="datetime-local">
+      <button type="submit">Создать токен</button>
+    </form>
+  </section>
+  <section><h2>Реестр</h2><button id="refresh-tokens" type="button">Обновить</button><div class="table-scroll"><table><thead><tr><th>ID</th><th>Роль</th><th>Scopes</th><th>Истекает</th><th>Состояние</th><th>Действия</th></tr></thead><tbody id="tokens"></tbody></table></div></section>
+  <section id="issued-panel" hidden><h2>Секрет нового токена</h2><p>Скопируйте его сейчас: повторно получить секрет из хранилища нельзя.</p><pre id="issued-secret"></pre><button id="copy-secret" type="button">Скопировать</button></section>
+</main><script src="/auth.js" defer></script><script src="/tokens.js" defer></script>
+</body></html>

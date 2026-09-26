@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	cfconfig "github.com/cloudflare/cfssl/config"
 	cfsr "github.com/cloudflare/cfssl/csr"
@@ -18,11 +20,21 @@ import (
 	cfsigner "github.com/cloudflare/cfssl/signer"
 	"github.com/cloudflare/cfssl/signer/local"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/netutil"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/secrets"
 )
 
 type CertificateAuthority struct {
 	tlsCert  tls.Certificate
 	x509Cert *x509.Certificate
+}
+
+const CAExpiryWarningPeriod = 30 * 24 * time.Hour
+
+type CertificateValidity struct {
+	Status        string
+	NotBefore     time.Time
+	NotAfter      time.Time
+	DaysRemaining int64
 }
 
 type SessionKeyHelper struct {
@@ -171,7 +183,66 @@ func (ca *CertificateAuthority) GenerateCertificate(session SessionKeyHelper, sn
 }
 
 func (ca *CertificateAuthority) Load(certPath, keyPath string) error {
-	tlsCert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	return ca.LoadWithProvider(secrets.FileProvider{}, certPath, keyPath)
+}
+
+func (ca *CertificateAuthority) Validity(now time.Time) CertificateValidity {
+	if ca == nil || ca.x509Cert == nil {
+		return CertificateValidity{Status: "UNAVAILABLE"}
+	}
+	return ValidityForCertificate(ca.x509Cert, now)
+}
+
+func ValidityForCertificate(certificate *x509.Certificate, now time.Time) CertificateValidity {
+	if certificate == nil {
+		return CertificateValidity{Status: "UNAVAILABLE"}
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	now = now.UTC()
+	remaining := certificate.NotAfter.Sub(now)
+	days := int64(remaining / (24 * time.Hour))
+	if remaining > 0 && remaining%(24*time.Hour) != 0 {
+		days++
+	}
+	if remaining < 0 {
+		days = -int64((-remaining + 24*time.Hour - 1) / (24 * time.Hour))
+	}
+	result := CertificateValidity{Status: "VALID", NotBefore: certificate.NotBefore.UTC(), NotAfter: certificate.NotAfter.UTC(), DaysRemaining: days}
+	switch {
+	case now.Before(certificate.NotBefore):
+		result.Status = "NOT_YET_VALID"
+	case !now.Before(certificate.NotAfter):
+		result.Status = "EXPIRED"
+	case remaining <= CAExpiryWarningPeriod:
+		result.Status = "EXPIRING"
+	}
+	return result
+}
+
+func CertificateFileValidity(provider secrets.Provider, reference string, now time.Time) CertificateValidity {
+	if strings.TrimSpace(reference) == "" {
+		return CertificateValidity{Status: "UNAVAILABLE"}
+	}
+	data, err := secrets.Read(provider, reference)
+	if err != nil {
+		return CertificateValidity{Status: "UNAVAILABLE"}
+	}
+	defer clear(data)
+	block, _ := pem.Decode(data)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return CertificateValidity{Status: "UNAVAILABLE"}
+	}
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return CertificateValidity{Status: "UNAVAILABLE"}
+	}
+	return ValidityForCertificate(certificate, now)
+}
+
+func (ca *CertificateAuthority) LoadWithProvider(provider secrets.Provider, certPath, keyPath string) error {
+	tlsCert, err := secrets.LoadKeyPair(provider, certPath, keyPath)
 	if err != nil {
 		return err
 	}

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/state"
 )
 
 func TestSetTLSFingerprintValidatesRequiredFields(t *testing.T) {
@@ -20,6 +22,36 @@ func TestSetTLSFingerprintValidatesRequiredFields(t *testing.T) {
 	}
 	if err := store.SetValidated(TLSFingerprint{Client: "NoSuchClient", Version: "999"}); err == nil {
 		t.Fatal("TLSFingerprintStore.SetValidated() error = nil, want unsupported fingerprint error")
+	}
+}
+
+func TestTLSFingerprintStorePersistsAndRestoresSQLiteSnapshot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	database, err := state.OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &TLSFingerprintStore{}
+	if found, err := store.BindState(database); err != nil || found {
+		t.Fatalf("initial BindState() = found %v, err %v", found, err)
+	}
+	if err := store.SetValidated(TLSFingerprint{Client: "Firefox", Version: "105"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	database, err = state.OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	restored := &TLSFingerprintStore{}
+	if found, err := restored.BindState(database); err != nil || !found {
+		t.Fatalf("restored BindState() = found %v, err %v", found, err)
+	}
+	if got, found := restored.Get(); !found || got.Client != "Firefox" || got.Version != "105" {
+		t.Fatalf("restored TLS fingerprint = %+v, found %v", got, found)
 	}
 }
 

@@ -12,6 +12,8 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/tlsprofile"
 )
 
 type tlsServerResult struct {
@@ -30,13 +32,18 @@ type connectUpstreamResult struct {
 }
 
 func serveConnectUpstream(conn net.Conn, cert tls.Certificate, results chan<- connectUpstreamResult) {
+	serveConnectUpstreamWithCurves(conn, cert, nil, results)
+}
+
+func serveConnectUpstreamWithCurves(conn net.Conn, cert tls.Certificate, curves []tls.CurveID, results chan<- connectUpstreamResult) {
 	helloInfo := make(chan struct {
 		serverName      string
 		supportedProtos []string
-	}, 1)
+	}, 4)
 	tlsConn := tls.Server(conn, &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		NextProtos:   []string{"h2", "http/1.1"},
+		Certificates:     []tls.Certificate{cert},
+		NextProtos:       []string{"h2", "http/1.1"},
+		CurvePreferences: append([]tls.CurveID(nil), curves...),
 		GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
 			helloInfo <- struct {
 				serverName      string
@@ -166,6 +173,48 @@ func receiveTLSServerResult(t *testing.T, results <-chan tlsServerResult) tlsSer
 		t.Fatal("timed out waiting for local TLS server")
 	}
 	return tlsServerResult{}
+}
+
+func TestRandomizedTLSProfileHandshakeModes(t *testing.T) {
+	for _, test := range []struct {
+		mode          string
+		checkALPN     bool
+		wantALPN      bool
+		checkProtocol bool
+		wantProtocol  bool
+	}{
+		{mode: tlsprofile.RandomizedALPNAuto},
+		{mode: tlsprofile.RandomizedALPNRequired, checkALPN: true, wantALPN: true, checkProtocol: true, wantProtocol: true},
+		{mode: tlsprofile.RandomizedALPNDisabled, checkALPN: true, checkProtocol: true},
+	} {
+		t.Run(test.mode, func(t *testing.T) {
+			listener, results := newLocalTLSServer(t, []string{"h2", "http/1.1"})
+			conn, err := net.Dial("tcp", listener.Addr().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			profile, err := tlsprofile.TemplateFromRandomized("random", test.mode)
+			if err != nil {
+				t.Fatal(err)
+			}
+			client, err := (&TunnelHandler{}).utlsWrapTemplate(conn, "upstream.test", []string{"h2", "http/1.1"}, profile)
+			if err != nil {
+				t.Fatalf("randomized handshake failed: %v", err)
+			}
+			_ = client.Close()
+			server := receiveTLSServerResult(t, results)
+			if server.err != nil {
+				t.Fatalf("server handshake failed: %v", server.err)
+			}
+			if test.checkALPN && (len(server.supportedProtos) > 0) != test.wantALPN {
+				t.Fatalf("offered ALPN = %v, wantALPN=%v", server.supportedProtos, test.wantALPN)
+			}
+			if test.checkProtocol && (server.negotiatedProtocol != "") != test.wantProtocol {
+				t.Fatalf("negotiated ALPN = %q, wantProtocol=%v", server.negotiatedProtocol, test.wantProtocol)
+			}
+		})
+	}
 }
 
 func newBadUpstreamServer(t *testing.T, handle func(net.Conn)) net.Listener {

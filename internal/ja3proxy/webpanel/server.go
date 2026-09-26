@@ -2,6 +2,7 @@ package webpanel
 
 import (
 	"context"
+	"crypto/tls"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -13,18 +14,24 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/audit"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/device"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/logutil"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/recorder"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/routing"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/secrets"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/tlsprofile"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/traffic"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/upstreamtls"
 )
+
+var ErrConfigVersionConflict = errors.New("runtime configuration version conflict")
 
 //go:embed static
 var staticFiles embed.FS
 
 type RuntimeStatus struct {
+	ConfigVersion     uint64     `json:"configVersion"`
 	ProxyListen       string     `json:"proxyListen"`
 	ProxyPort         int        `json:"proxyPort"`
 	ProxyProtocol     string     `json:"proxyProtocol"`
@@ -35,6 +42,14 @@ type RuntimeStatus struct {
 	UpstreamEnabled   bool       `json:"upstreamEnabled"`
 	ProxyAuthEnabled  bool       `json:"proxyAuthEnabled"`
 	ProxyUsername     string     `json:"proxyUsername"`
+	MITMCACertificateStatus        string     `json:"mitmCaCertificateStatus,omitempty"`
+	MITMCACertificateNotBefore     *time.Time `json:"mitmCaCertificateNotBefore,omitempty"`
+	MITMCACertificateNotAfter      *time.Time `json:"mitmCaCertificateNotAfter,omitempty"`
+	MITMCACertificateDaysRemaining *int64     `json:"mitmCaCertificateDaysRemaining,omitempty"`
+	PanelCertificateStatus         string     `json:"panelCertificateStatus,omitempty"`
+	PanelCertificateNotBefore      *time.Time `json:"panelCertificateNotBefore,omitempty"`
+	PanelCertificateNotAfter       *time.Time `json:"panelCertificateNotAfter,omitempty"`
+	PanelCertificateDaysRemaining  *int64     `json:"panelCertificateDaysRemaining,omitempty"`
 	ConfigurationMode string     `json:"configurationMode"`
 	Chain             []ChainHop `json:"chain"`
 }
@@ -45,6 +60,7 @@ type ChainHop struct {
 }
 
 type ConfigUpdate struct {
+	ExpectedVersion  *uint64 `json:"expected_version"`
 	TLSFingerprint   *string `json:"tlsFingerprint"`
 	Upstream         *string `json:"upstream"`
 	ProxyPort        *int    `json:"proxyPort"`
@@ -58,14 +74,24 @@ type RuntimeProvider func() RuntimeStatus
 type ConfigUpdater func(ConfigUpdate) (RuntimeStatus, error)
 
 type Server struct {
-	Recorder *recorder.Recorder
-	Devices  *device.Store
-	Profiles *tlsprofile.Store
-	Routes   *routing.Store
-	Address  string
-	Monitor  *traffic.TrafficMonitor
-	Runtime  RuntimeProvider
-	Update   ConfigUpdater
+	Recorder        *recorder.Recorder
+	Audit           *audit.Store
+	AuthToken       string
+	AuthScopes      []string
+	AuthTokenExpiry time.Time
+	AuthTokens      []AuthToken
+	TokenRegistry   *TokenRegistry
+	TLSCertFile     string
+	TLSKeyFile      string
+	SecretProvider  secrets.Provider
+	Devices         *device.Store
+	Profiles        *tlsprofile.Store
+	Routes          *routing.Store
+	UpstreamTLS     *upstreamtls.UpstreamTLSProfileStore
+	Address         string
+	Monitor         *traffic.TrafficMonitor
+	Runtime         RuntimeProvider
+	Update          ConfigUpdater
 }
 
 type stateResponse struct {
@@ -90,12 +116,21 @@ func (panel Server) Serve(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("listen for web panel on %s: %w", panel.Address, err)
 	}
-	if panel.Recorder != nil || panel.Profiles != nil {
-		addr, ok := listener.Addr().(*net.TCPAddr)
-		if !ok || !addr.IP.IsLoopback() {
+	addr, ok := listener.Addr().(*net.TCPAddr)
+	loopback := ok && addr.IP.IsLoopback()
+	if !loopback {
+		if len(panel.authTokens()) == 0 {
 			listener.Close()
-			return fmt.Errorf("recorder web panel requires a loopback bind until authenticated access is configured")
+			return fmt.Errorf("non-loopback web panel requires bearer authentication")
 		}
+		if panel.TLSCertFile == "" || panel.TLSKeyFile == "" {
+			listener.Close()
+			return fmt.Errorf("non-loopback web panel requires HTTPS certificate and key")
+		}
+	}
+	if (panel.TLSCertFile == "") != (panel.TLSKeyFile == "") {
+		listener.Close()
+		return fmt.Errorf("web panel HTTPS certificate and key must be configured together")
 	}
 	server := &http.Server{
 		Handler:           panel.Handler(),
@@ -109,7 +144,14 @@ func (panel Server) Serve(ctx context.Context) error {
 	})
 	defer stopClosingServer()
 
-	if err := server.Serve(listener); err != nil {
+	serve := server.Serve
+	if panel.TLSCertFile != "" {
+		server.TLSConfig = panel.tlsConfig()
+		serve = func(listener net.Listener) error {
+			return server.ServeTLS(listener, "", "")
+		}
+	}
+	if err := serve(listener); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil && (errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed)) {
 			return ctxErr
 		}
@@ -118,10 +160,31 @@ func (panel Server) Serve(ctx context.Context) error {
 	return nil
 }
 
+func (panel Server) tlsConfig() *tls.Config {
+	return &tls.Config{GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+		certificate, err := secrets.LoadKeyPair(panel.SecretProvider, panel.TLSCertFile, panel.TLSKeyFile)
+		if err != nil {
+			return nil, err
+		}
+		return &certificate, nil
+	}}
+}
+
 func (panel Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/state", panel.handleState)
 	mux.HandleFunc("PUT /api/config", panel.handleConfigUpdate)
+	mux.HandleFunc("GET /api/v1/admin/tokens", panel.handleTokenList)
+	mux.HandleFunc("POST /api/v1/admin/tokens", panel.handleTokenIssue)
+	mux.HandleFunc("PUT /api/v1/admin/tokens/{id}", panel.handleTokenUpdate)
+	mux.HandleFunc("DELETE /api/v1/admin/tokens/{id}", panel.handleTokenRevoke)
+	mux.HandleFunc("POST /api/v1/admin/tokens/{id}/rotate", panel.handleTokenRotate)
+	mux.Handle("GET /api/v1/export/config", recorderLocalOnly(http.HandlerFunc(panel.exportConfig)))
+	mux.Handle("GET /api/v1/export/telemetry", recorderLocalOnly(http.HandlerFunc(panel.exportTelemetry)))
+	mux.Handle("POST /api/v1/import/telemetry", recorderLocalOnly(http.HandlerFunc(panel.importTelemetry)))
+	mux.Handle("GET /api/v1/audit", recorderLocalOnly(http.HandlerFunc(panel.auditEvents)))
+	mux.Handle("POST /api/v1/import/config/validate", recorderLocalOnly(http.HandlerFunc(panel.validateConfigImport)))
+	mux.Handle("POST /api/v1/import/config", recorderLocalOnly(http.HandlerFunc(panel.importConfig)))
 	panel.registerRecorderRoutes(mux)
 	panel.registerProfileRoutes(mux)
 
@@ -130,10 +193,22 @@ func (panel Server) Handler() http.Handler {
 		panic(fmt.Sprintf("load embedded web panel: %v", err))
 	}
 	mux.Handle("GET /", http.FileServer(http.FS(staticRoot)))
-	if panel.Recorder != nil || panel.Profiles != nil {
-		return securityHeaders(recorderLocalOnly(mux))
+	if panel.localOnly() {
+		return securityHeaders(panel.tokenAuth(panel.auditRequests(recorderLocalOnly(mux))))
 	}
-	return securityHeaders(mux)
+	return securityHeaders(panel.tokenAuth(panel.auditRequests(mux)))
+}
+
+func (panel Server) requiresLocalAccess() bool {
+	return panel.Recorder != nil || panel.Audit != nil || panel.Devices != nil || panel.Profiles != nil || panel.Routes != nil || panel.UpstreamTLS != nil
+}
+
+func (panel Server) localOnly() bool {
+	return panel.requiresLocalAccess() && !panel.remoteAccessConfigured()
+}
+
+func (panel Server) remoteAccessConfigured() bool {
+	return strings.TrimSpace(panel.Address) != "" && len(panel.authTokens()) > 0 && panel.TLSCertFile != "" && panel.TLSKeyFile != ""
 }
 
 func (panel Server) handleConfigUpdate(response http.ResponseWriter, request *http.Request) {
@@ -156,6 +231,10 @@ func (panel Server) handleConfigUpdate(response http.ResponseWriter, request *ht
 		writeAPIError(response, http.StatusBadRequest, fmt.Sprintf("invalid configuration: %v", err))
 		return
 	}
+	if update.ExpectedVersion == nil {
+		writeAPIError(response, http.StatusBadRequest, "expected_version is required")
+		return
+	}
 	if update.TLSFingerprint == nil && update.Upstream == nil && update.ProxyPort == nil && update.ProxyProtocol == nil && update.ProxyAuthEnabled == nil && update.ProxyUsername == nil && update.ProxyPassword == nil {
 		writeAPIError(response, http.StatusBadRequest, "no configuration fields were provided")
 		return
@@ -168,7 +247,11 @@ func (panel Server) handleConfigUpdate(response http.ResponseWriter, request *ht
 
 	runtimeStatus, err := panel.Update(update)
 	if err != nil {
-		writeAPIError(response, http.StatusBadRequest, err.Error())
+		status := http.StatusBadRequest
+		if errors.Is(err, ErrConfigVersionConflict) {
+			status = http.StatusConflict
+		}
+		writeAPIError(response, status, err.Error())
 		return
 	}
 	if err := json.NewEncoder(response).Encode(struct {

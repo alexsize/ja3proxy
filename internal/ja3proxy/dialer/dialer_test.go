@@ -8,10 +8,65 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/secrets"
 )
+
+func TestResolveProxyCredentialsFromSecretFiles(t *testing.T) {
+	dir := t.TempDir()
+	usernamePath := filepath.Join(dir, "upstream-user")
+	passwordPath := filepath.Join(dir, "upstream-password")
+	if err := os.WriteFile(usernamePath, []byte("proxy-user"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(passwordPath, []byte("proxy-password"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	configured := (&url.URL{
+		Scheme: "http", Host: "127.0.0.1:8080",
+		User: url.UserPassword("file:"+usernamePath, "file:"+passwordPath),
+	}).String()
+	parsed, err := parseProxyURL(configured)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resolveProxyCredentials(parsed, secrets.FileProvider{}); err != nil {
+		t.Fatal(err)
+	}
+	username := parsed.User.Username()
+	password, ok := parsed.User.Password()
+	if !ok || username != "proxy-user" || password != "proxy-password" {
+		t.Fatalf("resolved upstream credentials = %q/%q, want file contents", username, password)
+	}
+	upstream, err := NewUpstreamDialerWithProvider(configured, time.Second, secrets.FileProvider{})
+	if err != nil {
+		t.Fatalf("NewUpstreamDialerWithProvider() error = %v", err)
+	}
+	connectDialer, ok := upstream.dialer.(*httpConnectDialer)
+	if !ok {
+		t.Fatalf("upstream.dialer = %T, want HTTP CONNECT dialer", upstream.dialer)
+	}
+	resolvedPassword, _ := connectDialer.proxyURL.User.Password()
+	if connectDialer.proxyURL.User.Username() != "proxy-user" || resolvedPassword != "proxy-password" {
+		t.Fatal("HTTP CONNECT dialer did not receive resolved credentials")
+	}
+}
+
+func TestResolveProxyCredentialsRejectsMissingSecretFile(t *testing.T) {
+	parsed, err := parseProxyURL("http://user:file%3AC%3A%5Cmissing%5Csecret@127.0.0.1:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resolveProxyCredentials(parsed, secrets.FileProvider{}); err == nil {
+		t.Fatal("missing password reference was accepted")
+	}
+}
 
 func TestNewUpstreamDialerDirect(t *testing.T) {
 	timeout := 3 * time.Second

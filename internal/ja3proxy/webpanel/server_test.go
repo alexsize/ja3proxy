@@ -2,14 +2,56 @@ package webpanel
 
 import (
 	"bytes"
+	"context"
+	"crypto/tls"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/certstore"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/traffic"
 )
+
+func TestWebPanelTLSProviderReloadsCertificatePerHandshake(t *testing.T) {
+	dir := t.TempDir()
+	certPath, keyPath := filepath.Join(dir, "panel.crt"), filepath.Join(dir, "panel.key")
+	firstCA := &certstore.CertificateAuthority{}
+	if err := firstCA.Generate(certPath, keyPath); err != nil {
+		t.Fatal(err)
+	}
+	config := (Server{TLSCertFile: certPath, TLSKeyFile: keyPath}).tlsConfig()
+	first, err := config.GetCertificate(&tls.ClientHelloInfo{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstDER := append([]byte(nil), first.Certificate[0]...)
+	secondCA := &certstore.CertificateAuthority{}
+	if err := secondCA.Generate(certPath, keyPath); err != nil {
+		t.Fatal(err)
+	}
+	second, err := config.GetCertificate(&tls.ClientHelloInfo{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(firstDER, second.Certificate[0]) {
+		t.Fatal("TLS certificate did not reload after its files were rotated")
+	}
+}
+
+func TestServeRejectsRemoteWithoutAuthOrTLS(t *testing.T) {
+	for _, panel := range []Server{
+		{Address: "0.0.0.0:0"},
+		{Address: "0.0.0.0:0", AuthToken: "0123456789abcdef"},
+	} {
+		err := panel.Serve(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "non-loopback web panel") {
+			t.Fatalf("Serve(%+v) error = %v", panel, err)
+		}
+	}
+}
 
 func TestHandlerServesPanel(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -26,6 +68,9 @@ func TestHandlerServesPanel(t *testing.T) {
 	if !strings.Contains(response.Body.String(), `id="proxy-port"`) || !strings.Contains(response.Body.String(), `id="proxy-protocol-choice"`) || !strings.Contains(response.Body.String(), `id="tls-fingerprint"`) || !strings.Contains(response.Body.String(), `id="upstream-choice"`) || !strings.Contains(response.Body.String(), `id="proxy-auth-choice"`) || !strings.Contains(response.Body.String(), `id="proxy-password"`) {
 		t.Fatal("response does not contain runtime configuration selects")
 	}
+	if !strings.Contains(response.Body.String(), `src="/auth.js"`) {
+		t.Fatal("response does not load the panel authentication helper")
+	}
 	if got := response.Header().Get("Content-Security-Policy"); !strings.Contains(got, "default-src 'self'") {
 		t.Fatalf("Content-Security-Policy = %q, want self-only policy", got)
 	}
@@ -37,7 +82,7 @@ func TestConfigAPIUpdatesRuntimeConfiguration(t *testing.T) {
 		received = update
 		return RuntimeStatus{TLSClient: "Chrome", TLSVersion: "120", UpstreamEnabled: true}, nil
 	}}
-	request := httptest.NewRequest(http.MethodPut, "/api/config", bytes.NewBufferString(`{"proxyPort":8181,"proxyProtocol":"socks5","tlsFingerprint":"chrome@120","upstream":"socks5://127.0.0.1:1080","proxyAuthEnabled":true,"proxyUsername":"client","proxyPassword":"secret"}`))
+	request := httptest.NewRequest(http.MethodPut, "/api/config", bytes.NewBufferString(`{"expected_version":0,"proxyPort":8181,"proxyProtocol":"socks5","tlsFingerprint":"chrome@120","upstream":"socks5://127.0.0.1:1080","proxyAuthEnabled":true,"proxyUsername":"client","proxyPassword":"secret"}`))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 
@@ -48,6 +93,9 @@ func TestConfigAPIUpdatesRuntimeConfiguration(t *testing.T) {
 	}
 	if received.TLSFingerprint == nil || *received.TLSFingerprint != "chrome@120" {
 		t.Fatalf("TLS fingerprint update = %#v", received.TLSFingerprint)
+	}
+	if received.ExpectedVersion == nil || *received.ExpectedVersion != 0 {
+		t.Fatalf("expected version = %#v", received.ExpectedVersion)
 	}
 	if received.Upstream == nil || *received.Upstream != "socks5://127.0.0.1:1080" {
 		t.Fatalf("upstream update = %#v", received.Upstream)
@@ -69,6 +117,37 @@ func TestConfigAPIUpdatesRuntimeConfiguration(t *testing.T) {
 	}
 	if strings.Contains(response.Body.String(), "secret") {
 		t.Fatalf("configuration response exposed proxy password: %s", response.Body.String())
+	}
+}
+
+func TestConfigAPIRequiresExpectedVersion(t *testing.T) {
+	panel := Server{Update: func(ConfigUpdate) (RuntimeStatus, error) {
+		t.Fatal("updater must not be called")
+		return RuntimeStatus{}, nil
+	}}
+	request := httptest.NewRequest(http.MethodPut, "/api/config", strings.NewReader(`{"proxyPort":8181}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	panel.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "expected_version") {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
+func TestConfigAPIReportsVersionConflict(t *testing.T) {
+	panel := Server{Update: func(ConfigUpdate) (RuntimeStatus, error) {
+		return RuntimeStatus{}, ErrConfigVersionConflict
+	}}
+	request := httptest.NewRequest(http.MethodPut, "/api/config", strings.NewReader(`{"expected_version":4,"proxyPort":8181}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	panel.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "version") {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 	}
 }
 
