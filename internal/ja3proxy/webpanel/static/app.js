@@ -4,7 +4,8 @@ const elements = Object.fromEntries([
   "total-download", "uptime", "sessions", "events", "error-toast",
   "config-form", "tls-fingerprint", "proxy-protocol-choice", "traffic-page", "settings-page",
   "upstream-choice", "upstream-field", "upstream-input", "config-note", "proxy-port",
-  "proxy-auth-choice", "proxy-username-field", "proxy-username", "proxy-password-field", "proxy-password", "mitm-ca-validity", "panel-cert-validity"
+  "proxy-auth-choice", "proxy-username-field", "proxy-username", "proxy-password-field", "proxy-password", "mitm-ca-validity", "panel-cert-validity", "ca-reload-button", "ca-reload-note",
+  "spool-key-reload-button", "spool-key-reload-note", "mitm-ca-identity"
 ].map(id => [id, document.getElementById(id)]));
 
 let previous = null;
@@ -191,6 +192,8 @@ function render(data) {
   const traffic = data.traffic;
   const runtime = data.runtime;
   const caStatus = runtime.mitmCaCertificateStatus || "UNAVAILABLE";
+  const caStarted = runtime.mitmCaCertificateNotBefore ? new Date(runtime.mitmCaCertificateNotBefore).toLocaleString() : "не определено";
+  elements["mitm-ca-identity"].textContent = `Субъект: ${runtime.mitmCaCertificateSubject || "—"} · SHA-256: ${runtime.mitmCaCertificateSHA256 || "—"} · Действует с: ${caStarted}`;
   const caLabels = { VALID: "Действителен", EXPIRING: "Скоро истекает", EXPIRED: "Истёк", NOT_YET_VALID: "Ещё не действует", UNAVAILABLE: "Не загружен" };
   const expiresAt = runtime.mitmCaCertificateNotAfter ? new Date(runtime.mitmCaCertificateNotAfter).toLocaleString() : "срок не определён";
   const remaining = runtime.mitmCaCertificateDaysRemaining;
@@ -300,6 +303,51 @@ function syncProxyAuthFields() {
 elements["proxy-auth-choice"].addEventListener("change", () => {
   syncProxyAuthFields();
   if (elements["proxy-auth-choice"].value === "enabled") elements["proxy-username"].focus();
+});
+
+elements["ca-reload-button"].addEventListener("click", async () => {
+  if (!window.confirm("Применить CA из настроенного файла? Новые TLS-соединения потребуют доверия к новому публичному сертификату.")) return;
+  const button = elements["ca-reload-button"];
+  const note = elements["ca-reload-note"];
+  button.disabled = true;
+  note.className = "config-note";
+  note.textContent = "Проверка и применение CA…";
+  try {
+    const response = await ja3proxyFetch("/api/v1/admin/ca/reload", { method: "POST" });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+    note.textContent = "CA применён к новым соединениям. Проверьте доверие клиентов к публичному сертификату.";
+    note.className = "config-note success";
+    await refreshState();
+  } catch (error) {
+    note.textContent = error.message || "Не удалось применить CA; прежний CA остаётся активным.";
+    note.className = "config-note error";
+  } finally {
+    button.disabled = false;
+  }
+});
+
+elements["spool-key-reload-button"].addEventListener("click", async () => {
+  const button = elements["spool-key-reload-button"];
+  const note = elements["spool-key-reload-note"];
+  if (button.disabled) return;
+  button.disabled = true;
+  note.className = "config-note";
+  note.textContent = "Применение ключа…";
+  try {
+    const response = await ja3proxyFetch("/api/v1/admin/spool/reload-key", { method: "POST" });
+    if (!response.ok) {
+      const result = await response.json();
+      throw new Error(result.error || `HTTP ${response.status}`);
+    }
+    note.textContent = "Ключ применён. Новые записи spool используют новый ключ.";
+    note.className = "config-note success";
+  } catch (error) {
+    note.textContent = error.message || "Не удалось получить результат. Проверьте состояние перед перезапуском.";
+    note.className = "config-note error";
+  } finally {
+    button.disabled = false;
+  }
 });
 
 elements["config-form"].addEventListener("submit", async event => {

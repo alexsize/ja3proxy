@@ -86,13 +86,28 @@
       </header>
       <section class="setting-group" aria-labelledby="ca-validity-heading">
         <header class="setting-heading"><span>CA</span><strong id="ca-validity-heading">Срок действия MITM CA</strong><small>Состояние корневого сертификата, используемого для TLS-перехвата.</small></header>
-        <p id="mitm-ca-validity" role="status">Проверка сертификата…</p>
+        <div class="ca-management">
+          <p id="mitm-ca-validity" role="status">Проверка сертификата…</p>
+          <p id="mitm-ca-identity"></p>
+          <a href="/api/v1/ca/certificate" data-auth-download data-filename="ja3proxy-ca.pem">Скачать публичный сертификат CA</a>
+          <p>Сначала замените настроенный PEM-файл согласованной парой. Клиенты должны доверять публичному сертификату нового CA.</p>
+          <button id="ca-reload-button" type="button">Применить CA из файла</button>
+          <p id="ca-reload-note" class="config-note" role="status" aria-live="polite"></p>
+        </div>
       </section>
       <section class="setting-group" aria-labelledby="panel-cert-validity-heading">
         <header class="setting-heading"><span>TLS</span><strong id="panel-cert-validity-heading">Срок действия сертификата панели</strong><small>Срок действия HTTPS-сертификата веб-панели.</small></header>
         <p id="panel-cert-validity" role="status">Проверка сертификата…</p>
       </section>
 
+      <section class="setting-group" aria-labelledby="spool-key-heading">
+        <header class="setting-heading"><span>SPOOL</span><strong id="spool-key-heading">Ключ буфера записи</strong><small>Смена ключа зашифрованного spool без перезапуска.</small></header>
+        <div class="ca-management">
+          <p>Подготовьте новый файл ключа по настроенному пути. Применить его можно только при пустом spool. Сохраните прежний ключ до успешного применения.</p>
+          <button id="spool-key-reload-button" type="button">Применить ключ spool из файла</button>
+          <p id="spool-key-reload-note" class="config-note" role="status" aria-live="polite"></p>
+        </div>
+      </section>
       <form id="config-form" class="settings-form">
         <section class="setting-group" aria-labelledby="listener-settings">
           <header class="setting-heading"><span>01</span><strong id="listener-settings">Точка входа</strong><small>Как клиенты подключаются к прокси.</small></header>

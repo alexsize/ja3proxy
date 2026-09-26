@@ -81,6 +81,44 @@
         }
       }
     },
+    "/api/v1/admin/spool/reload-key": {
+      "post": {
+        "operationId": "reloadSpoolKey",
+        "description": "Применяет ключ из настроенного файла без перезапуска, только при пустом spool. Проверка очереди, публикация key.id и смена активного ключа сериализованы с записью и replay. Ошибка сохраняет прежний активный ключ. Тело запроса отсутствует. Non-loopback требует admin; loopback не требует токена. Аудит обязателен.",
+        "responses": {
+          "204": {"description": "Ключ применён"},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"description": "Требуется Bearer-токен"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "409": {"description": "Есть ожидающие записи либо новый ключ не удалось прочитать или опубликовать. Прежний ключ сохранён"},
+          "503": {"$ref": "#/components/responses/ServiceUnavailable"}
+        }
+      }
+    },
+    "/api/v1/admin/ca/reload": {
+      "post": {
+        "operationId": "reloadMITMCA",
+        "description": "Повторно читает настроенную пару MITM CA без перезапуска. Применяется только полностью проверенная пара; при ошибке прежний CA остаётся активным. Новые сертификаты подписываются новым CA, уже установленные соединения не меняются. Клиентам требуется доверять новому публичному сертификату. На non-loopback требуется роль admin; на loopback авторизация необязательна. Аудит обязателен в обоих режимах.",
+        "responses": {
+          "200": {"description": "CA применён; возвращён актуальный runtime status", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RuntimeConfigResponse"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "501": {"description": "Повторная загрузка CA не настроена"},
+          "503": {"$ref": "#/components/responses/ServiceUnavailable"}
+        }
+      }
+    },
+    "/api/v1/ca/certificate": {
+      "get": {
+        "operationId": "downloadMITMCACertificate",
+        "description": "Скачивает только публичный сертификат активного MITM CA в PEM. Закрытый ключ не выдаётся. Ответ помечен Cache-Control: no-store.",
+        "responses": {
+          "200": {"description": "Публичный сертификат CA", "headers": {"Content-Disposition": {"schema": {"type": "string"}}, "Cache-Control": {"schema": {"type": "string"}}}, "content": {"application/x-pem-file": {"schema": {"type": "string", "format": "binary"}}}},
+          "404": {"description": "Активный CA недоступен"}
+        }
+      }
+    },
     "/api/config": {
       "put": {
         "operationId": "updateRuntimeConfig",
@@ -1405,6 +1443,8 @@
               "proxyAuthEnabled": {"type": "boolean"},
               "proxyUsername": {"type": "string"},
               "mitmCaCertificateStatus": {"type": "string", "enum": ["UNAVAILABLE", "VALID", "EXPIRING", "EXPIRED", "NOT_YET_VALID"]},
+              "mitmCaCertificateSubject": {"type": "string", "description": "Subject активного сертификата CA"},
+              "mitmCaCertificateSHA256": {"type": "string", "description": "SHA-256 отпечаток DER активного сертификата CA в hex"},
               "mitmCaCertificateNotBefore": {"type": "string", "format": "date-time"},
               "mitmCaCertificateNotAfter": {"type": "string", "format": "date-time"},
               "mitmCaCertificateDaysRemaining": {"type": "integer"},

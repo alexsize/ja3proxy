@@ -87,6 +87,22 @@ func TestEnsureCAReturnsErrorWhenOnlyKeyExists(t *testing.T) {
 	}
 }
 
+func TestEnsureCAWithCombinedBundle(t *testing.T) {
+	app := newRuntimeTestApp(t)
+	path := filepath.Join(t.TempDir(), "ca-bundle.pem")
+	app.Config.Cert = path
+	app.Config.Key = path
+	if err := app.ensureCA(); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.loadExistingCA(); err != nil {
+		t.Fatal(err)
+	}
+	if app.CA.X509Certificate() == nil {
+		t.Fatal("combined CA was not loaded")
+	}
+}
+
 func TestParseFlagsAppliesNormalizedArgs(t *testing.T) {
 	app := newRuntimeTestApp(t)
 

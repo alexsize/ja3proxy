@@ -2,6 +2,7 @@ package ja3proxy
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -469,6 +470,8 @@ func (app *App) serveProxyServices(ctx context.Context, proxyServer *httpproxy.P
 		Monitor:         app.TrafficMonitor,
 		Runtime:         app.webPanelRuntimeStatus,
 		Update:          app.updateProxyConfig,
+		ReloadCA:        app.reloadCA,
+		CACertificate:   app.CA.X509Certificate,
 	}
 	tokenRegistry, err := webpanel.OpenTokenRegistry(app.StateDB, app.webPanelAuthTokens())
 	if err != nil {
@@ -579,6 +582,13 @@ func (app *App) ensureCA() error {
 
 func (app *App) loadExistingCA() error {
 	return app.CA.LoadWithProvider(app.secretProvider(), app.Config.Cert, app.Config.Key)
+}
+
+func (app *App) reloadCA() (webpanel.RuntimeStatus, error) {
+	if err := app.loadExistingCA(); err != nil {
+		return webpanel.RuntimeStatus{}, err
+	}
+	return app.webPanelRuntimeStatus(), nil
 }
 
 func (app *App) generateSessionKey() error {
@@ -970,8 +980,11 @@ func (app *App) webPanelRuntimeStatusLocked() webpanel.RuntimeStatus {
 	_, proxyPortText, _ := net.SplitHostPort(proxyListen)
 	proxyPort, _ := strconv.Atoi(proxyPortText)
 	caValidity := certstore.CertificateValidity{Status: "UNAVAILABLE"}
-	if app.CA != nil {
-		caValidity = app.CA.Validity(time.Now().UTC())
+	var caSubject, caSHA256 string
+	if certificate := app.CA.X509Certificate(); certificate != nil {
+		caValidity = certstore.ValidityForCertificate(certificate, time.Now().UTC())
+		caSubject = certificate.Subject.String()
+		caSHA256 = fmt.Sprintf("%x", sha256.Sum256(certificate.Raw))
 	}
 	var caNotBefore, caNotAfter *time.Time
 	var caDaysRemaining *int64
@@ -1021,6 +1034,8 @@ func (app *App) webPanelRuntimeStatusLocked() webpanel.RuntimeStatus {
 		ProxyAuthEnabled:               app.Config.ProxyUsername != "" || app.Config.ProxyPassword != "",
 		ProxyUsername:                  app.Config.ProxyUsername,
 		MITMCACertificateStatus:        caValidity.Status,
+		MITMCACertificateSubject:       caSubject,
+		MITMCACertificateSHA256:        caSHA256,
 		MITMCACertificateNotBefore:     caNotBefore,
 		MITMCACertificateNotAfter:      caNotAfter,
 		MITMCACertificateDaysRemaining: caDaysRemaining,

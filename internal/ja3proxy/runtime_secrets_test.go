@@ -1,12 +1,45 @@
 package ja3proxy
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/certstore"
 )
+
+func TestReloadCAKeepsOldOnFailureAndAppliesNewBundle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ca.pem")
+	app := newDefaultApp()
+	app.Config.Cert = path
+	app.Config.Key = path
+	if err := app.CA.Generate(path, path); err != nil {
+		t.Fatal(err)
+	}
+	first := append([]byte(nil), app.CA.X509Certificate().Raw...)
+	if err := os.WriteFile(path, []byte("invalid CA bundle"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.reloadCA(); err == nil {
+		t.Fatal("invalid CA bundle was accepted")
+	}
+	if !bytes.Equal(first, app.CA.X509Certificate().Raw) {
+		t.Fatal("failed reload replaced the active CA")
+	}
+	if err := (&certstore.CertificateAuthority{}).Generate(path, path); err != nil {
+		t.Fatal(err)
+	}
+	status, err := app.reloadCA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(first, app.CA.X509Certificate().Raw) || status.MITMCACertificateStatus != "VALID" {
+		t.Fatalf("valid new CA was not applied: %s", status.MITMCACertificateStatus)
+	}
+}
 
 func TestRuntimeStatusExposesCACertificateValidity(t *testing.T) {
 	dir := t.TempDir()
@@ -18,6 +51,9 @@ func TestRuntimeStatusExposesCACertificateValidity(t *testing.T) {
 	app.CA = ca
 	app.Config.WebPanelCert = filepath.Join(dir, "ca.crt")
 	status := app.webPanelRuntimeStatusLocked()
+	if status.MITMCACertificateSubject != ca.X509Certificate().Subject.String() || status.MITMCACertificateSHA256 != fmt.Sprintf("%x", sha256.Sum256(ca.X509Certificate().Raw)) {
+		t.Fatal("runtime CA identity differs from active certificate")
+	}
 	if status.MITMCACertificateStatus != "VALID" || status.MITMCACertificateNotAfter == nil || status.MITMCACertificateDaysRemaining == nil || *status.MITMCACertificateDaysRemaining <= 0 {
 		t.Fatalf("CA validity status = %+v", status)
 	}

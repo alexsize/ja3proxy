@@ -595,6 +595,109 @@ func TestEncryptedSpoolRoundTripAndQuarantine(t *testing.T) {
 	}
 }
 
+func TestSpoolKeyRotationRequiresDrainedRecords(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "spool")
+	keyPath := filepath.Join(t.TempDir(), "spool.key")
+	oldKey := bytes.Repeat([]byte{0x41}, 32)
+	newKey := bytes.Repeat([]byte{0x42}, 32)
+	if err := os.WriteFile(keyPath, oldKey, 0600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := openSpool(dir, keyPath, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.append("pending", []byte(`{"value":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(dir, spoolKeyIDFile)
+	oldMarker, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, newKey, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openSpool(dir, keyPath, 1<<20); err == nil || !strings.Contains(err.Error(), "pending records") {
+		t.Fatalf("rotating a nonempty spool returned %v", err)
+	}
+	if files, err := store.files(); err != nil || len(files) != 1 {
+		t.Fatalf("pending record changed: %v, %v", files, err)
+	}
+	if markerAfter, err := os.ReadFile(marker); err != nil || !bytes.Equal(oldMarker, markerAfter) {
+		t.Fatalf("key marker changed after rejected rotation: %v", err)
+	}
+	if err := os.WriteFile(keyPath, oldKey, 0600); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := openSpool(dir, keyPath, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.replay(func(eventID string, _ []byte) error {
+		if eventID != "pending" {
+			t.Fatalf("unexpected event %q", eventID)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, newKey, 0600); err != nil {
+		t.Fatal(err)
+	}
+	rotated, err := openSpool(dir, keyPath, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if markerAfter, err := os.ReadFile(marker); err != nil || bytes.Equal(oldMarker, markerAfter) {
+		t.Fatalf("key marker was not rotated after drain: %v", err)
+	}
+	if err := rotated.append("new", []byte(`{"value":2}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openSpool(dir, keyPath, 1<<20); err != nil {
+		t.Fatalf("reopen after rotation: %v", err)
+	}
+}
+
+func TestLegacySpoolKeyMustDecryptPendingRecordBeforeBinding(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "spool")
+	keyPath := filepath.Join(t.TempDir(), "spool.key")
+	oldKey := bytes.Repeat([]byte{0x53}, 32)
+	if err := os.WriteFile(keyPath, oldKey, 0600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := openSpool(dir, keyPath, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.append("legacy", []byte(`{"value":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(dir, spoolKeyIDFile)
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, bytes.Repeat([]byte{0x54}, 32), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openSpool(dir, keyPath, 1<<20); err == nil || !strings.Contains(err.Error(), "legacy pending records") {
+		t.Fatalf("wrong legacy key returned %v", err)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("wrong key created marker: %v", err)
+	}
+	if err := os.WriteFile(keyPath, oldKey, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openSpool(dir, keyPath, 1<<20); err != nil {
+		t.Fatalf("legacy migration with correct key: %v", err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("legacy key marker missing: %v", err)
+	}
+}
+
 func TestSpoolReplaysSQLiteAfterTransientFailure(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "spool")
 	dbPath := filepath.Join(t.TempDir(), "recorder.db")

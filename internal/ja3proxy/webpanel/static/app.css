@@ -171,6 +171,13 @@ tbody tr:hover { background: #f0f6f6; }
 .config-note.success { color: var(--live); }
 .ca-validity { color: var(--live); font-weight: 600; }
 .ca-validity-warning { color: var(--alert); font-weight: 700; }
+.ca-management { grid-column: 2; display: grid; justify-items: start; gap: 12px; }
+.ca-management p { margin: 0; font-size: 12px; line-height: 1.5; }
+.ca-management { min-width: 0; }
+.ca-management p, .ca-management a { overflow-wrap: anywhere; }
+.ca-management button { min-height: 42px; padding: 0 18px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--ink); background: var(--surface); cursor: pointer; font: 700 11px var(--body); }
+.ca-management button:hover { border-color: var(--route); color: var(--route); }
+.ca-management button:disabled { opacity: .55; cursor: wait; }
 
 .error-toast { position: fixed; right: 22px; bottom: 22px; min-width: 230px; padding: 14px 17px; border-left: 4px solid var(--alert); color: var(--ink); background: var(--surface); box-shadow: 0 14px 40px rgba(16, 42, 48, .18); transform: translateY(120px); transition: transform .2s ease; }
 .error-toast.show { transform: translateY(0); }

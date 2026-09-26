@@ -1,11 +1,117 @@
 package certstore
 
 import (
+	"bytes"
 	"crypto/x509"
+	"encoding/pem"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
+
+func TestGenerateCombinedCABundleAndRotate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ca.pem")
+	ca := &CertificateAuthority{}
+	if err := ca.Generate(path, path); err != nil {
+		t.Fatal(err)
+	}
+	first := append([]byte(nil), ca.X509Certificate().Raw...)
+	for generation := 0; generation < 2; generation++ {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		certBlock, rest := pem.Decode(data)
+		keyBlock, _ := pem.Decode(rest)
+		if certBlock == nil || certBlock.Type != "CERTIFICATE" || keyBlock == nil || keyBlock.Type != "EC PRIVATE KEY" {
+			t.Fatal("combined CA file does not contain a certificate and private key")
+		}
+		loaded := &CertificateAuthority{}
+		if err := loaded.Load(path, path); err != nil {
+			t.Fatalf("load combined CA generation %d: %v", generation, err)
+		}
+		if !bytes.Equal(loaded.X509Certificate().Raw, ca.X509Certificate().Raw) {
+			t.Fatal("loaded CA differs from generated CA")
+		}
+		if generation == 0 {
+			if err := ca.Generate(path, path); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if bytes.Equal(first, ca.X509Certificate().Raw) {
+		t.Fatal("CA bundle did not rotate")
+	}
+}
+
+func TestFailedCombinedCAGenerationKeepsLoadedCA(t *testing.T) {
+	ca := &CertificateAuthority{}
+	path := filepath.Join(t.TempDir(), "ca.pem")
+	if err := ca.Generate(path, path); err != nil {
+		t.Fatal(err)
+	}
+	previous := append([]byte(nil), ca.X509Certificate().Raw...)
+	if err := ca.Generate(filepath.Dir(path), filepath.Dir(path)); err == nil {
+		t.Fatal("expected CA bundle publication failure")
+	}
+	if !bytes.Equal(previous, ca.X509Certificate().Raw) {
+		t.Fatal("failed CA publication changed the active CA")
+	}
+}
+
+func TestCAReloadKeepsIssuerAndSignerTogether(t *testing.T) {
+	dir := t.TempDir()
+	paths := []string{filepath.Join(dir, "first.pem"), filepath.Join(dir, "second.pem")}
+	issuers := make([]*x509.Certificate, len(paths))
+	for index, path := range paths {
+		generated := &CertificateAuthority{}
+		if err := generated.Generate(path, path); err != nil {
+			t.Fatal(err)
+		}
+		issuers[index] = generated.X509Certificate()
+	}
+	active := &CertificateAuthority{}
+	if err := active.Load(paths[0], paths[0]); err != nil {
+		t.Fatal(err)
+	}
+	session := SessionKeyHelper{}
+	if err := session.Generate(); err != nil {
+		t.Fatal(err)
+	}
+	var group sync.WaitGroup
+	group.Add(2)
+	go func() {
+		defer group.Done()
+		for index := 0; index < 40; index++ {
+			path := paths[index%len(paths)]
+			if err := active.Load(path, path); err != nil {
+				t.Errorf("reload CA: %v", err)
+				return
+			}
+		}
+	}()
+	go func() {
+		defer group.Done()
+		for index := 0; index < 40; index++ {
+			certificate, err := active.GenerateCertificate(session, "example.com")
+			if err != nil {
+				t.Errorf("issue certificate during reload: %v", err)
+				return
+			}
+			leaf, err := x509.ParseCertificate(certificate.Certificate[0])
+			if err != nil {
+				t.Errorf("parse issued certificate: %v", err)
+				return
+			}
+			if leaf.CheckSignatureFrom(issuers[0]) != nil && leaf.CheckSignatureFrom(issuers[1]) != nil {
+				t.Error("issued certificate matches neither CA; issuer and signer were mixed")
+				return
+			}
+		}
+	}()
+	group.Wait()
+}
 
 func TestGenerateCertificateMissingSessionKeyReturnsError(t *testing.T) {
 	dir := t.TempDir()

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -41,6 +42,72 @@ func TestWebPanelTLSProviderReloadsCertificatePerHandshake(t *testing.T) {
 	}
 }
 
+type rotatingBundleProvider struct {
+	bundles [][]byte
+	reads   int
+}
+
+func (provider *rotatingBundleProvider) Read(string) ([]byte, error) {
+	index := provider.reads
+	provider.reads++
+	if index >= len(provider.bundles) {
+		index = len(provider.bundles) - 1
+	}
+	return append([]byte(nil), provider.bundles[index]...), nil
+}
+
+func TestWebPanelTLSBundleUsesOneSnapshotPerHandshake(t *testing.T) {
+	dir := t.TempDir()
+	provider := &rotatingBundleProvider{}
+	for _, name := range []string{"first", "second"} {
+		certPath := filepath.Join(dir, name+".crt")
+		keyPath := filepath.Join(dir, name+".key")
+		if err := (&certstore.CertificateAuthority{}).Generate(certPath, keyPath); err != nil {
+			t.Fatal(err)
+		}
+		certPEM, err := os.ReadFile(certPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keyPEM, err := os.ReadFile(keyPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		provider.bundles = append(provider.bundles, append(certPEM, keyPEM...))
+	}
+	config := (Server{TLSCertFile: "panel.pem", TLSKeyFile: "panel.pem", SecretProvider: provider}).tlsConfig()
+	first, err := config.GetCertificate(&tls.ClientHelloInfo{})
+	if err != nil || provider.reads != 1 {
+		t.Fatalf("first bundle load: reads=%d, err=%v", provider.reads, err)
+	}
+	second, err := config.GetCertificate(&tls.ClientHelloInfo{})
+	if err != nil || provider.reads != 2 {
+		t.Fatalf("rotated bundle load: reads=%d, err=%v", provider.reads, err)
+	}
+	if bytes.Equal(first.Certificate[0], second.Certificate[0]) {
+		t.Fatal("rotated bundle did not change the served certificate")
+	}
+
+	bundlePath := filepath.Join(dir, "panel.pem")
+	fileConfig := (Server{TLSCertFile: bundlePath, TLSKeyFile: bundlePath}).tlsConfig()
+	for index, bundle := range provider.bundles {
+		if err := os.WriteFile(bundlePath, bundle, 0600); err != nil {
+			t.Fatal(err)
+		}
+		loaded, err := fileConfig.GetCertificate(&tls.ClientHelloInfo{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := first
+		if index == 1 {
+			want = second
+		}
+		if !bytes.Equal(loaded.Certificate[0], want.Certificate[0]) {
+			t.Fatalf("file bundle generation %d was not served", index)
+		}
+	}
+}
+
 func TestServeRejectsRemoteWithoutAuthOrTLS(t *testing.T) {
 	for _, panel := range []Server{
 		{Address: "0.0.0.0:0"},
@@ -70,6 +137,14 @@ func TestHandlerServesPanel(t *testing.T) {
 	}
 	if !strings.Contains(response.Body.String(), `src="/auth.js"`) {
 		t.Fatal("response does not load the panel authentication helper")
+	}
+	if !strings.Contains(response.Body.String(), `id="ca-reload-button"`) || !strings.Contains(response.Body.String(), `id="ca-reload-note"`) {
+		t.Fatal("CA reload controls are missing from settings")
+	}
+	appJS := httptest.NewRecorder()
+	Server{}.Handler().ServeHTTP(appJS, httptest.NewRequest(http.MethodGet, "/app.js", nil))
+	if appJS.Code != http.StatusOK || !strings.Contains(appJS.Body.String(), `"/api/v1/admin/ca/reload"`) {
+		t.Fatal("settings script does not call the CA reload API")
 	}
 	if got := response.Header().Get("Content-Security-Policy"); !strings.Contains(got, "default-src 'self'") {
 		t.Fatalf("Content-Security-Policy = %q, want self-only policy", got)

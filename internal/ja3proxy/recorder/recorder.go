@@ -198,31 +198,31 @@ type Observation struct {
 	AnalysisParentID string `json:"analysis_parent_id,omitempty"`
 	ID               string `json:"id"`
 	Meta
-	CapturedAt          time.Time                    `json:"captured_at"`
-	PersistedAt         time.Time                    `json:"processed_at"`
-	Completeness        string                       `json:"completeness"`
-	ErrorStage          string                       `json:"error_stage,omitempty"`
-	ErrorCode           string                       `json:"error_code,omitempty"`
-	RecordVersion       uint16                       `json:"record_version"`
-	RecordCount         int                          `json:"record_count"`
-	DeclaredHelloLength int                          `json:"declared_hello_length,omitempty"`
-	Hello               *tlshello.Hello              `json:"decoded,omitempty"`
-	Fingerprints        *tlshello.Fingerprints       `json:"fingerprints,omitempty"`
-	ServerHello         *tlshello.ServerHello        `json:"server_hello,omitempty"`
-	ServerFingerprints  *tlshello.ServerFingerprints `json:"server_fingerprints,omitempty"`
-	NegotiatedState     *NegotiatedState             `json:"negotiated_state,omitempty"`
-	HTTP1               *http1.Message               `json:"http1,omitempty"`
-	HTTP2               *http2capture.Fingerprint    `json:"http2,omitempty"`
-	TCPSYN              *tcpcapture.SYN              `json:"tcp_syn,omitempty"`
-	DNS                 *dnscapture.Exchange         `json:"dns,omitempty"`
-	QUIC                *quiccapture.Metadata        `json:"quic,omitempty"`
-	Verification        *Verification                `json:"verification,omitempty"`
-	Forwarding          *ForwardingVerification      `json:"forwarding,omitempty"`
-	Raw                 []byte                       `json:"raw_client_hello,omitempty"`
-	RawClientHelloAvailable bool                       `json:"raw_client_hello_available,omitempty"`
-	Records             []byte                       `json:"raw_records,omitempty"`
-	RawServerHello      []byte                       `json:"raw_server_hello,omitempty"`
-	ServerRecords       []byte                       `json:"server_records,omitempty"`
+	CapturedAt              time.Time                    `json:"captured_at"`
+	PersistedAt             time.Time                    `json:"processed_at"`
+	Completeness            string                       `json:"completeness"`
+	ErrorStage              string                       `json:"error_stage,omitempty"`
+	ErrorCode               string                       `json:"error_code,omitempty"`
+	RecordVersion           uint16                       `json:"record_version"`
+	RecordCount             int                          `json:"record_count"`
+	DeclaredHelloLength     int                          `json:"declared_hello_length,omitempty"`
+	Hello                   *tlshello.Hello              `json:"decoded,omitempty"`
+	Fingerprints            *tlshello.Fingerprints       `json:"fingerprints,omitempty"`
+	ServerHello             *tlshello.ServerHello        `json:"server_hello,omitempty"`
+	ServerFingerprints      *tlshello.ServerFingerprints `json:"server_fingerprints,omitempty"`
+	NegotiatedState         *NegotiatedState             `json:"negotiated_state,omitempty"`
+	HTTP1                   *http1.Message               `json:"http1,omitempty"`
+	HTTP2                   *http2capture.Fingerprint    `json:"http2,omitempty"`
+	TCPSYN                  *tcpcapture.SYN              `json:"tcp_syn,omitempty"`
+	DNS                     *dnscapture.Exchange         `json:"dns,omitempty"`
+	QUIC                    *quiccapture.Metadata        `json:"quic,omitempty"`
+	Verification            *Verification                `json:"verification,omitempty"`
+	Forwarding              *ForwardingVerification      `json:"forwarding,omitempty"`
+	Raw                     []byte                       `json:"raw_client_hello,omitempty"`
+	RawClientHelloAvailable bool                         `json:"raw_client_hello_available,omitempty"`
+	Records                 []byte                       `json:"raw_records,omitempty"`
+	RawServerHello          []byte                       `json:"raw_server_hello,omitempty"`
+	ServerRecords           []byte                       `json:"server_records,omitempty"`
 }
 
 type Options struct {
@@ -350,6 +350,20 @@ type Recorder struct {
 	spoolQuotaFailures    atomic.Uint64
 	spoolFullReported     atomic.Bool
 	criticalSpillAccepted atomic.Uint64
+}
+
+// ReloadSpoolKey applies a newly published key only when the durable spool is
+// empty. Append and key replacement share the spool lock.
+func (r *Recorder) ReloadSpoolKey() error {
+	if r == nil || r.spool == nil {
+		return ErrSpoolUnavailable
+	}
+	r.sendMu.RLock()
+	defer r.sendMu.RUnlock()
+	if r.closed {
+		return ErrSpoolUnavailable
+	}
+	return r.spool.rotateKey(r.opts.SpoolKeyPath, r.opts.SecretProvider)
 }
 
 func New(opts Options) (*Recorder, error) {

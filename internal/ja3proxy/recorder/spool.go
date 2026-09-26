@@ -25,9 +25,13 @@ const (
 	defaultSpoolBytes  = 512 << 20
 	maxSpoolBytes      = 4 << 30
 	spoolFileExtension = ".evt"
+	spoolKeyIDFile     = "key.id"
 )
 
 var errSpoolFull = errors.New("recorder spool quota exceeded")
+
+var ErrSpoolPending = errors.New("recorder spool has pending records")
+var ErrSpoolUnavailable = errors.New("recorder spool is unavailable")
 
 type spoolStore struct {
 	dir         string
@@ -70,6 +74,7 @@ func openSpoolWithProvider(dir, keyPath string, maxBytes int64, provider secrets
 	if err != nil {
 		return nil, fmt.Errorf("read recorder spool key: %w", err)
 	}
+	defer clear(key)
 	if len(key) != 32 {
 		return nil, errors.New("recorder spool key must contain exactly 32 raw bytes")
 	}
@@ -91,7 +96,101 @@ func openSpoolWithProvider(dir, keyPath string, maxBytes int64, provider secrets
 	if store.bytes > store.maxBytes {
 		return nil, errSpoolFull
 	}
+	if err := store.checkKeyID(files); err != nil {
+		return nil, err
+	}
 	return store, nil
+}
+
+func (s *spoolStore) checkKeyID(files []string) error {
+	marker := filepath.Join(s.dir, spoolKeyIDFile)
+	digest := sha256.Sum256(s.key)
+	want := hex.EncodeToString(digest[:])
+	data, err := os.ReadFile(marker)
+	if err == nil {
+		if strings.TrimSpace(string(data)) == want {
+			return nil
+		}
+		if len(files) != 0 {
+			return errors.New("recorder spool key changed while pending records exist; restore the previous key before replay")
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read recorder spool key ID: %w", err)
+	} else if len(files) != 0 {
+		// Legacy spools have no marker. Verify that the supplied key decrypts at
+		// least one record before binding this directory to that key.
+		valid := false
+		for _, path := range files {
+			record, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return fmt.Errorf("read legacy recorder spool record: %w", readErr)
+			}
+			if _, _, decodeErr := s.decode(record); decodeErr == nil {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			return errors.New("cannot verify recorder spool key for legacy pending records; records were left unchanged")
+		}
+	}
+	return s.writeKeyID(marker, want)
+}
+
+func (s *spoolStore) writeKeyID(marker, keyID string) error {
+	tmp, err := os.CreateTemp(s.dir, ".spool-key-id-*")
+	if err != nil {
+		return fmt.Errorf("create recorder spool key ID: %w", err)
+	}
+	defer func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmp.Name())
+	}()
+	if err := tmp.Chmod(0600); err != nil {
+		return err
+	}
+	if _, err := tmp.WriteString(keyID + "\n"); err != nil {
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp.Name(), marker); err != nil {
+		return fmt.Errorf("publish recorder spool key ID: %w", err)
+	}
+	return nil
+}
+
+func (s *spoolStore) rotateKey(keyPath string, provider secrets.Provider) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	files, err := s.files()
+	if err != nil {
+		return err
+	}
+	if len(files) != 0 {
+		return ErrSpoolPending
+	}
+	key, err := secrets.Read(provider, keyPath)
+	if err != nil {
+		return fmt.Errorf("read recorder spool key: %w", err)
+	}
+	defer clear(key)
+	if len(key) != 32 {
+		return errors.New("recorder spool key must contain exactly 32 raw bytes")
+	}
+	previous := s.key
+	s.key = append([]byte(nil), key...)
+	if err := s.checkKeyID(files); err != nil {
+		clear(s.key)
+		s.key = previous
+		return err
+	}
+	clear(previous)
+	return nil
 }
 
 func (s *spoolStore) append(eventID string, payload []byte) error {

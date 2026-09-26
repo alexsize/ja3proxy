@@ -82,6 +82,15 @@ func LoadKeyPair(provider Provider, certificateReference, keyReference string) (
 		return tls.Certificate{}, fmt.Errorf("load TLS certificate: %w", err)
 	}
 	defer clear(certificatePEM)
+	// A combined PEM bundle is one secret snapshot. Reading the same reference
+	// twice could straddle an atomic file replacement and mix two generations.
+	if strings.TrimSpace(certificateReference) == strings.TrimSpace(keyReference) {
+		certificate, err := tls.X509KeyPair(certificatePEM, certificatePEM)
+		if err != nil {
+			return tls.Certificate{}, fmt.Errorf("parse TLS key pair: %w", err)
+		}
+		return certificate, nil
+	}
 	privateKeyPEM, err := Read(provider, keyReference)
 	if err != nil {
 		return tls.Certificate{}, fmt.Errorf("load TLS private key: %w", err)

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	cfconfig "github.com/cloudflare/cfssl/config"
@@ -24,6 +25,7 @@ import (
 )
 
 type CertificateAuthority struct {
+	mu       sync.RWMutex
 	tlsCert  tls.Certificate
 	x509Cert *x509.Certificate
 }
@@ -46,6 +48,8 @@ func (ca *CertificateAuthority) X509Certificate() *x509.Certificate {
 	if ca == nil {
 		return nil
 	}
+	ca.mu.RLock()
+	defer ca.mu.RUnlock()
 	return ca.x509Cert
 }
 
@@ -54,14 +58,26 @@ func (ca *CertificateAuthority) Generate(certPath, keyPath string) error {
 	if err != nil {
 		return err
 	}
-
+	defer clear(keyPEM)
+	if filepath.Clean(certPath) == filepath.Clean(keyPath) {
+		bundle := append(append([]byte(nil), certPEM...), keyPEM...)
+		defer clear(bundle)
+		if err := writePEMFileAtomic(certPath, bundle); err != nil {
+			return err
+		}
+	} else {
+		if err := writePEMFile(certPath, certPEM, 0666); err != nil {
+			return err
+		}
+		if err := writePEMFile(keyPath, keyPEM, 0600); err != nil {
+			return err
+		}
+	}
+	ca.mu.Lock()
 	ca.tlsCert = tlsCert
 	ca.x509Cert = x509Cert
-
-	if err := writePEMFile(certPath, certPEM, 0666); err != nil {
-		return err
-	}
-	return writePEMFile(keyPath, keyPEM, 0600)
+	ca.mu.Unlock()
+	return nil
 }
 
 func generateCACertificate() (tls.Certificate, *x509.Certificate, []byte, []byte, error) {
@@ -135,10 +151,17 @@ func (ca *CertificateAuthority) GenerateCertificate(session SessionKeyHelper, sn
 	if session.privateKey == nil || len(session.PEMBlock) == 0 {
 		return tls.Certificate{}, fmt.Errorf("session key has not been generated")
 	}
-	if ca.x509Cert == nil {
+	if ca == nil {
 		return tls.Certificate{}, fmt.Errorf("CA certificate has not been loaded")
 	}
-	cryptoSigner, ok := ca.tlsCert.PrivateKey.(crypto.Signer)
+	ca.mu.RLock()
+	issuer := ca.x509Cert
+	privateKey := ca.tlsCert.PrivateKey
+	ca.mu.RUnlock()
+	if issuer == nil {
+		return tls.Certificate{}, fmt.Errorf("CA certificate has not been loaded")
+	}
+	cryptoSigner, ok := privateKey.(crypto.Signer)
 	if !ok {
 		return tls.Certificate{}, fmt.Errorf("CA private key is not a crypto signer")
 	}
@@ -160,7 +183,7 @@ func (ca *CertificateAuthority) GenerateCertificate(session SessionKeyHelper, sn
 		Default: profile,
 	}
 
-	signer, err := local.NewSigner(cryptoSigner, ca.x509Cert, cfsigner.DefaultSigAlgo(cryptoSigner), policy)
+	signer, err := local.NewSigner(cryptoSigner, issuer, cfsigner.DefaultSigAlgo(cryptoSigner), policy)
 	if err != nil {
 		return tls.Certificate{}, err
 	}
@@ -186,11 +209,41 @@ func (ca *CertificateAuthority) Load(certPath, keyPath string) error {
 	return ca.LoadWithProvider(secrets.FileProvider{}, certPath, keyPath)
 }
 
+func writePEMFileAtomic(path string, data []byte) error {
+	if err := ensureParentDir(path); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".ca-bundle-*")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmp.Name())
+	}()
+	if err := tmp.Chmod(0600); err != nil {
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
+}
+
 func (ca *CertificateAuthority) Validity(now time.Time) CertificateValidity {
-	if ca == nil || ca.x509Cert == nil {
+	if ca == nil {
 		return CertificateValidity{Status: "UNAVAILABLE"}
 	}
-	return ValidityForCertificate(ca.x509Cert, now)
+	ca.mu.RLock()
+	certificate := ca.x509Cert
+	ca.mu.RUnlock()
+	return ValidityForCertificate(certificate, now)
 }
 
 func ValidityForCertificate(certificate *x509.Certificate, now time.Time) CertificateValidity {
@@ -251,8 +304,10 @@ func (ca *CertificateAuthority) LoadWithProvider(provider secrets.Provider, cert
 		return err
 	}
 
+	ca.mu.Lock()
 	ca.tlsCert = tlsCert
 	ca.x509Cert = x509Cert
+	ca.mu.Unlock()
 
 	return nil
 }
